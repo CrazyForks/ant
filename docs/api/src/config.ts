@@ -21,10 +21,24 @@ export function branch(env: Env): string {
   return env.GITHUB_BRANCH || DEFAULT_BRANCH;
 }
 
+export function actionsRunId(env: Env): number | undefined {
+  const raw = env.GITHUB_RUN_ID;
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 export function withBranch(env: Env, value: string): Env {
   return {
     ...env,
     GITHUB_BRANCH: value,
+  };
+}
+
+export function withActionsRun(env: Env, value: string): Env {
+  return {
+    ...env,
+    GITHUB_RUN_ID: value,
   };
 }
 

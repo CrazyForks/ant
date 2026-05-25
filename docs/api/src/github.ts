@@ -43,6 +43,24 @@ export async function findLatestRunWithArtifacts(
   );
 }
 
+export async function findRunWithArtifacts(
+  env: Env,
+  runId: number,
+  requiredArtifacts: string[],
+): Promise<{ run: WorkflowRun; artifacts: Artifact[] }> {
+  const run = await githubJson<WorkflowRun>(env, `/repos/${repository(env)}/actions/runs/${runId}`);
+  const artifacts = await listArtifacts(env, runId);
+  const artifactNames = new Set(
+    artifacts.filter(artifact => !artifact.expired).map(artifact => artifact.name),
+  );
+
+  if (requiredArtifacts.every(name => artifactNames.has(name))) return { run, artifacts };
+  throw new HttpError(
+    `workflow run ${runId} does not contain ${requiredArtifacts.join(', ')}`,
+    404,
+  );
+}
+
 export async function findLatestAnyRunWithArtifacts(
   env: Env,
   requiredArtifacts: string[],
@@ -174,7 +192,10 @@ async function githubFetch(
   if (pathOrUrl.startsWith('http')) {
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:' || parsed.hostname !== 'api.github.com') {
-      throw new HttpError(`refusing authenticated request to untrusted GitHub host: ${parsed.hostname}`, 502);
+      throw new HttpError(
+        `refusing authenticated request to untrusted GitHub host: ${parsed.hostname}`,
+        502,
+      );
     }
   }
   const headers = new Headers({

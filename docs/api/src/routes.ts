@@ -5,7 +5,7 @@ import type { Context } from 'hono';
 import { HttpError } from './errors';
 import { cachedJson } from './http-cache';
 import { routeIndex } from './route-index';
-import { branch, repository, withBranch } from './config';
+import { branch, repository, withActionsRun, withBranch } from './config';
 import { downloadArtifact } from './downloads';
 import { resolveArch, resolveTarget } from './targets';
 import { BranchQuerySchema, DownloadParamsSchema, VersionQuerySchema } from './schemas';
@@ -114,10 +114,15 @@ async function versionRoute(c: AppContext) {
 function requestEnv(c: AppContext): Env {
   const query = BranchQuerySchema.parse(c.req.query());
   const headerBranch = c.req.header('X-Ant-Branch');
+  const headerRunId = c.req.header('X-GitHub-Run-Id');
   const requestedBranch =
     query.branch ||
     (headerBranch ? BranchQuerySchema.parse({ branch: headerBranch }).branch : undefined);
-  return requestedBranch ? withBranch(c.env, requestedBranch) : c.env;
+  const requestedRunId =
+    query.run_id ||
+    (headerRunId ? BranchQuerySchema.parse({ run_id: headerRunId }).run_id : undefined);
+  const branchEnv = requestedBranch ? withBranch(c.env, requestedBranch) : c.env;
+  return requestedRunId ? withActionsRun(branchEnv, requestedRunId) : branchEnv;
 }
 
 export default app;

@@ -59,4 +59,5 @@ jobs:
         run: |
           curl -fsS -X POST -G https://manifest.antjs.org/v1/refresh \
             --data-urlencode "branch=${GITHUB_REF_NAME}" \
+            --data-urlencode "run_id=${GITHUB_RUN_ID}" \
             -H "Authorization: Bearer ${MANIFEST_REFRESH_TOKEN}"

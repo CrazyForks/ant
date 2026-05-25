@@ -55,4 +55,8 @@ export const DownloadParamsSchema = z.object({
 
 export const BranchQuerySchema = z.object({
   branch: BranchSchema.optional(),
+  run_id: z
+    .string()
+    .regex(/^[1-9][0-9]*$/)
+    .optional(),
 });

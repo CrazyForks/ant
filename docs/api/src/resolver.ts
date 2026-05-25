@@ -1,4 +1,5 @@
 import {
+  actionsRunId,
   branch,
   BUILD_WORKFLOW,
   canDownloadActionsArtifacts,
@@ -13,6 +14,7 @@ import {
   findLatestAnyRunWithArtifacts,
   findLatestRunWithArtifacts,
   findReleaseAsset,
+  findRunWithArtifacts,
   latestRelease,
   releaseByTag,
   readVersionArtifact,
@@ -269,18 +271,51 @@ export function downloadUrl(
   kind: ArtifactKind,
   name: string,
   artifactBranch: string,
+  runId?: number,
 ): string {
   const next = new URL(`/v1/download/${kind}/${encodeURIComponent(name)}`, url);
   if (url.searchParams.has('branch') || artifactBranch !== DEFAULT_BRANCH) {
     next.searchParams.set('branch', artifactBranch);
   }
+  if (url.searchParams.has('run_id') || runId) {
+    next.searchParams.set('run_id', String(runId));
+  }
   return next.toString();
 }
 
 async function resolveActionAnt(env: Env, target: AntTarget, url: URL): Promise<ResolvedArtifact> {
+  const runId = actionsRunId(env);
+  if (runId) {
+    try {
+      return await resolveActionAntFromRun(env, target, url, runId);
+    } catch (error) {
+      if (!isNotFound(error)) throw error;
+    }
+  }
+
   const { run, artifacts } = await findLatestRunWithArtifacts(env, BUILD_WORKFLOW, branch(env), [
     target.artifact,
   ]);
+  return resolveActionAntFromArtifacts(env, target, url, run, artifacts);
+}
+
+async function resolveActionAntFromRun(
+  env: Env,
+  target: AntTarget,
+  url: URL,
+  runId: number,
+): Promise<ResolvedArtifact> {
+  const { run, artifacts } = await findRunWithArtifacts(env, runId, [target.artifact]);
+  return resolveActionAntFromArtifacts(env, target, url, run, artifacts);
+}
+
+async function resolveActionAntFromArtifacts(
+  env: Env,
+  target: AntTarget,
+  url: URL,
+  run: WorkflowRun,
+  artifacts: Artifact[],
+): Promise<ResolvedArtifact> {
   const artifact = requireArtifact(artifacts, target.artifact);
   const versionArtifact = artifacts.find(
     item => item.name === `version-${target.artifact}` && !item.expired,
@@ -300,7 +335,7 @@ async function resolveActionAnt(env: Env, target: AntTarget, url: URL): Promise<
     artifact,
     version,
     actionSourceInfo(env, BUILD_WORKFLOW, run),
-    downloadUrl(url, 'ant', target.key, branch(env)),
+    downloadUrl(url, 'ant', target.key, branch(env), matchedRunId(env, run)),
   );
 }
 
@@ -312,6 +347,23 @@ async function resolveActionNamedArtifact(
   arch: string,
   url: URL,
 ): Promise<ResolvedArtifact> {
+  const runId = actionsRunId(env);
+  if (runId) {
+    try {
+      const { run, artifacts } = await findRunWithArtifacts(env, runId, [artifactName]);
+      const artifact = requireArtifact(artifacts, artifactName);
+      return resolvedAction(
+        kind,
+        artifact,
+        undefined,
+        actionSourceInfo(env, run.path || workflow, run),
+        downloadUrl(url, kind, arch, branch(env), runId),
+      );
+    } catch (error) {
+      if (!isNotFound(error)) throw error;
+    }
+  }
+
   const { run, artifacts } = await findLatestRunWithArtifacts(env, workflow, branch(env), [
     artifactName,
   ]);
@@ -321,7 +373,7 @@ async function resolveActionNamedArtifact(
     artifact,
     undefined,
     actionSourceInfo(env, workflow, run),
-    downloadUrl(url, kind, arch, branch(env)),
+    downloadUrl(url, kind, arch, branch(env), matchedRunId(env, run)),
   );
 }
 
@@ -339,7 +391,7 @@ async function resolveAnyActionNamedArtifact(
     artifact,
     undefined,
     actionSourceInfo(env, run.path || run.name, run),
-    downloadUrl(url, kind, arch, branch(env)),
+    downloadUrl(url, kind, arch, branch(env), matchedRunId(env, run)),
   );
 }
 
@@ -367,6 +419,11 @@ function resolvedAction(
   };
 }
 
+function matchedRunId(env: Env, run: WorkflowRun): number | undefined {
+  const runId = actionsRunId(env);
+  return runId === run.id ? runId : undefined;
+}
+
 async function resolveReleaseArtifact(
   env: Env,
   kind: ArtifactKind,
@@ -383,7 +440,7 @@ async function resolveReleaseArtifact(
     kind,
     name: asset.name,
     version,
-    download_url: downloadUrl(url, kind, downloadName, branch(env)),
+    download_url: downloadUrl(url, kind, downloadName, branch(env), actionsRunId(env)),
     artifact: {
       id: asset.id,
       name: asset.name,
