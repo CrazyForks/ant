@@ -424,7 +424,7 @@ int ant_upgrade(int argc, char **argv) {
   ant_latest_info_t latest;
   progress_t progress;
 
-  crprintf("<bold>Current Ant version:</> <bright_magenta>%s</>\n", ANT_VERSION);
+  crprintf("<bold>Current Ant version:</> <bright_green>%s</>\n", ANT_VERSION);
   crprintf("<dim>Looking up latest version</>\n\n");
 
   int rc = ant_fetch_latest(&latest, NULL, err, sizeof(err));
@@ -434,12 +434,12 @@ int ant_upgrade(int argc, char **argv) {
   }
 
   if (!ant_latest_is_newer(&latest)) {
-    crprintf("<bright_magenta>Ant is already up to date.</> <dim>(%s for %s)</>\n", ANT_VERSION, latest.target);
+    crprintf("<bright_green>Ant is already up to date.</> <dim>(%s for %s)</>\n", ANT_VERSION, latest.target);
     return EXIT_SUCCESS;
   }
 
   crprintf("Found latest version <green>%s</>\n\n", latest.version);
-  crprintf("Downloading <magenta>%s</>\n", latest.download_url);
+  crprintf("Downloading <bright_green>%s</>\n", latest.download_url);
   crprintf("Ant is upgrading to version <green>%s</>\n\n", latest.version);
   fflush(stdout);
 
@@ -488,18 +488,18 @@ int ant_upgrade(int argc, char **argv) {
     return EXIT_FAILURE;
   }
 
-  crprintf("<bright_magenta>Upgraded successfully to Ant %s</>\n", latest.version);
+  crprintf("<bright_green>Upgraded successfully to Ant %s</>\n", latest.version);
   crprintf("<dim>Installed at %s</>\n", install_path);
 
   char semver[32];
   version_semver_copy(semver, sizeof(semver), latest.version);
   if (semver[0]) {
     crprintf("\n<bold>Release notes:</>\n\n");
-    crprintf("  <magenta>https://github.com/theMackabu/ant/releases/tag/v%s</>\n\n", semver);
+    crprintf("  <green>https://github.com/theMackabu/ant/releases/tag/v%s</>\n\n", semver);
   }
   if (latest.source_url[0]) {
     crprintf("\n<bold>Build:</>\n\n");
-    crprintf("  <magenta>%s</>\n", latest.source_url);
+    crprintf("  <green>%s</>\n", latest.source_url);
   }
   return EXIT_SUCCESS;
 }
