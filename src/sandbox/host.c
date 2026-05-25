@@ -1,6 +1,7 @@
 #include <compat.h> // IWYU pragma: keep
 
 #include "sandbox/host.h"
+#include "assets.h"
 #include "cli/version.h"
 #include "modules/io.h"
 #include "sandbox/sandbox.h"
@@ -121,6 +122,15 @@ int ant_sandbox_assets_resolve(ant_sandbox_assets_t *assets, char *err, size_t e
 
   rc = sandbox_cache_path(assets->kernel, sizeof(assets->kernel), kernel_name);
   if (rc != 0) return rc;
+
+  const char *image_override = getenv("ANT_SANDBOX_IMAGE");
+  const char *kernel_override = getenv("ANT_SANDBOX_KERNEL");
+
+  bool using_overrides = (image_override && image_override[0]) || (kernel_override && kernel_override[0]);
+  if (!using_overrides && (!sandbox_file_exists(assets->image) || !sandbox_file_exists(assets->kernel))) {
+    rc = ant_sandbox_assets_download_missing(assets->image, assets->kernel, err, err_len);
+    if (rc != 0) return rc;
+  }
 
   char image_path[4096];
   char kernel_path[4096];
