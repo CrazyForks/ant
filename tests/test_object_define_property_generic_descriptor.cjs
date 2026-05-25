@@ -38,9 +38,32 @@ assert.strictEqual(symDescriptor.writable, false);
 
 const locked = {};
 Object.defineProperty(locked, 'x', { value: 1, configurable: false });
+Object.defineProperty(locked, 'x', { value: 1 });
 
 const lockedSym = Symbol('locked');
 Object.defineProperty(locked, lockedSym, { value: 1, configurable: false });
+Object.defineProperty(locked, lockedSym, { value: 1 });
+
+const lockedNaN = {};
+Object.defineProperty(lockedNaN, 'x', { value: NaN, configurable: false });
+Object.defineProperty(lockedNaN, 'x', { value: NaN });
+
+const lockedNegativeZero = {};
+Object.defineProperty(lockedNegativeZero, 'x', { value: -0, configurable: false });
+Object.defineProperty(lockedNegativeZero, 'x', { value: -0 });
+assert.strictEqual(Object.is(lockedNegativeZero.x, -0), true);
+
+const zodLikeError = {};
+const zodLikeState = { traits: [] };
+Object.defineProperty(zodLikeError, '_zod', {
+  value: zodLikeState,
+  enumerable: false
+});
+Object.defineProperty(zodLikeError, '_zod', {
+  value: zodLikeError._zod,
+  enumerable: false
+});
+assert.strictEqual(zodLikeError._zod, zodLikeState);
 
 function assertThrowsTypeError(fn) {
   try {
@@ -54,6 +77,9 @@ function assertThrowsTypeError(fn) {
 
 assertThrowsTypeError(() => Object.defineProperty(locked, 'x', { configurable: true }));
 assertThrowsTypeError(() => Object.defineProperty(locked, lockedSym, { configurable: true }));
+assertThrowsTypeError(() => Object.defineProperty(locked, 'x', { value: 2 }));
+assertThrowsTypeError(() => Object.defineProperty(locked, lockedSym, { value: 2 }));
+assertThrowsTypeError(() => Object.defineProperty(lockedNegativeZero, 'x', { value: 0 }));
 
 const accessorLocked = {};
 function originalGetter() { return 1; }

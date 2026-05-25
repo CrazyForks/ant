@@ -5109,6 +5109,20 @@ bool strict_eq_values(ant_t *js, ant_value_t l, ant_value_t r) {
   return vdata(l) == vdata(r);
 }
 
+static bool same_value_values(ant_t *js, ant_value_t l, ant_value_t r) {
+  uint8_t t = vtype(l);
+  if (t != vtype(r)) return false;
+  if (t == T_UNDEF || t == T_NULL) return true;
+  if (t == T_NUM) {
+    double dl = tod(l);
+    double dr = tod(r);
+    if (isnan(dl) && isnan(dr)) return true;
+    if (dl == 0.0 && dr == 0.0) return !!signbit(dl) == !!signbit(dr);
+    return dl == dr;
+  }
+  return strict_eq_values(js, l, r);
+}
+
 ant_value_t coerce_to_str(ant_t *js, ant_value_t v) {
   if (vtype(v) == T_STR) return v;
   
@@ -6627,30 +6641,7 @@ static ant_value_t iterate_dynamic_keys(ant_t *js, ant_value_t obj, dynamic_kv_m
 
 static ant_value_t builtin_object_is(ant_t *js, ant_value_t *args, int nargs) {
   if (nargs < 2) return js_false;
-  
-  ant_value_t x = args[0];
-  ant_value_t y = args[1];
-  
-  uint8_t tx = vtype(x);
-  uint8_t ty = vtype(y);
-  if (tx != ty) return js_false;
-  
-  if (tx == T_UNDEF || tx == T_NULL) return js_true;
-  
-  if (tx == T_NUM) {
-    double dx = tod(x);
-    double dy = tod(y);
-    if (isnan(dx) && isnan(dy)) return js_true;
-    if (dx == 0.0 && dy == 0.0) {
-      bool x_neg = (1.0 / dx) < 0;
-      bool y_neg = (1.0 / dy) < 0;
-      return x_neg == y_neg ? js_true : js_false;
-    }
-    return dx == dy ? js_true : js_false;
-  }
-  
-  if (tx == T_BOOL) return vdata(x) == vdata(y) ? js_true : js_false;
-  return strict_eq_values(js, x, y) ? js_true : js_false;
+  return same_value_values(js, args[0], args[1]) ? js_true : js_false;
 }
 
 enum obj_enum_mode { 
@@ -8389,7 +8380,8 @@ static ant_value_t builtin_object_defineProperty(ant_t *js, ant_value_t *args, i
           "Cannot redefine property %.*s: cannot change writable from false to true",
           (int)prop_len, prop_str
         );
-      if (existing_readonly && has_value)
+      if (existing_readonly && has_value &&
+          (existing_off <= 0 || !same_value_values(js, propref_load(js, existing_off), value)))
         return js_mkerr(js, "Cannot assign to read-only property '%.*s'", (int)prop_len, prop_str);
     }
   }
@@ -8475,7 +8467,7 @@ static ant_value_t builtin_object_defineProperty(ant_t *js, ant_value_t *args, i
         );
       }
       
-      if (is_nonconfig && is_readonly && has_value)
+      if (is_nonconfig && is_readonly && has_value && !same_value_values(js, propref_load(js, existing_off), value))
         return js_mkerr(js, "Cannot assign to read-only property '%.*s'", (int)prop_len, prop_str);
       if (has_value) js_saveval(js, existing_off, value);
       if (!sym_key) js_set_descriptor(js, as_obj, prop_str, prop_len, desc_flags);
