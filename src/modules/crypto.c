@@ -17,6 +17,7 @@
 #include "base64.h"
 #include "errors.h"
 #include "runtime.h"
+#include "gc/roots.h"
 #include "modules/crypto.h"
 #include "modules/buffer.h"
 #include "modules/symbol.h"
@@ -37,6 +38,31 @@ typedef struct {
 } ant_hash_state_t;
 
 enum { CRYPTO_HASH_NATIVE_TAG = 0x48415348u }; // HASH
+
+static const char *const k_crypto_cipher_names[] = {
+  "aes-128-cbc",
+  "aes-128-ctr",
+  "aes-128-ecb",
+  "aes-128-gcm",
+  "aes-128-ofb",
+  "aes-192-cbc",
+  "aes-192-ctr",
+  "aes-192-ecb",
+  "aes-192-gcm",
+  "aes-192-ofb",
+  "aes-256-cbc",
+  "aes-256-ctr",
+  "aes-256-ecb",
+  "aes-256-gcm",
+  "aes-256-ofb",
+  "des-cbc",
+  "des-ecb",
+  "des-ede",
+  "des-ede-cbc",
+  "des-ede3-cbc",
+  "rc2-cbc",
+  "rc4",
+};
 
 static void crypto_hash_state_free(ant_hash_state_t *state) {
   if (!state) return;
@@ -430,6 +456,31 @@ static ant_value_t js_crypto_random_fill_sync(ant_t *js, ant_value_t *args, int 
   return args[0];
 }
 
+static ant_value_t js_crypto_get_ciphers(ant_t *js, ant_value_t *args, int nargs) {
+  ant_value_t result = js_mkarr(js);
+  if (is_err(result)) return result;
+
+  GC_ROOT_SAVE(root_mark, js);
+  GC_ROOT_PIN(js, result);
+
+  size_t count = sizeof(k_crypto_cipher_names) / sizeof(k_crypto_cipher_names[0]);
+  for (size_t i = 0; i < count; i++) {
+    const char *name = k_crypto_cipher_names[i];
+    if (!EVP_get_cipherbyname(name)) continue;
+
+    ant_value_t cipher_name = js_mkstr(js, name, strlen(name));
+    if (is_err(cipher_name)) {
+      GC_ROOT_RESTORE(js, root_mark);
+      return cipher_name;
+    }
+    
+    js_arr_push(js, result, cipher_name);
+  }
+
+  GC_ROOT_RESTORE(js, root_mark);
+  return result;
+}
+
 static ant_value_t js_crypto_timing_safe_equal(ant_t *js, ant_value_t *args, int nargs) {
   const uint8_t *left = NULL;
   const uint8_t *right = NULL;
@@ -703,6 +754,7 @@ ant_value_t crypto_library(ant_t *js) {
   js_set(js, lib, "randomFillSync", js_mkfun(js_crypto_random_fill_sync));
   js_set(js, lib, "randomUUID", js_mkfun(js_crypto_random_uuid));
   js_set(js, lib, "getRandomValues", js_mkfun(js_crypto_get_random_values));
+  js_set(js, lib, "getCiphers", js_mkfun(js_crypto_get_ciphers));
   js_set(js, lib, "timingSafeEqual", js_mkfun(js_crypto_timing_safe_equal));
   js_set_sym(js, lib, get_toStringTag_sym(), js_mkstr(js, "crypto", 6));
 
