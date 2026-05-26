@@ -3,8 +3,10 @@
 #include <string.h>
 #include <time.h>
 #include <limits.h>
+#include <openssl/ec.h>
 #include <openssl/evp.h>
 #include <openssl/mem.h>
+#include <openssl/obj.h>
 #include <openssl/rand.h>
 
 #pragma GCC diagnostic push
@@ -95,6 +97,19 @@ static const char *const k_crypto_hash_names[] = {
   "sha512-256",
   "sha512WithRSAEncryption",
 };
+
+static const char *const k_crypto_curve_names[] = {
+  "prime256v1",
+  "secp224r1",
+  "secp384r1",
+  "secp521r1",
+};
+
+typedef enum {
+  CRYPTO_NAME_CIPHER = 0,
+  CRYPTO_NAME_HASH,
+  CRYPTO_NAME_CURVE
+} crypto_name_kind_t;
 
 static void crypto_hash_state_free(ant_hash_state_t *state) {
   if (!state) return;
@@ -488,55 +503,74 @@ static ant_value_t js_crypto_random_fill_sync(ant_t *js, ant_value_t *args, int 
   return args[0];
 }
 
-static ant_value_t js_crypto_get_ciphers(ant_t *js, ant_value_t *args, int nargs) {
+static ant_value_t crypto_make_filtered_name_array(
+  ant_t *js,
+  const char *const *names,
+  size_t count,
+  crypto_name_kind_t kind
+) {
   ant_value_t result = js_mkarr(js);
   if (is_err(result)) return result;
 
   GC_ROOT_SAVE(root_mark, js);
   GC_ROOT_PIN(js, result);
 
-  size_t count = sizeof(k_crypto_cipher_names) / sizeof(k_crypto_cipher_names[0]);
   for (size_t i = 0; i < count; i++) {
-    const char *name = k_crypto_cipher_names[i];
-    if (!EVP_get_cipherbyname(name)) continue;
-
-    ant_value_t cipher_name = js_mkstr(js, name, strlen(name));
-    if (is_err(cipher_name)) {
+    const char *name = names[i];
+    bool supported = false;
+  
+  switch (kind) {
+    case CRYPTO_NAME_CIPHER:
+      supported = EVP_get_cipherbyname(name) != NULL;
+      break;
+    case CRYPTO_NAME_HASH:
+      supported = EVP_get_digestbyname(name) != NULL;
+      break;
+    case CRYPTO_NAME_CURVE: {
+      int nid = OBJ_sn2nid(name);
+      if (nid == NID_undef) break;
+      EC_GROUP *group = EC_GROUP_new_by_curve_name(nid);
+      if (!group) break;
+      EC_GROUP_free(group);
+      supported = true;
+      break;
+    }}
+    
+    if (!supported) continue;
+    ant_value_t name_val = js_mkstr(js, name, strlen(name));
+    
+    if (is_err(name_val)) {
       GC_ROOT_RESTORE(js, root_mark);
-      return cipher_name;
+      return name_val;
     }
     
-    js_arr_push(js, result, cipher_name);
+    js_arr_push(js, result, name_val);
   }
 
   GC_ROOT_RESTORE(js, root_mark);
   return result;
 }
+
+static ant_value_t js_crypto_get_ciphers(ant_t *js, ant_value_t *args, int nargs) {
+return crypto_make_filtered_name_array(
+  js, k_crypto_cipher_names,
+  sizeof(k_crypto_cipher_names) / sizeof(k_crypto_cipher_names[0]),
+  CRYPTO_NAME_CIPHER
+);}
 
 static ant_value_t js_crypto_get_hashes(ant_t *js, ant_value_t *args, int nargs) {
-  ant_value_t result = js_mkarr(js);
-  if (is_err(result)) return result;
+return crypto_make_filtered_name_array(
+  js, k_crypto_hash_names,
+  sizeof(k_crypto_hash_names) / sizeof(k_crypto_hash_names[0]),
+  CRYPTO_NAME_HASH
+);}
 
-  GC_ROOT_SAVE(root_mark, js);
-  GC_ROOT_PIN(js, result);
-
-  size_t count = sizeof(k_crypto_hash_names) / sizeof(k_crypto_hash_names[0]);
-  for (size_t i = 0; i < count; i++) {
-    const char *name = k_crypto_hash_names[i];
-    if (!EVP_get_digestbyname(name)) continue;
-
-    ant_value_t hash_name = js_mkstr(js, name, strlen(name));
-    if (is_err(hash_name)) {
-      GC_ROOT_RESTORE(js, root_mark);
-      return hash_name;
-    }
-    
-    js_arr_push(js, result, hash_name);
-  }
-
-  GC_ROOT_RESTORE(js, root_mark);
-  return result;
-}
+static ant_value_t js_crypto_get_curves(ant_t *js, ant_value_t *args, int nargs) {
+return crypto_make_filtered_name_array(
+  js, k_crypto_curve_names,
+  sizeof(k_crypto_curve_names) / sizeof(k_crypto_curve_names[0]),
+  CRYPTO_NAME_CURVE
+);}
 
 static ant_value_t js_crypto_timing_safe_equal(ant_t *js, ant_value_t *args, int nargs) {
   const uint8_t *left = NULL;
@@ -812,6 +846,7 @@ ant_value_t crypto_library(ant_t *js) {
   js_set(js, lib, "randomUUID", js_mkfun(js_crypto_random_uuid));
   js_set(js, lib, "getRandomValues", js_mkfun(js_crypto_get_random_values));
   js_set(js, lib, "getCiphers", js_mkfun(js_crypto_get_ciphers));
+  js_set(js, lib, "getCurves", js_mkfun(js_crypto_get_curves));
   js_set(js, lib, "getHashes", js_mkfun(js_crypto_get_hashes));
   js_set(js, lib, "timingSafeEqual", js_mkfun(js_crypto_timing_safe_equal));
   js_set_sym(js, lib, get_toStringTag_sym(), js_mkstr(js, "crypto", 6));
