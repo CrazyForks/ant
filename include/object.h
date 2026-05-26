@@ -119,6 +119,7 @@ typedef struct ant_prop_ref {
   ant_object_t *obj;
   uint32_t slot;
   bool valid;
+  bool invalidates_instanceof;
 } ant_prop_ref_t;
 
 typedef struct ant_object {

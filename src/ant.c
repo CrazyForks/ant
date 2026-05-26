@@ -281,6 +281,14 @@ static bool obj_extra_set(ant_object_t *obj, internal_slot_t slot, ant_value_t v
   return true;
 }
 
+static inline bool propref_slot_invalidates_instanceof(ant_t *js, ant_object_t *obj, uint32_t slot) {
+  if (!obj || !obj->shape) return false;
+  const ant_shape_prop_t *prop = ant_shape_prop_at(obj->shape, slot);
+  return 
+    prop && prop->type == ANT_SHAPE_KEY_STRING &&
+    prop->key.interned == js->intern.prototype;
+}
+
 static ant_offset_t propref_make(ant_t *js, ant_object_t *obj, uint32_t slot) {
   if (!js || !obj) return 0;
 
@@ -297,6 +305,7 @@ static ant_offset_t propref_make(ant_t *js, ant_object_t *obj, uint32_t slot) {
     .obj = obj,
     .slot = slot,
     .valid = true,
+    .invalidates_instanceof = propref_slot_invalidates_instanceof(js, obj, slot),
   };
   obj->propref_count++;
   return handle;
@@ -319,6 +328,7 @@ static inline bool propref_store(ant_t *js, ant_offset_t handle, ant_value_t val
   if (!ref || !ref->obj || ref->slot >= ref->obj->prop_count) return false;
   ant_object_prop_set_unchecked(ref->obj, ref->slot, value);
   gc_write_barrier(js, ref->obj, value);
+  if (ref->invalidates_instanceof) ant_ic_epoch_bump();
   return true;
 }
 
@@ -326,15 +336,19 @@ static void propref_adjust_after_swap_delete(ant_t *js, ant_object_t *obj, uint3
   if (!js || !obj || obj->propref_count == 0) return;
   
   for (ant_offset_t i = js->prop_refs_len; i-- > 0;) {
-    ant_prop_ref_t *ref = &js->prop_refs[i];
-    if (!ref->valid || ref->obj != obj) continue;
-    
-    if (ref->slot == deleted_slot) {
-      ref->valid = false;
-      obj->propref_count--;
-      if (obj->propref_count == 0) return;
-    } else if (ref->slot == swapped_from) ref->slot = deleted_slot;
-  }
+  ant_prop_ref_t *ref = &js->prop_refs[i];
+  if (!ref->valid || ref->obj != obj) continue;
+  
+  if (ref->slot == deleted_slot) {
+    ref->valid = false;
+    obj->propref_count--;
+    if (obj->propref_count == 0) return;
+  } 
+  
+  else if (ref->slot == swapped_from) {
+    ref->slot = deleted_slot;
+    ref->invalidates_instanceof = propref_slot_invalidates_instanceof(js, obj, deleted_slot);
+  }}
 }
 
 bool js_obj_ensure_prop_capacity(ant_object_t *obj, uint32_t needed) {

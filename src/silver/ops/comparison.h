@@ -4,6 +4,7 @@
 #include "shapes.h"
 #include "silver/engine.h"
 #include "modules/bigint.h"
+#include "modules/symbol.h"
 
 static inline void sv_op_seq(sv_vm_t *vm, ant_t *js) {
   ant_value_t r = vm->stack[--vm->sp];
@@ -194,6 +195,58 @@ static inline sv_ic_entry_t *sv_instanceof_ic_slot(sv_func_t *func, uint8_t *ip)
   return &func->ic_slots[ic_idx];
 }
 
+static inline bool sv_instanceof_lhs_cache_key(
+  ant_value_t l,
+  ant_object_t **out_obj,
+  ant_value_t *out_proto,
+  ant_object_t **out_proto_obj
+) {
+  ant_object_t *obj = is_object_type(l) ? js_obj_ptr(js_as_obj(l)) : NULL;
+  if (!obj || obj->flags.is_exotic) return false;
+
+  ant_value_t proto = obj->proto;
+  ant_object_t *proto_obj = is_object_type(proto) ? js_obj_ptr(js_as_obj(proto)) : NULL;
+  if (!proto_obj) return false;
+
+  if (out_obj) *out_obj = obj;
+  if (out_proto) *out_proto = proto;
+  if (out_proto_obj) *out_proto_obj = proto_obj;
+  return true;
+}
+
+static inline bool sv_instanceof_rhs_ordinary_proto(
+  ant_t *js,
+  ant_value_t r,
+  ant_value_t *out_proto
+) {
+  if (vtype(r) != T_FUNC) return false;
+
+  ant_offset_t has_instance_sym_off = (ant_offset_t)vdata(get_hasInstance_sym());
+  ant_value_t func_obj = js_func_obj(r);
+  
+  if (
+    lkp_sym(js, func_obj, has_instance_sym_off) != 0 ||
+    lookup_sym_descriptor(func_obj, has_instance_sym_off) != NULL
+  ) return false;
+
+  ant_value_t func_proto = js_get_slot(js->global, SLOT_FUNC_PROTO);
+  ant_value_t func_proto_obj = is_object_type(func_proto) ? js_as_obj(func_proto) : js_mkundef();
+  
+  if (is_object_type(func_proto_obj) && (
+    lkp_sym(js, func_proto_obj, has_instance_sym_off) != 0 ||
+    lookup_sym_descriptor(func_proto_obj, has_instance_sym_off) != NULL
+  )) return false;
+
+  ant_offset_t proto_off = lkp_interned(js, func_obj, js->intern.prototype, 9);
+  if (proto_off == 0) return false;
+
+  ant_value_t proto = js_propref_load(js, proto_off);
+  if (!is_object_type(proto)) return false;
+  if (out_proto) *out_proto = proto;
+  
+  return true;
+}
+
 static inline sv_ic_entry_t *sv_isproto_ic_slot(sv_func_t *func, uint8_t *ip) {
   if (!func || !func->ic_slots || !ip) return NULL;
   uint16_t ic_idx = sv_get_u16(ip + 1);
@@ -206,26 +259,44 @@ static inline ant_value_t sv_instanceof_ic_eval(
   sv_func_t *func, uint8_t *ip
 ) {
   sv_ic_entry_t *ic = sv_instanceof_ic_slot(func, ip);
-  if (!ic || !is_object_type(l) || vtype(r) != T_FUNC) goto slow_path;
+  
+  ant_object_t *lhs_ptr = NULL;
+  ant_value_t lhs_proto = js_mkundef();
+  ant_object_t *lhs_proto_ptr = NULL;
+  
+  bool lhs_cacheable = sv_instanceof_lhs_cache_key(
+    l, &lhs_ptr, 
+    &lhs_proto, &lhs_proto_ptr
+  );
+  
+  if (!ic || !lhs_cacheable || vtype(r) != T_FUNC) goto slow_path;
 
   uint32_t cur_epoch = ant_ic_epoch_counter;
   uintptr_t rhs_id = (uintptr_t)vdata(r);
+  
   if (ic->epoch != cur_epoch || ic->cached_aux != rhs_id) goto slow_path;
+  if (lhs_proto == ic->guard.receiver_proto) return js_true;
 
-  ant_object_t *lhs_ptr = js_obj_ptr(js_as_obj(l));
-  if (lhs_ptr && lhs_ptr->shape == ic->cached_shape)
+  if (lhs_ptr->shape == ic->cached_shape && lhs_proto_ptr == ic->cached_holder)
     return js_bool(ic->cached_index != 0);
 
 slow_path:
   ant_value_t res = do_instanceof(js, l, r);
-  lhs_ptr = is_object_type(l) ? js_obj_ptr(js_as_obj(l)) : NULL;
+  lhs_cacheable = sv_instanceof_lhs_cache_key(
+    l, &lhs_ptr, &lhs_proto, &lhs_proto_ptr
+  );
+  ant_value_t ctor_proto = js_mkundef();
   
-  if (!is_err(res) && ic && lhs_ptr && vtype(r) == T_FUNC && vtype(res) == T_BOOL) {
+  if (
+    !is_err(res) && ic && lhs_cacheable && vtype(res) == T_BOOL &&
+    sv_instanceof_rhs_ordinary_proto(js, r, &ctor_proto)
+  ) {
     ic->cached_shape = lhs_ptr->shape;
-    ic->cached_holder = NULL;
+    ic->cached_holder = lhs_proto_ptr;
     ic->cached_index = (uint32_t)(vdata(res) ? 1u : 0u);
     ic->epoch = ant_ic_epoch_counter;
     ic->cached_aux = (uintptr_t)vdata(r);
+    ic->guard.receiver_proto = ctor_proto;
   }
   
   return res;

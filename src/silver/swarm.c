@@ -6504,7 +6504,9 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
           sv_ic_entry_t *ic = &func->ic_slots[ic_idx];
           char inst_ic_name[32], inst_ice_name[32];
           char inst_rt_name[32], inst_ro_name[32], inst_ica_name[32], inst_lt_name[32];
-          char inst_lo_name[32], inst_ls_name[32], inst_ics_name[32], inst_ici_name[32];
+          char inst_lo_name[32], inst_lf_name[32], inst_lp_name[32], inst_icp_name[32];
+          char inst_lpt_name[32], inst_lpo_name[32], inst_ls_name[32], inst_ich_name[32];
+          char inst_ics_name[32], inst_ici_name[32];
           snprintf(inst_ic_name, sizeof(inst_ic_name), "inst_ic_%d_%u", bc_off, (unsigned)ic_idx);
           snprintf(inst_ice_name, sizeof(inst_ice_name), "inst_ice_%d_%u", bc_off, (unsigned)ic_idx);
           snprintf(inst_rt_name, sizeof(inst_rt_name), "inst_rt_%d_%u", bc_off, (unsigned)ic_idx);
@@ -6512,7 +6514,13 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
           snprintf(inst_ica_name, sizeof(inst_ica_name), "inst_ica_%d_%u", bc_off, (unsigned)ic_idx);
           snprintf(inst_lt_name, sizeof(inst_lt_name), "inst_lt_%d_%u", bc_off, (unsigned)ic_idx);
           snprintf(inst_lo_name, sizeof(inst_lo_name), "inst_lo_%d_%u", bc_off, (unsigned)ic_idx);
+          snprintf(inst_lf_name, sizeof(inst_lf_name), "inst_lf_%d_%u", bc_off, (unsigned)ic_idx);
+          snprintf(inst_lp_name, sizeof(inst_lp_name), "inst_lp_%d_%u", bc_off, (unsigned)ic_idx);
+          snprintf(inst_icp_name, sizeof(inst_icp_name), "inst_icp_%d_%u", bc_off, (unsigned)ic_idx);
+          snprintf(inst_lpt_name, sizeof(inst_lpt_name), "inst_lpt_%d_%u", bc_off, (unsigned)ic_idx);
+          snprintf(inst_lpo_name, sizeof(inst_lpo_name), "inst_lpo_%d_%u", bc_off, (unsigned)ic_idx);
           snprintf(inst_ls_name, sizeof(inst_ls_name), "inst_ls_%d_%u", bc_off, (unsigned)ic_idx);
+          snprintf(inst_ich_name, sizeof(inst_ich_name), "inst_ich_%d_%u", bc_off, (unsigned)ic_idx);
           snprintf(inst_ics_name, sizeof(inst_ics_name), "inst_ics_%d_%u", bc_off, (unsigned)ic_idx);
           snprintf(inst_ici_name, sizeof(inst_ici_name), "inst_ici_%d_%u", bc_off, (unsigned)ic_idx);
 
@@ -6523,9 +6531,16 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
           MIR_reg_t r_ic_aux = MIR_new_func_reg(ctx, jit_func->u.func, MIR_T_I64, inst_ica_name);
           MIR_reg_t r_lhs_tag = MIR_new_func_reg(ctx, jit_func->u.func, MIR_T_I64, inst_lt_name);
           MIR_reg_t r_lhs_obj = MIR_new_func_reg(ctx, jit_func->u.func, MIR_T_I64, inst_lo_name);
+          MIR_reg_t r_lhs_flags = MIR_new_func_reg(ctx, jit_func->u.func, MIR_T_I64, inst_lf_name);
+          MIR_reg_t r_lhs_proto = MIR_new_func_reg(ctx, jit_func->u.func, MIR_T_I64, inst_lp_name);
+          MIR_reg_t r_ic_direct_proto = MIR_new_func_reg(ctx, jit_func->u.func, MIR_T_I64, inst_icp_name);
+          MIR_reg_t r_lhs_proto_tag = MIR_new_func_reg(ctx, jit_func->u.func, MIR_T_I64, inst_lpt_name);
+          MIR_reg_t r_lhs_proto_obj = MIR_new_func_reg(ctx, jit_func->u.func, MIR_T_I64, inst_lpo_name);
           MIR_reg_t r_lhs_shape = MIR_new_func_reg(ctx, jit_func->u.func, MIR_T_I64, inst_ls_name);
+          MIR_reg_t r_ic_holder = MIR_new_func_reg(ctx, jit_func->u.func, MIR_T_I64, inst_ich_name);
           MIR_reg_t r_ic_shape = MIR_new_func_reg(ctx, jit_func->u.func, MIR_T_I64, inst_ics_name);
           MIR_reg_t r_ic_idx_val = MIR_new_func_reg(ctx, jit_func->u.func, MIR_T_I64, inst_ici_name);
+          MIR_label_t direct_true = MIR_new_label(ctx);
 
           MIR_append_insn(ctx, jit_func,
             MIR_new_insn(ctx, MIR_MOV,
@@ -6581,6 +6596,36 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
             ctx, jit_func, rl, r_lhs_obj, r_lhs_tag, slow);
           MIR_append_insn(ctx, jit_func,
             MIR_new_insn(ctx, MIR_MOV,
+              MIR_new_reg_op(ctx, r_lhs_flags),
+              MIR_new_mem_op(ctx, MIR_T_U8,
+                (MIR_disp_t)offsetof(ant_object_t, flags), r_lhs_obj, 0, 1)));
+          MIR_append_insn(ctx, jit_func,
+            MIR_new_insn(ctx, MIR_AND,
+              MIR_new_reg_op(ctx, r_lhs_flags),
+              MIR_new_reg_op(ctx, r_lhs_flags),
+              MIR_new_uint_op(ctx, 1u << 3)));
+          MIR_append_insn(ctx, jit_func,
+            MIR_new_insn(ctx, MIR_BNE,
+              MIR_new_label_op(ctx, slow),
+              MIR_new_reg_op(ctx, r_lhs_flags),
+              MIR_new_uint_op(ctx, 0)));
+          MIR_append_insn(ctx, jit_func,
+            MIR_new_insn(ctx, MIR_MOV,
+              MIR_new_reg_op(ctx, r_lhs_proto),
+              MIR_new_mem_op(ctx, MIR_JSVAL,
+                (MIR_disp_t)offsetof(ant_object_t, proto), r_lhs_obj, 0, 1)));
+          MIR_append_insn(ctx, jit_func,
+            MIR_new_insn(ctx, MIR_MOV,
+              MIR_new_reg_op(ctx, r_ic_direct_proto),
+              MIR_new_mem_op(ctx, MIR_JSVAL,
+                (MIR_disp_t)offsetof(sv_ic_entry_t, guard.receiver_proto), r_ic, 0, 1)));
+          MIR_append_insn(ctx, jit_func,
+            MIR_new_insn(ctx, MIR_BEQ,
+              MIR_new_label_op(ctx, direct_true),
+              MIR_new_reg_op(ctx, r_lhs_proto),
+              MIR_new_reg_op(ctx, r_ic_direct_proto)));
+          MIR_append_insn(ctx, jit_func,
+            MIR_new_insn(ctx, MIR_MOV,
               MIR_new_reg_op(ctx, r_lhs_shape),
               MIR_new_mem_op(ctx, MIR_T_I64,
                 (MIR_disp_t)offsetof(ant_object_t, shape), r_lhs_obj, 0, 1)));
@@ -6594,6 +6639,18 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
               MIR_new_label_op(ctx, slow),
               MIR_new_reg_op(ctx, r_lhs_shape),
               MIR_new_reg_op(ctx, r_ic_shape)));
+          mir_emit_value_to_objptr_or_jmp(
+            ctx, jit_func, r_lhs_proto, r_lhs_proto_obj, r_lhs_proto_tag, slow);
+          MIR_append_insn(ctx, jit_func,
+            MIR_new_insn(ctx, MIR_MOV,
+              MIR_new_reg_op(ctx, r_ic_holder),
+              MIR_new_mem_op(ctx, MIR_T_I64,
+                (MIR_disp_t)offsetof(sv_ic_entry_t, cached_holder), r_ic, 0, 1)));
+          MIR_append_insn(ctx, jit_func,
+            MIR_new_insn(ctx, MIR_BNE,
+              MIR_new_label_op(ctx, slow),
+              MIR_new_reg_op(ctx, r_lhs_proto_obj),
+              MIR_new_reg_op(ctx, r_ic_holder)));
           MIR_append_insn(ctx, jit_func,
             MIR_new_insn(ctx, MIR_MOV,
               MIR_new_reg_op(ctx, r_ic_idx_val),
@@ -6604,6 +6661,15 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
               MIR_new_reg_op(ctx, dst),
               MIR_new_uint_op(ctx, js_false),
               MIR_new_reg_op(ctx, r_ic_idx_val)));
+          MIR_append_insn(ctx, jit_func,
+            MIR_new_insn(ctx, MIR_JMP,
+              MIR_new_label_op(ctx, no_err)));
+
+          MIR_append_insn(ctx, jit_func, direct_true);
+          MIR_append_insn(ctx, jit_func,
+            MIR_new_insn(ctx, MIR_MOV,
+              MIR_new_reg_op(ctx, dst),
+              MIR_new_uint_op(ctx, js_true)));
           MIR_append_insn(ctx, jit_func,
             MIR_new_insn(ctx, MIR_JMP,
               MIR_new_label_op(ctx, no_err)));
