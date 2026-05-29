@@ -43,6 +43,12 @@ typedef struct {
   size_t byte_length;
 } DataViewData;
 
+enum {
+  BUFFER_ARRAYBUFFER_NATIVE_TAG = 0x41425546u, // ABUF
+  BUFFER_TYPEDARRAY_NATIVE_TAG  = 0x54594152u, // TYAR
+  BUFFER_DATAVIEW_NATIVE_TAG    = 0x44564957u, // DVIW
+};
+
 ant_value_t buffer_library(ant_t *js);
 
 void init_buffer_module(void);
@@ -78,6 +84,9 @@ ant_value_t create_dataview_with_buffer(
 
 bool buffer_is_dataview(ant_value_t obj);
 bool buffer_is_binary_source(ant_value_t value);
+
 bool buffer_source_get_bytes(ant_t *js, ant_value_t value, const uint8_t **out, size_t *len);
+bool buffer_typedarray_data_read_index(ant_t *js, const TypedArrayData *ta_data, size_t index, ant_value_t *out);
+bool buffer_typedarray_read_index(ant_t *js, ant_value_t value, size_t index, ant_value_t *out);
 
 #endif

@@ -35,12 +35,6 @@ static size_t buffer_registry_cap   = 0;
 static ArrayBufferData **buffer_registry   = NULL;
 static ant_value_t g_typedarray_iter_proto = 0;
 
-enum {
-  BUFFER_ARRAYBUFFER_NATIVE_TAG = 0x41425546u, // ABUF
-  BUFFER_TYPEDARRAY_NATIVE_TAG  = 0x54594152u, // TYAR
-  BUFFER_DATAVIEW_NATIVE_TAG    = 0x44564957u, // DVIW
-};
-
 static void *ta_meta_alloc(size_t size) {
   void *ptr = ant_calloc(size);
   if (!ptr) return NULL;
@@ -144,10 +138,8 @@ bool buffer_source_get_bytes(ant_t *js, ant_value_t value, const uint8_t **out, 
   return false;
 }
 
-static bool typedarray_read_value(ant_t *js, const TypedArrayData *ta_data, size_t index, ant_value_t *out) {
-  if (!out || !ta_data || !ta_data->buffer || ta_data->buffer->is_detached || index >= ta_data->length) {
-    return false;
-  }
+bool buffer_typedarray_data_read_index(ant_t *js, const TypedArrayData *ta_data, size_t index, ant_value_t *out) {
+  if (!out || !ta_data || !ta_data->buffer || ta_data->buffer->is_detached || index >= ta_data->length) return false;
 
   uint8_t *data = ta_data->buffer->data + ta_data->byte_offset;
   switch (ta_data->type) {
@@ -167,6 +159,11 @@ static bool typedarray_read_value(ant_t *js, const TypedArrayData *ta_data, size
   }
 }
 
+bool buffer_typedarray_read_index(ant_t *js, ant_value_t value, size_t index, ant_value_t *out) {
+  TypedArrayData *ta_data = buffer_get_typedarray_data(value);
+  return buffer_typedarray_data_read_index(js, ta_data, index, out);
+}
+
 static bool advance_typedarray(ant_t *js, js_iter_t *it, ant_value_t *out) {
   ant_value_t iter = it->iterator;
   ant_value_t ta_obj = js_get_slot(iter, SLOT_DATA);
@@ -180,7 +177,7 @@ static bool advance_typedarray(ant_t *js, js_iter_t *it, ant_value_t *out) {
   if (!ta || !ta->buffer || ta->buffer->is_detached || idx >= (uint32_t)ta->length) return false;
   
   ant_value_t value;
-  if (!typedarray_read_value(js, ta, idx, &value)) return false;
+  if (!buffer_typedarray_data_read_index(js, ta, idx, &value)) return false;
 
   switch (kind) {
   case ARR_ITER_KEYS:
@@ -570,7 +567,7 @@ static ant_value_t typedarray_index_getter(ant_t *js, ant_value_t obj, const cha
   if (!ta_data->buffer || ta_data->buffer->is_detached) return js_mkundef();
 
   ant_value_t value;
-  if (!typedarray_read_value(js, ta_data, index, &value)) return js_mkundef();
+  if (!buffer_typedarray_data_read_index(js, ta_data, index, &value)) return js_mkundef();
   return value;
 }
 
@@ -655,7 +652,7 @@ static ant_value_t js_typedarray_every(ant_t *js, ant_value_t *args, int nargs) 
 
   for (size_t i = 0; i < ta_data->length; i++) {
     ant_value_t value = js_mkundef();
-    if (!typedarray_read_value(js, ta_data, i, &value)) return js_false;
+    if (!buffer_typedarray_data_read_index(js, ta_data, i, &value)) return js_false;
 
     ant_value_t call_args[3] = { value, js_mknum((double)i), this_val };
     ant_value_t result = sv_vm_call(js->vm, js, callback, this_arg, call_args, 3, NULL, false);
@@ -679,7 +676,7 @@ static ant_value_t js_typedarray_forEach(ant_t *js, ant_value_t *args, int nargs
   ant_value_t this_arg = nargs > 1 ? args[1] : js_mkundef();
   for (size_t i = 0; i < ta_data->length; i++) {
     ant_value_t value = js_mkundef();
-    if (!typedarray_read_value(js, ta_data, i, &value)) return js_mkundef();
+    if (!buffer_typedarray_data_read_index(js, ta_data, i, &value)) return js_mkundef();
     ant_value_t call_args[3] = { value, js_mknum((double)i), this_val };
     ant_value_t result = sv_vm_call(js->vm, js, args[0], this_arg, call_args, 3, NULL, false);
     if (is_err(result)) return result;
@@ -701,7 +698,7 @@ static ant_value_t js_typedarray_some(ant_t *js, ant_value_t *args, int nargs) {
   ant_value_t this_arg = nargs > 1 ? args[1] : js_mkundef();
   for (size_t i = 0; i < ta_data->length; i++) {
     ant_value_t value = js_mkundef();
-    if (!typedarray_read_value(js, ta_data, i, &value)) return js_false;
+    if (!buffer_typedarray_data_read_index(js, ta_data, i, &value)) return js_false;
     ant_value_t call_args[3] = { value, js_mknum((double)i), this_val };
     ant_value_t result = sv_vm_call(js->vm, js, args[0], this_arg, call_args, 3, NULL, false);
     if (is_err(result)) return result;
@@ -724,7 +721,7 @@ static ant_value_t js_typedarray_find(ant_t *js, ant_value_t *args, int nargs) {
   ant_value_t this_arg = nargs > 1 ? args[1] : js_mkundef();
   for (size_t i = 0; i < ta_data->length; i++) {
     ant_value_t value = js_mkundef();
-    if (!typedarray_read_value(js, ta_data, i, &value)) return js_mkundef();
+    if (!buffer_typedarray_data_read_index(js, ta_data, i, &value)) return js_mkundef();
     ant_value_t call_args[3] = { value, js_mknum((double)i), this_val };
     ant_value_t result = sv_vm_call(js->vm, js, args[0], this_arg, call_args, 3, NULL, false);
     if (is_err(result)) return result;
@@ -747,7 +744,7 @@ static ant_value_t js_typedarray_findIndex(ant_t *js, ant_value_t *args, int nar
   ant_value_t this_arg = nargs > 1 ? args[1] : js_mkundef();
   for (size_t i = 0; i < ta_data->length; i++) {
     ant_value_t value = js_mkundef();
-    if (!typedarray_read_value(js, ta_data, i, &value)) return js_mknum(-1);
+    if (!buffer_typedarray_data_read_index(js, ta_data, i, &value)) return js_mknum(-1);
     ant_value_t call_args[3] = { value, js_mknum((double)i), this_val };
     ant_value_t result = sv_vm_call(js->vm, js, args[0], this_arg, call_args, 3, NULL, false);
     if (is_err(result)) return result;
@@ -776,7 +773,7 @@ static ant_value_t js_typedarray_map(ant_t *js, ant_value_t *args, int nargs) {
   ant_value_t this_arg = nargs > 1 ? args[1] : js_mkundef();
   for (size_t i = 0; i < ta_data->length; i++) {
     ant_value_t value = js_mkundef();
-    if (!typedarray_read_value(js, ta_data, i, &value)) return out;
+    if (!buffer_typedarray_data_read_index(js, ta_data, i, &value)) return out;
     ant_value_t call_args[3] = { value, js_mknum((double)i), this_val };
     ant_value_t mapped = sv_vm_call(js->vm, js, args[0], this_arg, call_args, 3, NULL, false);
     if (is_err(mapped)) return mapped;
@@ -807,7 +804,7 @@ static ant_value_t js_typedarray_filter(ant_t *js, ant_value_t *args, int nargs)
   ant_value_t this_arg = nargs > 1 ? args[1] : js_mkundef();
   for (size_t i = 0; i < ta_data->length; i++) {
     ant_value_t value = js_mkundef();
-    if (!typedarray_read_value(js, ta_data, i, &value)) continue;
+    if (!buffer_typedarray_data_read_index(js, ta_data, i, &value)) continue;
     ant_value_t call_args[3] = { value, js_mknum((double)i), this_val };
     ant_value_t result = sv_vm_call(js->vm, js, args[0], this_arg, call_args, 3, NULL, false);
     if (is_err(result)) { free(kept); return result; }
@@ -845,14 +842,14 @@ static ant_value_t js_typedarray_reduce_common(ant_t *js, ant_value_t *args, int
   ant_value_t acc = nargs > 1 ? args[1] : js_mkundef();
   if (nargs < 2) {
     if (right) i--;
-    if (!typedarray_read_value(js, ta_data, i, &acc)) return js_mkundef();
+    if (!buffer_typedarray_data_read_index(js, ta_data, i, &acc)) return js_mkundef();
     if (!right) i++;
   }
 
   while (right ? (i > 0) : (i < ta_data->length)) {
     if (right) i--;
     ant_value_t value = js_mkundef();
-    if (!typedarray_read_value(js, ta_data, i, &value)) return acc;
+    if (!buffer_typedarray_data_read_index(js, ta_data, i, &value)) return acc;
     ant_value_t call_args[4] = { acc, value, js_mknum((double)i), this_val };
     acc = sv_vm_call(js->vm, js, args[0], js_mkundef(), call_args, 4, NULL, false);
     if (is_err(acc)) return acc;
@@ -1079,7 +1076,7 @@ static ant_value_t js_typedarray_at(ant_t *js, ant_value_t *args, int nargs) {
   if (!ta_data->buffer || ta_data->buffer->is_detached) return js_mkundef();
   
   ant_value_t value;
-  if (!typedarray_read_value(js, ta_data, (size_t)idx, &value)) return js_mkundef();
+  if (!buffer_typedarray_data_read_index(js, ta_data, (size_t)idx, &value)) return js_mkundef();
   return value;
 }
 
@@ -1246,7 +1243,7 @@ static ant_value_t js_typedarray_set(ant_t *js, ant_value_t *args, int nargs) {
 
     for (size_t i = 0; i < src_len; i++) {
       ant_value_t value = js_mkundef();
-      if (!typedarray_read_value(js, src_ta, i, &value)) value = js_mknum(0);
+      if (!buffer_typedarray_data_read_index(js, src_ta, i, &value)) value = js_mknum(0);
       ant_value_t write_result = typedarray_write_value(js, dst, offset + i, value);
       if (is_err(write_result)) return write_result;
     }
@@ -2746,7 +2743,7 @@ static ant_value_t js_typedarray_lastIndexOf(ant_t *js, ant_value_t *args, int n
   ant_value_t search = nargs > 0 ? args[0] : js_mkundef();
   for (int64_t i = from_index; i >= 0; i--) {
     ant_value_t value = js_mkundef();
-    if (!typedarray_read_value(js, ta_data, (size_t)i, &value)) return js_mknum(-1);
+    if (!buffer_typedarray_data_read_index(js, ta_data, (size_t)i, &value)) return js_mknum(-1);
     if (strict_eq_values(js, value, search)) return js_mknum((double)i);
   }
 
@@ -2829,8 +2826,8 @@ static ant_value_t js_typedarray_reverse(ant_t *js, ant_value_t *args, int nargs
   for (size_t left = 0, right = ta_data->length; left < right && left < --right; left++) {
     ant_value_t a = js_mkundef();
     ant_value_t b = js_mkundef();
-    if (!typedarray_read_value(js, ta_data, left, &a)) break;
-    if (!typedarray_read_value(js, ta_data, right, &b)) break;
+    if (!buffer_typedarray_data_read_index(js, ta_data, left, &a)) break;
+    if (!buffer_typedarray_data_read_index(js, ta_data, right, &b)) break;
     ant_value_t write_b = typedarray_write_value(js, ta_data, left, b);
     if (is_err(write_b)) return write_b;
     ant_value_t write_a = typedarray_write_value(js, ta_data, right, a);
@@ -2856,7 +2853,7 @@ static ant_value_t js_typedarray_sort(ant_t *js, ant_value_t *args, int nargs) {
   if (len && !values) return js_mkerr(js, "oom");
 
   for (size_t i = 0; i < len; i++) {
-    if (!typedarray_read_value(js, ta_data, i, &values[i])) {
+    if (!buffer_typedarray_data_read_index(js, ta_data, i, &values[i])) {
       free(values);
       return this_val;
     }

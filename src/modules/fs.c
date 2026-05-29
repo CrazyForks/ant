@@ -7,6 +7,9 @@
 #include <stdbool.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 #include <uthash.h>
 #include <utarray.h>
 #include <errno.h>
@@ -135,7 +138,7 @@ typedef struct {
 
 typedef struct {
   mode_t mode;
-  double size, uid, gid;
+  double dev, ino, nlink, uid, gid, rdev, size, blksize, blocks;
   double atime_ms, mtime_ms, ctime_ms, birthtime_ms;
 } fs_stat_fields_t;
 
@@ -641,10 +644,16 @@ static ant_value_t fs_stats_object_new(ant_t *js, const fs_stat_fields_t *f) {
     js_set_proto_init(stat_obj, proto);
 
   js_set_slot(stat_obj, SLOT_DATA, js_mknum((double)f->mode));
+  js_set(js, stat_obj, "dev", js_mknum(f->dev));
+  js_set(js, stat_obj, "ino", js_mknum(f->ino));
   js_set(js, stat_obj, "size", js_mknum(f->size));
   js_set(js, stat_obj, "mode", js_mknum((double)f->mode));
+  js_set(js, stat_obj, "nlink", js_mknum(f->nlink));
   js_set(js, stat_obj, "uid", js_mknum(f->uid));
   js_set(js, stat_obj, "gid", js_mknum(f->gid));
+  js_set(js, stat_obj, "rdev", js_mknum(f->rdev));
+  js_set(js, stat_obj, "blksize", js_mknum(f->blksize));
+  js_set(js, stat_obj, "blocks", js_mknum(f->blocks));
 
   js_set(js, stat_obj, "atimeMs",      js_mknum(f->atime_ms));
   js_set(js, stat_obj, "mtimeMs",      js_mknum(f->mtime_ms));
@@ -694,10 +703,16 @@ static const fs_stat_fields_t fs_stat_fields_zero = {0};
 static ant_value_t fs_stats_object_from_uv(ant_t *js, const uv_stat_t *st) {
   if (!st) return fs_stats_object_new(js, &fs_stat_fields_zero);
   return fs_stats_object_new(js, &(fs_stat_fields_t){
+    .dev          = (double)st->st_dev,
+    .ino          = (double)st->st_ino,
     .mode         = (mode_t)st->st_mode,
+    .nlink        = (double)st->st_nlink,
     .size         = (double)st->st_size,
     .uid          = (double)st->st_uid,
     .gid          = (double)st->st_gid,
+    .rdev         = (double)st->st_rdev,
+    .blksize      = (double)st->st_blksize,
+    .blocks       = (double)st->st_blocks,
     .atime_ms     = uv_ts_to_ms(st->st_atim),
     .mtime_ms     = uv_ts_to_ms(st->st_mtim),
     .ctime_ms     = uv_ts_to_ms(st->st_ctim),
@@ -708,10 +723,21 @@ static ant_value_t fs_stats_object_from_uv(ant_t *js, const uv_stat_t *st) {
 static ant_value_t fs_stats_object_from_posix(ant_t *js, const struct stat *st) {
   if (!st) return fs_stats_object_new(js, &fs_stat_fields_zero);
   return fs_stats_object_new(js, &(fs_stat_fields_t){
+    .dev          = (double)st->st_dev,
+    .ino          = (double)st->st_ino,
     .mode         = st->st_mode,
+    .nlink        = (double)st->st_nlink,
     .size         = (double)st->st_size,
     .uid          = (double)st->st_uid,
     .gid          = (double)st->st_gid,
+    .rdev         = (double)st->st_rdev,
+#if defined(_WIN32)
+    .blksize      = 0.0,
+    .blocks       = 0.0,
+#else
+    .blksize      = (double)st->st_blksize,
+    .blocks       = (double)st->st_blocks,
+#endif
     .atime_ms     = POSIX_ATIME_MS(st),
     .mtime_ms     = POSIX_MTIME_MS(st),
     .ctime_ms     = POSIX_CTIME_MS(st),
@@ -2585,15 +2611,27 @@ static ant_value_t builtin_fs_utimesSync(ant_t *js, ant_value_t *args, int nargs
   if (nargs < 3) return js_mkerr(js, "utimesSync() requires path, atime, and mtime");
   if (vtype(args[0]) != T_STR) return js_mkerr(js, "utimesSync() path must be a string");
 
-  const char *path = js_str(js, args[0]);
+  size_t path_len = 0;
+  const char *path = js_getstr(js, args[0], &path_len);
+  if (!path) return js_mkerr(js, "Failed to get path string");
+
+  char *path_cstr = strndup(path, path_len);
+  if (!path_cstr) return js_mkerr(js, "Out of memory");
+
   double atime = fs_time_arg_to_seconds(js, args[1]);
   double mtime = fs_time_arg_to_seconds(js, args[2]);
 
   uv_fs_t req;
-  int rc = uv_fs_utime(NULL, &req, path, atime, mtime, NULL);
+  int rc = uv_fs_utime(NULL, &req, path_cstr, atime, mtime, NULL);
   uv_fs_req_cleanup(&req);
 
-  if (rc < 0) return js_mkerr(js, "utimesSync: %s", uv_strerror(rc));
+  if (rc < 0) {
+    ant_value_t err = js_mkerr(js, "utimesSync %s: %s", path_cstr, uv_strerror(rc));
+    free(path_cstr);
+    return err;
+  }
+
+  free(path_cstr);
   return js_mkundef();
 }
 
@@ -2617,6 +2655,66 @@ static ant_value_t builtin_fs_futimesSync(ant_t *js, ant_value_t *args, int narg
 
 static ant_value_t builtin_fs_futimes(ant_t *js, ant_value_t *args, int nargs) {
   return builtin_fs_futimesSync(js, args, nargs);
+}
+
+static ant_value_t builtin_fs_truncateSync(ant_t *js, ant_value_t *args, int nargs) {
+  if (nargs < 1) return js_mkerr(js, "truncateSync() requires a path argument");
+  if (vtype(args[0]) != T_STR) return js_mkerr(js, "truncateSync() path must be a string");
+
+  size_t path_len = 0;
+  const char *path = js_getstr(js, args[0], &path_len);
+  if (!path) return js_mkerr(js, "Failed to get path string");
+
+  char *path_cstr = strndup(path, path_len);
+  if (!path_cstr) return js_mkerr(js, "Out of memory");
+
+  int64_t len = 0;
+  if (nargs >= 2 && vtype(args[1]) != T_UNDEF)
+    len = (int64_t)js_to_number(js, args[1]);
+
+  int rc;
+#ifdef _WIN32
+  uv_fs_t req;
+  rc = uv_fs_open(NULL, &req, path_cstr, O_WRONLY, 0, NULL);
+  if (rc >= 0) {
+    uv_file fd = (uv_file)rc;
+    uv_fs_req_cleanup(&req);
+    rc = uv_fs_ftruncate(NULL, &req, fd, len, NULL);
+    uv_fs_req_cleanup(&req);
+    uv_fs_t close_req;
+    uv_fs_close(NULL, &close_req, fd, NULL);
+    uv_fs_req_cleanup(&close_req);
+  } else uv_fs_req_cleanup(&req);
+#else
+  rc = truncate(path_cstr, (off_t)len);
+  if (rc != 0) rc = -errno;
+#endif
+
+  if (rc < 0) {
+    ant_value_t err = fs_mk_uv_error(js, rc, "truncate", path_cstr, NULL);
+    free(path_cstr);
+    return err;
+  }
+
+  free(path_cstr);
+  return js_mkundef();
+}
+
+static ant_value_t builtin_fs_ftruncateSync(ant_t *js, ant_value_t *args, int nargs) {
+  if (nargs < 1) return js_mkerr(js, "ftruncateSync() requires an fd argument");
+  if (vtype(args[0]) != T_NUM) return js_mkerr(js, "ftruncateSync() fd must be a number");
+
+  int fd = (int)js_getnum(args[0]);
+  int64_t len = 0;
+  if (nargs >= 2 && vtype(args[1]) != T_UNDEF)
+    len = (int64_t)js_to_number(js, args[1]);
+
+  uv_fs_t req;
+  int rc = uv_fs_ftruncate(NULL, &req, fd, len, NULL);
+  uv_fs_req_cleanup(&req);
+
+  if (rc < 0) return js_mkerr(js, "ftruncateSync: %s", uv_strerror(rc));
+  return js_mkundef();
 }
 
 static ant_value_t builtin_fs_appendFileSync(ant_t *js, ant_value_t *args, int nargs) {
@@ -4679,7 +4777,7 @@ static void fs_set_callback_compatible_methods(ant_t *js, ant_value_t lib) {
   js_set(js, lib, "realpath", realpath);
 }
 
-static ant_value_t fs_make_constants(ant_t *js) {
+ant_value_t fs_make_constants(ant_t *js) {
   ant_value_t constants = js_newobj(js);
   js_set(js, constants, "F_OK", js_mknum(F_OK));
   js_set(js, constants, "R_OK", js_mknum(R_OK));
@@ -4690,8 +4788,18 @@ static ant_value_t fs_make_constants(ant_t *js) {
   js_set(js, constants, "O_RDWR", js_mknum(O_RDWR));
   js_set(js, constants, "O_CREAT", js_mknum(O_CREAT));
   js_set(js, constants, "O_EXCL", js_mknum(O_EXCL));
+#ifdef O_NOCTTY
+  js_set(js, constants, "O_NOCTTY", js_mknum(O_NOCTTY));
+#else
+  js_set(js, constants, "O_NOCTTY", js_mknum(0));
+#endif
   js_set(js, constants, "O_TRUNC", js_mknum(O_TRUNC));
   js_set(js, constants, "O_APPEND", js_mknum(O_APPEND));
+#ifdef O_SYNC
+  js_set(js, constants, "O_SYNC", js_mknum(O_SYNC));
+#else
+  js_set(js, constants, "O_SYNC", js_mknum(0));
+#endif
 #ifdef O_SYMLINK
   js_set(js, constants, "O_SYMLINK", js_mknum(O_SYMLINK));
 #endif
@@ -4756,6 +4864,8 @@ ant_value_t fs_library(ant_t *js) {
   js_set(js, lib, "fstatSync", js_mkfun(builtin_fs_fstatSync));
   js_set(js, lib, "utimesSync", js_mkfun(builtin_fs_utimesSync));
   js_set(js, lib, "futimesSync", js_mkfun(builtin_fs_futimesSync));
+  js_set(js, lib, "truncateSync", js_mkfun(builtin_fs_truncateSync));
+  js_set(js, lib, "ftruncateSync", js_mkfun(builtin_fs_ftruncateSync));
   js_set(js, lib, "existsSync", js_mkfun(builtin_fs_existsSync));
   js_set(js, lib, "accessSync", js_mkfun(builtin_fs_accessSync));
   js_set(js, lib, "chmodSync", js_mkfun(builtin_fs_chmodSync));

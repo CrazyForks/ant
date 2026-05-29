@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
+#include <limits.h>
+#include <math.h>
 #include <wasm_c_api.h>
 #include <wasm_export.h>
 
@@ -28,6 +30,8 @@
 typedef struct {
   wasm_store_t *store;
   wasm_module_t *module;
+  uint8_t *bytes;
+  size_t bytes_len;
 } wasm_module_handle_t;
 
 typedef struct {
@@ -35,6 +39,8 @@ typedef struct {
   wasm_extern_vec_t exports;
   wasm_func_t **host_funcs;
   size_t host_func_count;
+  wasm_global_t **host_globals;
+  size_t host_global_count;
 } wasm_instance_handle_t;
 
 typedef enum {
@@ -48,7 +54,11 @@ typedef struct {
   wasm_store_t *store;
   bool own_handle;
   bool use_cached_value;
+  bool standalone_table;
+  wasm_valkind_t standalone_table_element;
   wasm_val_t cached_value;
+  uint32_t standalone_table_size;
+  uint32_t standalone_table_max_size;
   union {
     wasm_global_t *global;
     wasm_memory_t *memory;
@@ -67,6 +77,11 @@ typedef struct {
   wasm_func_t *func;
   bool own_func;
 } wasm_func_handle_t;
+
+typedef struct {
+  WASMModuleInstanceCommon *runtime_instance;
+  ant_value_t owner;
+} wasm_instance_owner_t;
 
 enum {
   WASM_FUNC_STATE_TAG = 0x57465354u, // WFST
@@ -94,6 +109,9 @@ static ant_value_t g_wasm_pending_import_throw = 0;
 static wasm_engine_t *g_wasm_engine                = NULL;
 static wasm_import_func_env_t **g_wasm_import_envs = NULL;
 static bool g_wasm_pending_import_throw_exists     = false;
+static wasm_instance_owner_t *g_wasm_instance_owners = NULL;
+static size_t g_wasm_instance_owner_count = 0;
+static size_t g_wasm_instance_owner_cap = 0;
 
 static void wasm_clear_pending_import_throw(void) {
   g_wasm_pending_import_throw_exists = false;
@@ -136,6 +154,50 @@ static void wasm_import_func_env_finalizer(void *env_ptr) {
   wasm_import_func_env_t *env = (wasm_import_func_env_t *)env_ptr;
   wasm_unregister_import_env(env);
   free(env);
+}
+
+static void wasm_delete_owned_globals(wasm_global_t **globals, size_t count) {
+  if (!globals) return;
+  for (size_t i = 0; i < count; i++)
+    if (globals[i]) wasm_global_delete(globals[i]);
+}
+
+static bool wasm_register_instance_owner(wasm_instance_t *instance, ant_value_t owner) {
+  if (!instance || !instance->inst_comm_rt || !is_object_type(owner)) return true;
+
+  if (g_wasm_instance_owner_count == g_wasm_instance_owner_cap) {
+    size_t new_cap = g_wasm_instance_owner_cap ? g_wasm_instance_owner_cap * 2 : 16;
+    wasm_instance_owner_t *new_arr = realloc(g_wasm_instance_owners, new_cap * sizeof(*new_arr));
+    if (!new_arr) return false;
+    g_wasm_instance_owners = new_arr;
+    g_wasm_instance_owner_cap = new_cap;
+  }
+
+  g_wasm_instance_owners[g_wasm_instance_owner_count++] = (wasm_instance_owner_t){
+    .runtime_instance = instance->inst_comm_rt,
+    .owner = owner,
+  };
+  return true;
+}
+
+static void wasm_unregister_instance_owner(wasm_instance_t *instance) {
+  WASMModuleInstanceCommon *runtime_instance = instance ? instance->inst_comm_rt : NULL;
+  if (!runtime_instance) return;
+
+  for (size_t i = 0; i < g_wasm_instance_owner_count; i++) {
+    if (g_wasm_instance_owners[i].runtime_instance != runtime_instance) continue;
+    g_wasm_instance_owners[i] = g_wasm_instance_owners[--g_wasm_instance_owner_count];
+    return;
+  }
+}
+
+static ant_value_t wasm_find_instance_owner(WASMModuleInstanceCommon *runtime_instance) {
+  if (!runtime_instance) return js_mkundef();
+  for (size_t i = 0; i < g_wasm_instance_owner_count; i++) {
+    if (g_wasm_instance_owners[i].runtime_instance == runtime_instance)
+      return g_wasm_instance_owners[i].owner;
+  }
+  return js_mkundef();
 }
 
 static ant_value_t wasm_wrap_func(
@@ -376,6 +438,7 @@ static void wasm_module_finalize(ant_t *js, ant_object_t *obj) {
   if (!handle) return;
   if (handle->module) wasm_module_delete(handle->module);
   if (handle->store) wasm_store_delete(handle->store);
+  free(handle->bytes);
   
   free(handle);
   js_clear_native(value, WASM_MODULE_NATIVE_TAG);
@@ -394,10 +457,14 @@ static void wasm_instance_finalize(ant_t *js, ant_object_t *obj) {
   ant_value_t value = js_obj_from_ptr(obj);
   wasm_instance_handle_t *handle = (wasm_instance_handle_t *)js_get_native(value, WASM_INSTANCE_NATIVE_TAG);
   if (!handle) return;
+  wasm_unregister_instance_owner(handle->instance);
   for (size_t j = 0; j < handle->host_func_count; j++) 
     if (handle->host_funcs[j]) wasm_func_delete(handle->host_funcs[j]);
+  for (size_t j = 0; j < handle->host_global_count; j++)
+    if (handle->host_globals[j]) wasm_global_delete(handle->host_globals[j]);
   
   free(handle->host_funcs);
+  free(handle->host_globals);
   wasm_extern_vec_delete(&handle->exports);
   free(handle);
   js_clear_native(value, WASM_INSTANCE_NATIVE_TAG);
@@ -617,18 +684,27 @@ static ant_value_t wasm_module_from_bytes(ant_t *js, ant_value_t value, ant_valu
   module = wasm_module_new(store, &binary);
   
   if (suppress_wasi_warning) wasm_runtime_set_log_level(WASM_LOG_LEVEL_WARNING);
-  wasm_byte_vec_delete(&binary);
   
   if (!module) {
+    wasm_byte_vec_delete(&binary);
     wasm_store_delete(store);
     return wasm_make_compile_error(js, "Failed to compile WebAssembly module");
   }
 
   *out_module = wasm_wrap_module(js, store, module);
   if (vtype(*out_module) == T_OBJ) {
+    wasm_module_handle_t *handle = wasm_module_handle(*out_module);
+    if (handle && binary.size > 0) {
+      handle->bytes = malloc(binary.size);
+      if (handle->bytes) {
+        memcpy(handle->bytes, binary.data, binary.size);
+        handle->bytes_len = binary.size;
+      }
+    }
     js_set_finalizer(*out_module, wasm_module_finalize);
     js_set_slot_wb(js, *out_module, SLOT_MAP, value);
   }
+  wasm_byte_vec_delete(&binary);
   return js_mkundef();
 }
 
@@ -695,6 +771,73 @@ static ant_value_t js_wasm_module_imports(ant_t *js, ant_value_t *args, int narg
 static ant_value_t js_wasm_module_exports(ant_t *js, ant_value_t *args, int nargs) {
   if (nargs < 1) return js_mkerr_typed(js, JS_ERR_TYPE, "WebAssembly.Module.exports requires 1 argument");
   return wasm_module_type_descriptors(js, args[0], false);
+}
+
+static bool wasm_read_leb_u32(const uint8_t *bytes, size_t len, size_t *offset, uint32_t *out) {
+  uint32_t result = 0;
+  uint32_t shift = 0;
+
+  while (*offset < len && shift < 35) {
+    uint8_t byte = bytes[(*offset)++];
+    result |= (uint32_t)(byte & 0x7f) << shift;
+    if ((byte & 0x80) == 0) {
+      *out = result;
+      return true;
+    }
+    shift += 7;
+  }
+
+  return false;
+}
+
+static ant_value_t js_wasm_module_custom_sections(ant_t *js, ant_value_t *args, int nargs) {
+  wasm_module_handle_t *handle;
+  ant_value_t name_val, result;
+  const char *wanted;
+  size_t wanted_len = 0;
+  size_t offset = 8;
+
+  if (nargs < 2)
+    return js_mkerr_typed(js, JS_ERR_TYPE, "WebAssembly.Module.customSections requires 2 arguments");
+  handle = wasm_module_handle(args[0]);
+  if (!handle)
+    return js_mkerr_typed(js, JS_ERR_TYPE, "Expected a WebAssembly.Module");
+
+  name_val = js_tostring_val(js, args[1]);
+  if (is_err(name_val)) return name_val;
+  wanted = js_getstr(js, name_val, &wanted_len);
+  result = js_mkarr(js);
+
+  if (!handle->bytes || handle->bytes_len < 8) return result;
+  while (offset < handle->bytes_len) {
+    uint8_t section_id = handle->bytes[offset++];
+    uint32_t section_size, name_len;
+    size_t section_start, section_end, name_start, data_start;
+    ArrayBufferData *buffer;
+
+    if (!wasm_read_leb_u32(handle->bytes, handle->bytes_len, &offset, &section_size)) break;
+    section_start = offset;
+    section_end = section_start + section_size;
+    if (section_end < section_start || section_end > handle->bytes_len) break;
+
+    if (section_id == 0) {
+      offset = section_start;
+      if (!wasm_read_leb_u32(handle->bytes, section_end, &offset, &name_len)) break;
+      name_start = offset;
+      data_start = name_start + name_len;
+      if (data_start <= section_end && name_len == wanted_len
+          && memcmp(handle->bytes + name_start, wanted, wanted_len) == 0) {
+        buffer = create_array_buffer_data(section_end - data_start);
+        if (!buffer) return js_mkerr(js, "out of memory");
+        memcpy(buffer->data, handle->bytes + data_start, section_end - data_start);
+        js_arr_push(js, result, create_arraybuffer_obj(js, buffer));
+      }
+    }
+
+    offset = section_end;
+  }
+
+  return result;
 }
 
 static ant_value_t js_wasm_instance_exports_getter(ant_t *js, ant_value_t *args, int nargs) {
@@ -789,8 +932,10 @@ static ant_value_t wasm_instantiate_module(ant_t *js, ant_value_t module_obj, an
   
   wasm_extern_t **imports = NULL;
   wasm_func_t **owned_host_funcs = NULL;
+  wasm_global_t **owned_host_globals = NULL;
   
   size_t owned_host_func_count = 0;
+  size_t owned_host_global_count = 0;
   wasm_extern_vec_t exports = WASM_EMPTY_VEC;
   
   wasm_trap_t *trap = NULL;
@@ -822,9 +967,11 @@ static ant_value_t wasm_instantiate_module(ant_t *js, ant_value_t module_obj, an
   if (import_types.size > 0) {
     imports = calloc(import_types.size, sizeof(*imports));
     owned_host_funcs = calloc(import_types.size, sizeof(*owned_host_funcs));
-    if (!imports || !owned_host_funcs) {
+    owned_host_globals = calloc(import_types.size, sizeof(*owned_host_globals));
+    if (!imports || !owned_host_funcs || !owned_host_globals) {
       free(imports);
       free(owned_host_funcs);
+      free(owned_host_globals);
       wasm_importtype_vec_delete(&import_types);
       return js_mkerr(js, "out of memory");
     }
@@ -840,13 +987,6 @@ static ant_value_t wasm_instantiate_module(ant_t *js, ant_value_t module_obj, an
     ant_value_t value = wasm_property_get_nested(js, namespace_obj, field_name);
     wasm_externkind_t kind = wasm_externtype_kind(extern_type);
 
-    if (kind == WASM_EXTERN_MEMORY || kind == WASM_EXTERN_TABLE) {
-      free(imports);
-      free(owned_host_funcs);
-      wasm_importtype_vec_delete(&import_types);
-      return wasm_make_link_error(js, "The current WAMR backend does not support memory/table imports");
-    }
-
     if (kind == WASM_EXTERN_FUNC) {
       const wasm_functype_t *func_type = wasm_externtype_as_functype_const(extern_type);
       wasm_import_func_env_t *env = NULL;
@@ -854,6 +994,8 @@ static ant_value_t wasm_instantiate_module(ant_t *js, ant_value_t module_obj, an
       if (!is_callable(value)) {
         free(imports);
         free(owned_host_funcs);
+        wasm_delete_owned_globals(owned_host_globals, owned_host_global_count);
+        free(owned_host_globals);
         wasm_importtype_vec_delete(&import_types);
         return wasm_make_link_error(js, "Missing function import");
       }
@@ -862,6 +1004,8 @@ static ant_value_t wasm_instantiate_module(ant_t *js, ant_value_t module_obj, an
       if (!env) {
         free(imports);
         free(owned_host_funcs);
+        wasm_delete_owned_globals(owned_host_globals, owned_host_global_count);
+        free(owned_host_globals);
         wasm_importtype_vec_delete(&import_types);
         return js_mkerr(js, "out of memory");
       }
@@ -885,6 +1029,8 @@ static ant_value_t wasm_instantiate_module(ant_t *js, ant_value_t module_obj, an
         free(env);
         free(imports);
         free(owned_host_funcs);
+        wasm_delete_owned_globals(owned_host_globals, owned_host_global_count);
+        free(owned_host_globals);
         wasm_importtype_vec_delete(&import_types);
         return wasm_make_link_error(js, "Failed to create function import");
       }
@@ -894,13 +1040,63 @@ static ant_value_t wasm_instantiate_module(ant_t *js, ant_value_t module_obj, an
       continue;
     }
 
+    if (kind == WASM_EXTERN_MEMORY) {
+      wasm_extern_handle_t *handle = wasm_extern_handle(value, WASM_EXTERN_WRAP_MEMORY);
+      if (!handle || !handle->as.memory) {
+        free(imports);
+        free(owned_host_funcs);
+        wasm_delete_owned_globals(owned_host_globals, owned_host_global_count);
+        free(owned_host_globals);
+        wasm_importtype_vec_delete(&import_types);
+        return wasm_make_link_error(js, "Missing memory import");
+      }
+      imports[i] = wasm_memory_as_extern(handle->as.memory);
+      continue;
+    }
+
+    if (kind == WASM_EXTERN_TABLE) {
+      wasm_extern_handle_t *handle = wasm_extern_handle(value, WASM_EXTERN_WRAP_TABLE);
+      if (!handle || !handle->as.table) {
+        free(imports);
+        free(owned_host_funcs);
+        wasm_delete_owned_globals(owned_host_globals, owned_host_global_count);
+        free(owned_host_globals);
+        wasm_importtype_vec_delete(&import_types);
+        return wasm_make_link_error(js, "Missing table import");
+      }
+      imports[i] = wasm_table_as_extern(handle->as.table);
+      continue;
+    }
+
     if (kind == WASM_EXTERN_GLOBAL) {
       wasm_extern_handle_t *handle = wasm_extern_handle(value, WASM_EXTERN_WRAP_GLOBAL);
       if (!handle || !handle->as.global) {
+        const wasm_globaltype_t *global_type = wasm_externtype_as_globaltype_const(extern_type);
+        const wasm_valtype_t *content = global_type ? wasm_globaltype_content(global_type) : NULL;
+        wasm_val_t initial = WASM_INIT_VAL;
+        wasm_global_t *owned_global = NULL;
+        if (global_type && content
+            && wasm_globaltype_mutability(global_type) == WASM_CONST
+            && js_value_to_wasm(js, value, wasm_valtype_kind(content), &initial)) {
+          owned_global = wasm_global_new(module_handle->store, global_type, &initial);
+        }
+        if (owned_global) {
+          owned_host_globals[owned_host_global_count++] = owned_global;
+          imports[i] = wasm_global_as_extern(owned_global);
+          continue;
+        }
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Missing global import %.*s.%.*s",
+                 (int)wasm_name_len(module_name),
+                 module_name && module_name->data ? module_name->data : "",
+                 (int)wasm_name_len(field_name),
+                 field_name && field_name->data ? field_name->data : "");
         free(imports);
         free(owned_host_funcs);
+        wasm_delete_owned_globals(owned_host_globals, owned_host_global_count);
+        free(owned_host_globals);
         wasm_importtype_vec_delete(&import_types);
-        return wasm_make_link_error(js, "Missing global import");
+        return wasm_make_link_error(js, msg);
       }
       imports[i] = wasm_global_as_extern(handle->as.global);
       continue;
@@ -913,7 +1109,7 @@ static ant_value_t wasm_instantiate_module(ant_t *js, ant_value_t module_obj, an
       import_vec = (wasm_extern_vec_t){ import_types.size, imports, import_types.size, sizeof(*imports), NULL };
 
     wasm_clear_pending_import_throw();
-    instance = wasm_instance_new_with_args(module_handle->store, module_handle->module, &import_vec, &trap, KILOBYTE(32), 0);
+    instance = wasm_instance_new_with_args(module_handle->store, module_handle->module, &import_vec, &trap, KILOBYTE(1024), 0);
   }
 
   free(imports);
@@ -923,7 +1119,9 @@ static ant_value_t wasm_instantiate_module(ant_t *js, ant_value_t module_obj, an
     for (size_t i = 0; i < owned_host_func_count; i++) {
       if (owned_host_funcs[i]) wasm_func_delete(owned_host_funcs[i]);
     }
+    wasm_delete_owned_globals(owned_host_globals, owned_host_global_count);
     free(owned_host_funcs);
+    free(owned_host_globals);
     
     if (trap) {
       if (g_wasm_pending_import_throw_exists) {
@@ -947,12 +1145,16 @@ static ant_value_t wasm_instantiate_module(ant_t *js, ant_value_t module_obj, an
     if (!inst_handle) {
       wasm_extern_vec_delete(&exports);
       wasm_exporttype_vec_delete(&export_types);
+      wasm_delete_owned_globals(owned_host_globals, owned_host_global_count);
+      free(owned_host_globals);
       return js_mkerr(js, "out of memory");
     }
     inst_handle->instance = instance;
     inst_handle->exports = exports;
     inst_handle->host_funcs = owned_host_funcs;
     inst_handle->host_func_count = owned_host_func_count;
+    inst_handle->host_globals = owned_host_globals;
+    inst_handle->host_global_count = owned_host_global_count;
 
     instance_obj = wasm_wrap_instance(js, inst_handle, module_obj);
   }
@@ -961,6 +1163,10 @@ static ant_value_t wasm_instantiate_module(ant_t *js, ant_value_t module_obj, an
     return instance_obj;
   }
   js_set_finalizer(instance_obj, wasm_instance_finalize);
+  if (!wasm_register_instance_owner(instance, instance_obj)) {
+    wasm_exporttype_vec_delete(&export_types);
+    return js_mkerr(js, "out of memory");
+  }
 
   for (size_t i = 0; i < export_types.size && i < exports.size; i++) {
     const wasm_exporttype_t *export_type = export_types.data[i];
@@ -997,9 +1203,9 @@ static ant_value_t js_wasm_global_value_getter(ant_t *js, ant_value_t *args, int
   wasm_val_t value = WASM_INIT_VAL;
 
   if (!handle || !handle->as.global) return js_mkerr_typed(js, JS_ERR_TYPE, "Expected a WebAssembly.Global");
-  if (handle->use_cached_value) return wasm_value_to_js(js, &handle->cached_value);
 
   wasm_global_get(handle->as.global, &value);
+  if (handle->use_cached_value) handle->cached_value = value;
   return wasm_value_to_js(js, &value);
 }
 
@@ -1027,8 +1233,8 @@ static ant_value_t js_wasm_global_value_setter(ant_t *js, ant_value_t *args, int
     return js_mkerr_typed(js, JS_ERR_TYPE, "Unsupported global value");
   }
 
+  wasm_global_set(handle->as.global, &value);
   if (handle->use_cached_value) handle->cached_value = value;
-  else wasm_global_set(handle->as.global, &value);
   wasm_globaltype_delete(type);
   
   return js_mkundef();
@@ -1103,24 +1309,150 @@ static ant_value_t js_wasm_global_ctor(ant_t *js, ant_value_t *args, int nargs) 
   return result;
 }
 
+static bool wasm_to_page_count(ant_t *js, ant_value_t value, uint32_t *out) {
+  double number = js_to_number(js, value);
+  if (!isfinite(number) || number < 0 || floor(number) != number || number > UINT32_MAX)
+    return false;
+  *out = (uint32_t)number;
+  return true;
+}
+
+static bool wasm_parse_memory_descriptor(ant_t *js, ant_value_t descriptor, wasm_limits_t *limits, ant_value_t *err) {
+  ant_value_t initial_val, maximum_val, shared_val;
+  uint32_t initial_pages, maximum_pages = wasm_limits_max_default;
+
+  if (!is_object_type(descriptor)) {
+    *err = js_mkerr_typed(js, JS_ERR_TYPE, "WebAssembly.Memory requires a descriptor object");
+    return false;
+  }
+
+  initial_val = js_get(js, descriptor, "initial");
+  if (vtype(initial_val) == T_UNDEF || !wasm_to_page_count(js, initial_val, &initial_pages)) {
+    *err = js_mkerr_typed(js, JS_ERR_TYPE, "WebAssembly.Memory descriptor requires a valid initial page count");
+    return false;
+  }
+
+  maximum_val = js_get(js, descriptor, "maximum");
+  if (vtype(maximum_val) != T_UNDEF) {
+    if (!wasm_to_page_count(js, maximum_val, &maximum_pages)) {
+      *err = js_mkerr_typed(js, JS_ERR_TYPE, "WebAssembly.Memory descriptor maximum must be a valid page count");
+      return false;
+    }
+    if (maximum_pages < initial_pages) {
+      *err = js_mkerr_typed(js, JS_ERR_RANGE, "WebAssembly.Memory maximum must be greater than or equal to initial");
+      return false;
+    }
+  }
+
+  shared_val = js_get(js, descriptor, "shared");
+  if (js_truthy(js, shared_val)) {
+    *err = js_mkerr_typed(js, JS_ERR_TYPE, "Shared WebAssembly.Memory is not supported");
+    return false;
+  }
+
+  limits->min = initial_pages;
+  limits->max = maximum_pages;
+  *err = js_mkundef();
+  return true;
+}
+
+static ant_value_t wasm_make_external_arraybuffer(ant_t *js, uint8_t *data, size_t len) {
+  ArrayBufferData *buffer = calloc(1, sizeof(ArrayBufferData));
+  if (!buffer) return js_mkerr(js, "out of memory");
+  buffer->data = data;
+  buffer->length = len;
+  buffer->capacity = len;
+  buffer->ref_count = 1;
+  return create_arraybuffer_obj(js, buffer);
+}
+
+static bool wasm_parse_table_descriptor(ant_t *js, ant_value_t descriptor, wasm_limits_t *limits, wasm_valkind_t *element, ant_value_t *err) {
+  ant_value_t initial_val, maximum_val;
+  const char *element_name;
+  ant_offset_t element_len = 0;
+  uint32_t initial, maximum = wasm_limits_max_default;
+
+  if (!is_object_type(descriptor)) {
+    *err = js_mkerr_typed(js, JS_ERR_TYPE, "WebAssembly.Table requires a descriptor object");
+    return false;
+  }
+
+  element_name = get_str_prop(js, descriptor, "element", 7, &element_len);
+  if (!element_name) {
+    *err = js_mkerr_typed(js, JS_ERR_TYPE, "WebAssembly.Table descriptor requires an element type");
+    return false;
+  }
+  if (element_len == 7 && memcmp(element_name, "anyfunc", 7) == 0) {
+    *element = WASM_FUNCREF;
+  } else {
+    bool ok = false;
+    *element = wasm_valkind_from_string(element_name, element_len, &ok);
+    if (!ok || (*element != WASM_FUNCREF && *element != WASM_EXTERNREF)) {
+      *err = js_mkerr_typed(js, JS_ERR_TYPE, "Unsupported WebAssembly.Table element type");
+      return false;
+    }
+  }
+
+  initial_val = js_get(js, descriptor, "initial");
+  if (vtype(initial_val) == T_UNDEF || !wasm_to_page_count(js, initial_val, &initial)) {
+    *err = js_mkerr_typed(js, JS_ERR_TYPE, "WebAssembly.Table descriptor requires a valid initial length");
+    return false;
+  }
+
+  maximum_val = js_get(js, descriptor, "maximum");
+  if (vtype(maximum_val) != T_UNDEF) {
+    if (!wasm_to_page_count(js, maximum_val, &maximum)) {
+      *err = js_mkerr_typed(js, JS_ERR_TYPE, "WebAssembly.Table descriptor maximum must be a valid length");
+      return false;
+    }
+    if (maximum < initial) {
+      *err = js_mkerr_typed(js, JS_ERR_RANGE, "WebAssembly.Table maximum must be greater than or equal to initial");
+      return false;
+    }
+  }
+
+  limits->min = initial;
+  limits->max = maximum;
+  *err = js_mkundef();
+  return true;
+}
+
+static bool wasm_table_value_ok(ant_t *js, wasm_valkind_t element, ant_value_t value, ant_value_t *err) {
+  if (element == WASM_EXTERNREF) return true;
+  if (vtype(value) == T_NULL || vtype(value) == T_UNDEF) return true;
+  if (is_callable(value)) {
+    ant_value_t state = js_get_slot(value, SLOT_DATA);
+    wasm_func_handle_t *func_handle = is_object_type(state)
+      ? (wasm_func_handle_t *)js_get_native(state, WASM_FUNC_STATE_TAG)
+      : NULL;
+    if (func_handle && func_handle->func) return true;
+  }
+  *err = js_mkerr_typed(js, JS_ERR_TYPE, "WebAssembly.Table expects a WebAssembly function or null");
+  return false;
+}
+
+static ant_value_t wasm_table_entry_get(ant_t *js, ant_value_t entries, uint32_t index) {
+  char key[16];
+  snprintf(key, sizeof(key), "%u", index);
+  return js_get(js, entries, key);
+}
+
+static void wasm_table_entry_set(ant_t *js, ant_value_t entries, uint32_t index, ant_value_t value) {
+  char key[16];
+  snprintf(key, sizeof(key), "%u", index);
+  js_set(js, entries, key, value);
+}
+
 static ant_value_t js_wasm_memory_buffer_getter(ant_t *js, ant_value_t *args, int nargs) {
   wasm_extern_handle_t *handle = wasm_extern_handle(js->this_val, WASM_EXTERN_WRAP_MEMORY);
-  byte_t *data; size_t len; ArrayBufferData *buffer;
+  byte_t *data; size_t len;
 
   if (!handle || !handle->as.memory)
     return js_mkerr_typed(js, JS_ERR_TYPE, "Expected a WebAssembly.Memory");
 
   data = wasm_memory_data(handle->as.memory);
   len = wasm_memory_data_size(handle->as.memory);
-  buffer = calloc(1, sizeof(ArrayBufferData));
-  
-  if (!buffer) return js_mkerr(js, "out of memory");
-  buffer->data = (uint8_t *)data;
-  buffer->length = len;
-  buffer->capacity = len;
-  buffer->ref_count = 1;
-  
-  return create_arraybuffer_obj(js, buffer);
+  return wasm_make_external_arraybuffer(js, (uint8_t *)data, len);
 }
 
 static ant_value_t js_wasm_memory_grow(ant_t *js, ant_value_t *args, int nargs) {
@@ -1131,36 +1463,71 @@ static ant_value_t js_wasm_memory_grow(ant_t *js, ant_value_t *args, int nargs) 
   if (!handle || !handle->as.memory)
     return js_mkerr_typed(js, JS_ERR_TYPE, "Expected a WebAssembly.Memory");
 
-  delta = (uint32_t)(nargs > 0 ? js_to_number(js, args[0]) : 0);
+  if (!wasm_to_page_count(js, nargs > 0 ? args[0] : js_mknum(0), &delta))
+    return js_mkerr_typed(js, JS_ERR_TYPE, "WebAssembly.Memory.grow requires a valid page count");
+
   old_size = wasm_memory_size(handle->as.memory);
 
   if (delta == 0) return js_mknum((double)old_size);
 
-  wasm_module_inst_t inst = (wasm_module_inst_t)handle->as.memory->inst_comm_rt;
-  if (!inst)
-    return js_mkerr_typed(js, JS_ERR_RANGE, "Memory instance not available");
-
-  if (inst->module_type == Wasm_Module_Bytecode) {
-    WASMModuleInstance *wasm_inst = (WASMModuleInstance *)inst;
-    WASMMemoryInstance *mem_inst = wasm_inst->memories[handle->as.memory->memory_idx_rt];
-    uint32_t needed = mem_inst->cur_page_count + delta;
-    if (needed > mem_inst->max_page_count) mem_inst->max_page_count = needed;
-  }
-
-  if (!wasm_runtime_enlarge_memory(inst, (uint64_t)delta))
+  if (!wasm_memory_grow(handle->as.memory, delta))
     return js_mkerr_typed(js, JS_ERR_RANGE, "Failed to grow memory by %u pages", delta);
 
   return js_mknum((double)old_size);
 }
 
 static ant_value_t js_wasm_memory_ctor(ant_t *js, ant_value_t *args, int nargs) {
-  if (vtype(js->new_target) == T_UNDEF) return js_mkerr_typed(js, JS_ERR_TYPE, "WebAssembly.Memory constructor requires 'new'");
-  return js_mkerr_typed(js, JS_ERR_TYPE, "The current WAMR backend does not support standalone WebAssembly.Memory");
+  wasm_limits_t limits;
+  wasm_store_t *store = NULL;
+  wasm_memorytype_t *memorytype = NULL;
+  wasm_memory_t *memory = NULL;
+  ant_value_t err, result;
+
+  if (vtype(js->new_target) == T_UNDEF)
+    return js_mkerr_typed(js, JS_ERR_TYPE, "WebAssembly.Memory constructor requires 'new'");
+  if (!ensure_wasm_engine())
+    return js_mkerr(js, "Failed to initialize WebAssembly engine");
+  if (!wasm_parse_memory_descriptor(js, nargs > 0 ? args[0] : js_mkundef(), &limits, &err))
+    return err;
+
+  store = wasm_store_new(g_wasm_engine);
+  if (!store) return js_mkerr(js, "Failed to create WebAssembly store");
+
+  memorytype = wasm_memorytype_new(&limits);
+  memory = memorytype ? wasm_memory_new(store, memorytype) : NULL;
+  wasm_memorytype_delete(memorytype);
+
+  if (!memory) {
+    wasm_store_delete(store);
+    return js_throw(js, wasm_make_runtime_error(js, "Failed to create WebAssembly.Memory"));
+  }
+
+  result = wasm_wrap_extern_object(
+    js, WASM_EXTERN_WRAP_MEMORY, g_wasm_memory_proto, BRAND_WASM_MEMORY,
+    store, true, memory, js_mkundef()
+  );
+  if (vtype(result) != T_OBJ) {
+    wasm_memory_delete(memory);
+    wasm_store_delete(store);
+    return result;
+  }
+
+  wasm_extern_handle_t *handle = wasm_extern_handle(result, WASM_EXTERN_WRAP_MEMORY);
+  if (!handle) {
+    wasm_memory_delete(memory);
+    wasm_store_delete(store);
+    return js_mkerr(js, "out of memory");
+  }
+
+  js_set_finalizer(result, wasm_extern_finalize);
+  return result;
 }
 
 static ant_value_t js_wasm_table_length_getter(ant_t *js, ant_value_t *args, int nargs) {
   wasm_extern_handle_t *handle = wasm_extern_handle(js->this_val, WASM_EXTERN_WRAP_TABLE);
   if (!handle || !handle->as.table)  return js_mkerr_typed(js, JS_ERR_TYPE, "Expected a WebAssembly.Table");
+  if (handle->standalone_table && handle->standalone_table_element != WASM_FUNCREF)
+    return js_mknum((double)handle->standalone_table_size);
   return js_mknum((double)wasm_table_size(handle->as.table));
 }
 
@@ -1173,14 +1540,35 @@ static ant_value_t js_wasm_table_get(ant_t *js, ant_value_t *args, int nargs) {
   if (!handle || !handle->as.table)
     return js_mkerr_typed(js, JS_ERR_TYPE, "Expected a WebAssembly.Table");
 
-  index = (uint32_t)(nargs > 0 ? js_to_number(js, args[0]) : 0);
+  if (!wasm_to_page_count(js, nargs > 0 ? args[0] : js_mknum(0), &index))
+    return js_mkerr_typed(js, JS_ERR_TYPE, "WebAssembly.Table.get requires a valid index");
+
+  if (handle->standalone_table && handle->standalone_table_element != WASM_FUNCREF) {
+    ant_value_t entries;
+    if (index >= handle->standalone_table_size)
+      return js_mkerr_typed(js, JS_ERR_RANGE, "WebAssembly.Table index is out of bounds");
+    entries = js_get(js, js->this_val, "__wasmTableEntries");
+    return wasm_table_entry_get(js, entries, index);
+  }
+
+  {
+    ant_value_t entries = js_get(js, js->this_val, "__wasmTableEntries");
+    if (is_object_type(entries)) {
+      ant_value_t retained = wasm_table_entry_get(js, entries, index);
+      if (vtype(retained) != T_UNDEF && vtype(retained) != T_NULL)
+        return retained;
+    }
+  }
+
   ref = wasm_table_get(handle->as.table, index);
 
   if (!ref) return js_mknull();
   func = wasm_ref_as_func(ref);
   
   if (func) {
-    ant_value_t owner = js_get_slot(js->this_val, SLOT_ENTRIES);
+    ant_value_t owner = wasm_find_instance_owner(func->inst_comm_rt);
+    if (!is_object_type(owner))
+      owner = js_get_slot(js->this_val, SLOT_ENTRIES);
     ant_value_t wrapped = wasm_wrap_func(js, func, owner, true);
     wasm_ref_delete(ref);
     return wrapped;
@@ -1194,11 +1582,25 @@ static ant_value_t js_wasm_table_set(ant_t *js, ant_value_t *args, int nargs) {
   wasm_extern_handle_t *handle = wasm_extern_handle(js->this_val, WASM_EXTERN_WRAP_TABLE);
   wasm_ref_t *ref = NULL;
   uint32_t index;
+  ant_value_t err;
 
   if (!handle || !handle->as.table) return js_mkerr_typed(js, JS_ERR_TYPE, "Expected a WebAssembly.Table");
   if (nargs < 2) return js_mkerr_typed(js, JS_ERR_TYPE, "WebAssembly.Table.set requires 2 arguments");
 
-  index = (uint32_t)js_to_number(js, args[0]);
+  if (!wasm_to_page_count(js, args[0], &index))
+    return js_mkerr_typed(js, JS_ERR_TYPE, "WebAssembly.Table.set requires a valid index");
+
+  if (handle->standalone_table && handle->standalone_table_element != WASM_FUNCREF) {
+    ant_value_t entries;
+    if (index >= handle->standalone_table_size)
+      return js_mkerr_typed(js, JS_ERR_RANGE, "WebAssembly.Table index is out of bounds");
+    if (!wasm_table_value_ok(js, handle->standalone_table_element, args[1], &err))
+      return err;
+    entries = js_get(js, js->this_val, "__wasmTableEntries");
+    wasm_table_entry_set(js, entries, index, args[1]);
+    return js_mkundef();
+  }
+
   if (!(vtype(args[1]) == T_NULL || vtype(args[1]) == T_UNDEF)) {
     ant_value_t state;
     wasm_func_handle_t *func_handle;
@@ -1221,17 +1623,136 @@ static ant_value_t js_wasm_table_set(ant_t *js, ant_value_t *args, int nargs) {
     if (ref) wasm_ref_delete(ref);
     return js_mkerr_typed(js, JS_ERR_TYPE, "Failed to update WebAssembly.Table");
   }
+
+  {
+    ant_value_t entries = js_get(js, js->this_val, "__wasmTableEntries");
+    if (is_object_type(entries))
+      wasm_table_entry_set(js, entries, index,
+                           vtype(args[1]) == T_UNDEF ? js_mknull()
+                                                      : args[1]);
+  }
   
   return js_mkundef();
 }
 
 static ant_value_t js_wasm_table_grow(ant_t *js, ant_value_t *args, int nargs) {
-  return js_mkerr_typed(js, JS_ERR_TYPE, "The current WAMR backend does not support host-side table.grow");
+  wasm_extern_handle_t *handle = wasm_extern_handle(js->this_val, WASM_EXTERN_WRAP_TABLE);
+  uint32_t delta, old_size, needed;
+  ant_value_t init, err, entries;
+  wasm_ref_t *ref = NULL;
+
+  if (!handle || !handle->as.table)
+    return js_mkerr_typed(js, JS_ERR_TYPE, "Expected a WebAssembly.Table");
+  if (!wasm_to_page_count(js, nargs > 0 ? args[0] : js_mknum(0), &delta))
+    return js_mkerr_typed(js, JS_ERR_TYPE, "WebAssembly.Table.grow requires a valid length");
+
+  if (!handle->standalone_table)
+    return js_mkerr_typed(js, JS_ERR_TYPE, "The current WAMR backend does not support host-side table.grow");
+
+  init = nargs > 1 ? args[1] : js_mknull();
+  if (!wasm_table_value_ok(js, handle->standalone_table_element, init, &err))
+    return err;
+
+  if (handle->standalone_table_element == WASM_FUNCREF) {
+    if (!(vtype(init) == T_NULL || vtype(init) == T_UNDEF)) {
+      ant_value_t state;
+      wasm_func_handle_t *func_handle;
+
+      state = js_get_slot(init, SLOT_DATA);
+      func_handle = is_object_type(state)
+        ? (wasm_func_handle_t *)js_get_native(state, WASM_FUNC_STATE_TAG)
+        : NULL;
+      if (!func_handle || !func_handle->func)
+        return js_mkerr_typed(js, JS_ERR_TYPE, "WebAssembly.Table.grow expects a WebAssembly function or null");
+
+      ref = wasm_func_as_ref(func_handle->func);
+      if (!ref) return js_mkerr_typed(js, JS_ERR_TYPE, "Failed to materialize WebAssembly function reference");
+    }
+
+    old_size = wasm_table_size(handle->as.table);
+    if (!wasm_table_grow(handle->as.table, delta, ref)) {
+      if (ref) wasm_ref_delete(ref);
+      return js_mkerr_typed(js, JS_ERR_RANGE, "Failed to grow WebAssembly.Table");
+    }
+    entries = js_get(js, js->this_val, "__wasmTableEntries");
+    if (is_object_type(entries)) {
+      for (uint32_t i = old_size; i < old_size + delta; i++)
+        wasm_table_entry_set(js, entries, i,
+                             vtype(init) == T_UNDEF ? js_mknull() : init);
+    }
+    handle->standalone_table_size = wasm_table_size(handle->as.table);
+    return js_mknum((double)old_size);
+  }
+
+  old_size = handle->standalone_table_size;
+  if (delta == 0) return js_mknum((double)old_size);
+  if (delta > UINT32_MAX - old_size)
+    return js_mkerr_typed(js, JS_ERR_RANGE, "Failed to grow WebAssembly.Table");
+  needed = old_size + delta;
+  if (needed > handle->standalone_table_max_size)
+    return js_mkerr_typed(js, JS_ERR_RANGE, "Failed to grow WebAssembly.Table");
+
+  entries = js_get(js, js->this_val, "__wasmTableEntries");
+  for (uint32_t i = old_size; i < needed; i++) wasm_table_entry_set(js, entries, i, init);
+  handle->standalone_table_size = needed;
+  return js_mknum((double)old_size);
 }
 
 static ant_value_t js_wasm_table_ctor(ant_t *js, ant_value_t *args, int nargs) {
-  if (vtype(js->new_target) == T_UNDEF) return js_mkerr_typed(js, JS_ERR_TYPE, "WebAssembly.Table constructor requires 'new'");
-  return js_mkerr_typed(js, JS_ERR_TYPE, "The current WAMR backend does not support standalone WebAssembly.Table");
+  wasm_limits_t limits;
+  wasm_valkind_t element;
+  wasm_store_t *store = NULL;
+  wasm_valtype_t *valtype = NULL;
+  wasm_tabletype_t *tabletype = NULL;
+  wasm_table_t *table = NULL;
+  ant_value_t err, result;
+
+  if (vtype(js->new_target) == T_UNDEF)
+    return js_mkerr_typed(js, JS_ERR_TYPE, "WebAssembly.Table constructor requires 'new'");
+  if (!ensure_wasm_engine())
+    return js_mkerr(js, "Failed to initialize WebAssembly engine");
+  if (!wasm_parse_table_descriptor(js, nargs > 0 ? args[0] : js_mkundef(), &limits, &element, &err))
+    return err;
+
+  store = wasm_store_new(g_wasm_engine);
+  if (!store) return js_mkerr(js, "Failed to create WebAssembly store");
+
+  valtype = wasm_valtype_new(element);
+  tabletype = valtype ? wasm_tabletype_new(valtype, &limits) : NULL;
+  table = tabletype ? wasm_table_new(store, tabletype, NULL) : NULL;
+  wasm_tabletype_delete(tabletype);
+
+  if (!table) {
+    wasm_store_delete(store);
+    return js_throw(js, wasm_make_runtime_error(js, "Failed to create WebAssembly.Table"));
+  }
+
+  result = wasm_wrap_extern_object(
+    js, WASM_EXTERN_WRAP_TABLE, g_wasm_table_proto, BRAND_WASM_TABLE,
+    store, true, table, js_mkundef()
+  );
+  if (vtype(result) == T_OBJ) {
+    ant_value_t entries = js_mkobj(js);
+    wasm_extern_handle_t *handle = wasm_extern_handle(result, WASM_EXTERN_WRAP_TABLE);
+    if (!handle || is_err(entries)) {
+      js_clear_native(result, WASM_EXTERN_NATIVE_TAG);
+      wasm_table_delete(table);
+      wasm_store_delete(store);
+      free(handle);
+      return is_err(entries) ? entries : js_mkerr(js, "out of memory");
+    }
+
+    handle->standalone_table = true;
+    handle->standalone_table_element = element;
+    handle->standalone_table_size = limits.min;
+    handle->standalone_table_max_size = limits.max;
+    for (uint32_t i = 0; i < limits.min; i++) wasm_table_entry_set(js, entries, i, js_mknull());
+    js_set(js, result, "__wasmTableEntries", entries);
+    js_set_descriptor(js, result, "__wasmTableEntries", 18, 0);
+    js_set_finalizer(result, wasm_extern_finalize);
+  }
+
+  return result;
 }
 
 static ant_value_t js_wasm_tag_ctor(ant_t *js, ant_value_t *args, int nargs) {
@@ -1424,6 +1945,7 @@ void init_wasm_module(void) {
 
   js_set(js, module_ctor, "imports", js_mkfun(js_wasm_module_imports));
   js_set(js, module_ctor, "exports", js_mkfun(js_wasm_module_exports));
+  js_set(js, module_ctor, "customSections", js_mkfun(js_wasm_module_custom_sections));
 
   js_set(js, ns, "validate", js_mkfun(js_wasm_validate));
   js_set(js, ns, "compile", js_mkfun(js_wasm_compile));

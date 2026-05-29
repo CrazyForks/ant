@@ -15741,16 +15741,28 @@ static ant_value_t proxy_read_target(ant_t *js, ant_value_t obj) {
   return data ? data->target : obj;
 }
 
+static inline TypedArrayData *array_method_typedarray_data(ant_value_t value, uint8_t value_type) {
+  if (value_type == T_TYPEDARRAY) return (TypedArrayData *)js_gettypedarray(value);
+  if (value_type == T_OBJ) return (TypedArrayData *)js_get_native(value, BUFFER_TYPEDARRAY_NATIVE_TAG);
+  return NULL;
+}
+
 static ant_value_t proxy_aware_length(ant_t *js, ant_value_t obj, ant_offset_t *out_len) {
   *out_len = 0;
+  uint8_t obj_type = vtype(obj);
   if (is_proxy(obj)) {
     ant_value_t len_val = proxy_get(js, obj, "length", 6);
     if (is_err(len_val)) return len_val;
     if (vtype(len_val) == T_NUM) *out_len = (ant_offset_t)tod(len_val);
     return js_mkundef();
   }
-  if (vtype(obj) == T_ARR) {
+  if (obj_type == T_ARR) {
     *out_len = get_array_length(js, obj);
+    return js_mkundef();
+  }
+  TypedArrayData *ta = array_method_typedarray_data(obj, obj_type);
+  if (ta) {
+    *out_len = (ant_offset_t)ta->length;
     return js_mkundef();
   }
   ant_offset_t off = lkp_interned(js, obj, js->intern.length, 6);
@@ -15778,6 +15790,13 @@ static ant_value_t array_method_has_index(ant_t *js, ant_value_t arr, ant_offset
     size_t idxlen = uint_to_str(idxstr, sizeof(idxstr), (uint64_t)idx);
     return proxy_has(js, arr, idxstr, idxlen);
   }
+  
+  uint8_t arr_type = vtype(arr);
+  if (arr_type != T_ARR) {
+    TypedArrayData *ta = array_method_typedarray_data(arr, arr_type);
+    if (ta) return js_bool((size_t)idx < ta->length);
+  }
+  
   return js_bool(arr_has(js, arr, idx));
 }
 
@@ -15787,6 +15806,15 @@ static ant_value_t array_method_get_index(ant_t *js, ant_value_t arr, ant_offset
     size_t idxlen = uint_to_str(idxstr, sizeof(idxstr), (uint64_t)idx);
     return proxy_get(js, arr, idxstr, idxlen);
   }
+  
+  uint8_t arr_type = vtype(arr);
+  if (arr_type != T_ARR) {
+  TypedArrayData *ta = array_method_typedarray_data(arr, arr_type);
+  if (ta) {
+    ant_value_t item = js_mkundef();
+    if (buffer_typedarray_data_read_index(js, ta, (size_t)idx, &item)) return item;
+  }}
+  
   return arr_get(js, arr, idx);
 }
 

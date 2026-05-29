@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #include "ant.h"
 #include "internal.h"
@@ -164,6 +165,67 @@ ant_value_t bigint_from_int64(ant_t *js, int64_t value) {
 
   size_t count = limbs[1] == 0 ? 1 : 2;
   return js_mkbigint_limbs(js, limbs, count, value < 0);
+}
+
+ant_value_t bigint_from_integral_double(ant_t *js, double value) {
+  #define DOUBLE_LIMB_CAP 33
+  
+  uint64_t bits, mantissa;
+  uint32_t limbs[DOUBLE_LIMB_CAP] = {0};
+  uint32_t exp_bits;
+  
+  int exp, shift;
+  bool negative;
+
+  if (!isfinite(value) || floor(value) != value)
+    return js_mkerr(js, "Cannot convert non-integral double to BigInt");
+
+  negative = signbit(value);
+  if (value == 0) return bigint_from_uint64(js, 0);
+
+  memcpy(&bits, &value, sizeof(bits));
+  exp_bits = (uint32_t)((bits >> 52) & 0x7ffu);
+  if (exp_bits == 0) return bigint_from_uint64(js, 0);
+
+  mantissa = (bits & 0x000fffffffffffffull) | (1ull << 52);
+  exp = (int)exp_bits - 1023;
+
+  if (exp < 52) {
+    uint64_t magnitude = mantissa >> (52 - exp);
+    return js_mkbigint_limbs(
+      js, (uint32_t[]){
+        (uint32_t)(magnitude & 0xffffffffu),
+        (uint32_t)(magnitude >> 32)
+      },
+      magnitude > UINT32_MAX ? 2 : 1,
+      negative
+    );
+  }
+
+  shift = exp - 52;
+  size_t word_shift = (size_t)shift / 32;
+  unsigned bit_shift = (unsigned)shift % 32;
+  
+  uint32_t parts[2] = {
+    (uint32_t)(mantissa & 0xffffffffu),
+    (uint32_t)(mantissa >> 32)
+  };
+
+  for (size_t i = 0; i < 2; i++) {
+    if (parts[i] == 0) continue;
+    size_t dst = word_shift + i;
+    if (dst >= DOUBLE_LIMB_CAP) return js_mkerr(js, "BigInt is too large");
+    limbs[dst] |= parts[i] << bit_shift;
+    if (bit_shift != 0) {
+      if (dst + 1 >= DOUBLE_LIMB_CAP) return js_mkerr(js, "BigInt is too large");
+      limbs[dst + 1] |= parts[i] >> (32u - bit_shift);
+    }
+  }
+
+  size_t count = DOUBLE_LIMB_CAP;
+  bigint_normalize_limbs(limbs, &count);
+  
+  return js_mkbigint_limbs(js, limbs, count, negative);
 }
 
 static uint64_t bigint_low_u64(ant_t *js, ant_value_t value) {

@@ -1127,6 +1127,22 @@ static void scan_osr_entries(sv_func_t *func, osr_entry_map_t *osr) {
   }
 }
 
+static bool func_writes_params(sv_func_t *func) {
+  if (!func || func->param_count <= 0) return false;
+  uint8_t *ip = func->code;
+  uint8_t *end = func->code + func->code_len;
+
+  while (ip < end) {
+    sv_op_t op = (sv_op_t)*ip;
+    int sz = sv_op_size[op];
+    if (sz == 0) break;
+    if (op == OP_PUT_ARG || op == OP_SET_ARG) return true;
+    ip += sz;
+  }
+
+  return false;
+}
+
 static sv_func_t *scan_closure_child(sv_func_t *func, uint8_t *ip) {
   if ((sv_op_t)*ip != OP_CLOSURE) return NULL;
 
@@ -8343,6 +8359,8 @@ ant_value_t sv_jit_try_osr(
   sv_frame_t *frame, sv_func_t *func,
   int bc_offset
 ) {
+  if (func_writes_params(func)) return SV_JIT_RETRY_INTERP;
+
   sv_closure_t osr_closure;
   sv_closure_t *closure;
   if (vtype(frame->callee) == T_FUNC) {
