@@ -1137,6 +1137,7 @@ static bool func_writes_params(sv_func_t *func) {
     sv_op_t op = (sv_op_t)*ip;
     int sz = sv_op_size[op];
     if (sz == 0) break;
+    if (ip + sz > end) break;
     if (op == OP_PUT_ARG || op == OP_SET_ARG) return true;
     if (op == OP_STR_APPEND_LOCAL || op == OP_STR_ALC_SNAPSHOT || op == OP_STR_FLUSH_LOCAL) {
       if (sv_get_u16(ip + 1) < func->param_count) return true;
