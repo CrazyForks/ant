@@ -1,6 +1,9 @@
 #ifndef SV_COMPARISON_H
 #define SV_COMPARISON_H
 
+#include <math.h>
+#include <string.h>
+
 #include "shapes.h"
 #include "silver/engine.h"
 #include "modules/bigint.h"
@@ -96,6 +99,89 @@ static inline void sv_coerce_relational(ant_t *js, ant_value_t *l, ant_value_t *
   }
 }
 
+typedef enum {
+  SV_REL_LT,
+  SV_REL_LE,
+  SV_REL_GT,
+  SV_REL_GE,
+} sv_rel_op_t;
+
+static inline ant_value_t sv_bigint_compare_number(
+  ant_t *js, ant_value_t bigint, double num, bool *ordered, int *cmp
+) {
+  double integer = floor(num);
+  bool fractional = integer != num;
+  ant_value_t number_bigint;
+
+  *ordered = false;
+  *cmp = 0;
+
+  if (isnan(num)) return js_mkundef();
+  *ordered = true;
+  if (isinf(num)) {
+    *cmp = num > 0 ? -1 : 1;
+    return js_mkundef();
+  }
+
+  number_bigint = bigint_from_integral_double(js, integer);
+  if (is_err(number_bigint)) return number_bigint;
+
+  *cmp = bigint_compare(js, bigint, number_bigint);
+  if (fractional && *cmp == 0) *cmp = -1;
+  
+  return js_mkundef();
+}
+
+static inline bool sv_rel_from_bigint_cmp(int cmp, bool left_is_bigint, sv_rel_op_t op) {
+  switch (op) {
+    case SV_REL_LT: return left_is_bigint ? cmp <  0 : cmp >  0;
+    case SV_REL_LE: return left_is_bigint ? cmp <= 0 : cmp >= 0;
+    case SV_REL_GT: return left_is_bigint ? cmp >  0 : cmp <  0;
+    case SV_REL_GE: return left_is_bigint ? cmp >= 0 : cmp <= 0;
+  }
+  return false;
+}
+
+static inline ant_value_t sv_push_bigint_relational(
+  sv_vm_t *vm, ant_t *js, ant_value_t l, ant_value_t r, sv_rel_op_t op
+) {
+  uint8_t lt = vtype(l), rty = vtype(r);
+  int cmp = 0;
+  bool result = false;
+
+  if (lt == T_BIGINT && rty == T_BIGINT) {
+    cmp = bigint_compare(js, l, r);
+    result = sv_rel_from_bigint_cmp(cmp, true, op);
+  } 
+  
+  else if ((lt == T_BIGINT && rty == T_NUM) || (lt == T_NUM && rty == T_BIGINT)) {
+    bool left_is_bigint = lt == T_BIGINT;
+    bool ordered = false;
+    
+    ant_value_t status = left_is_bigint
+      ? sv_bigint_compare_number(js, l, tod(r), &ordered, &cmp)
+      : sv_bigint_compare_number(js, r, tod(l), &ordered, &cmp);
+    
+    if (is_err(status)) return status;
+    result = ordered && sv_rel_from_bigint_cmp(cmp, left_is_bigint, op);
+  } 
+  
+  else if (lt == T_BIGINT || rty == T_BIGINT) {
+    bool left_is_bigint = lt == T_BIGINT;
+    ant_value_t other_bigint = bigint_from_value(js, left_is_bigint ? r : l);
+    if (is_err(other_bigint)) return other_bigint;
+    
+    cmp = left_is_bigint
+      ? bigint_compare(js, l, other_bigint)
+      : bigint_compare(js, r, other_bigint);
+    
+    result = sv_rel_from_bigint_cmp(cmp, left_is_bigint, op);
+  }
+
+  vm->stack[vm->sp++] = mkval(T_BOOL, result);
+  return tov(0);
+}
+
 static inline ant_value_t sv_op_lt(sv_vm_t *vm, ant_t *js) {
   ant_value_t r = vm->stack[--vm->sp];
   ant_value_t l = vm->stack[--vm->sp];
@@ -105,12 +191,8 @@ static inline ant_value_t sv_op_lt(sv_vm_t *vm, ant_t *js) {
     vm->stack[vm->sp++] = mkval(T_BOOL, tod(l) < tod(r));
     return tov(0);
   }
-  if (lt == T_BIGINT && rty == T_BIGINT) {
-    vm->stack[vm->sp++] = mkval(T_BOOL, bigint_compare(js, l, r) < 0);
-    return tov(0);
-  }
   if (lt == T_BIGINT || rty == T_BIGINT)
-    return js_mkerr(js, "Cannot mix BigInt value and other types");
+    return sv_push_bigint_relational(vm, js, l, r, SV_REL_LT);
   if (lt == T_STR && rty == T_STR) {
     vm->stack[vm->sp++] = mkval(T_BOOL, sv_strcmp(js, l, r) < 0);
     return tov(0);
@@ -128,12 +210,8 @@ static inline ant_value_t sv_op_le(sv_vm_t *vm, ant_t *js) {
     vm->stack[vm->sp++] = mkval(T_BOOL, tod(l) <= tod(r));
     return tov(0);
   }
-  if (lt == T_BIGINT && rty == T_BIGINT) {
-    vm->stack[vm->sp++] = mkval(T_BOOL, bigint_compare(js, l, r) <= 0);
-    return tov(0);
-  }
   if (lt == T_BIGINT || rty == T_BIGINT)
-    return js_mkerr(js, "Cannot mix BigInt value and other types");
+    return sv_push_bigint_relational(vm, js, l, r, SV_REL_LE);
   if (lt == T_STR && rty == T_STR) {
     vm->stack[vm->sp++] = mkval(T_BOOL, sv_strcmp(js, l, r) <= 0);
     return tov(0);
@@ -151,12 +229,8 @@ static inline ant_value_t sv_op_gt(sv_vm_t *vm, ant_t *js) {
     vm->stack[vm->sp++] = mkval(T_BOOL, tod(l) > tod(r));
     return tov(0);
   }
-  if (lt == T_BIGINT && rty == T_BIGINT) {
-    vm->stack[vm->sp++] = mkval(T_BOOL, bigint_compare(js, l, r) > 0);
-    return tov(0);
-  }
   if (lt == T_BIGINT || rty == T_BIGINT)
-    return js_mkerr(js, "Cannot mix BigInt value and other types");
+    return sv_push_bigint_relational(vm, js, l, r, SV_REL_GT);
   if (lt == T_STR && rty == T_STR) {
     vm->stack[vm->sp++] = mkval(T_BOOL, sv_strcmp(js, l, r) > 0);
     return tov(0);
@@ -174,12 +248,8 @@ static inline ant_value_t sv_op_ge(sv_vm_t *vm, ant_t *js) {
     vm->stack[vm->sp++] = mkval(T_BOOL, tod(l) >= tod(r));
     return tov(0);
   }
-  if (lt == T_BIGINT && rty == T_BIGINT) {
-    vm->stack[vm->sp++] = mkval(T_BOOL, bigint_compare(js, l, r) >= 0);
-    return tov(0);
-  }
   if (lt == T_BIGINT || rty == T_BIGINT)
-    return js_mkerr(js, "Cannot mix BigInt value and other types");
+    return sv_push_bigint_relational(vm, js, l, r, SV_REL_GE);
   if (lt == T_STR && rty == T_STR) {
     vm->stack[vm->sp++] = mkval(T_BOOL, sv_strcmp(js, l, r) >= 0);
     return tov(0);

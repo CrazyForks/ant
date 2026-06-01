@@ -2,6 +2,16 @@
 
 #include <string.h>
 #include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+#ifdef _WIN32
+#include <direct.h>
+#define ant_getcwd _getcwd
+#else
+#include <unistd.h>
+#define ant_getcwd getcwd
+#endif
 
 #include "ant.h"
 #include "errors.h"
@@ -12,6 +22,58 @@
 
 #include "modules/events.h"
 #include "modules/globals.h"
+
+#ifdef _WIN32
+static bool is_windows_drive_path(const char *path) {
+  return path &&
+    ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) &&
+    path[1] == ':';
+}
+#endif
+
+static ant_value_t make_global_location(ant_t *js) {
+  ant_value_t location = js_newobj(js);
+  char *cwd = ant_getcwd(NULL, 0);
+
+#ifdef _WIN32
+  if (cwd) {
+    for (char *ch = cwd; *ch; ch++) {
+      if (*ch == '\\') *ch = '/';
+    }
+  }
+#endif
+  
+  const char *pathname = (cwd && cwd[0]) ? cwd : "/";
+  size_t pathname_len = strlen(pathname);
+  
+  bool needs_slash = pathname_len > 0 && pathname[pathname_len - 1] != '/';
+  size_t scheme_len = 7;
+#ifdef _WIN32
+  if (is_windows_drive_path(pathname)) scheme_len = 8;
+#endif
+  size_t href_len = scheme_len + pathname_len + (needs_slash ? 1 : 0);
+  char *href = malloc(href_len + 1);
+
+  if (href) {
+    const char *scheme = "file://";
+#ifdef _WIN32
+    if (is_windows_drive_path(pathname)) scheme = "file:///";
+#endif
+    snprintf(href, href_len + 1, "%s%s%s", scheme, pathname, needs_slash ? "/" : "");
+    js_set(js, location, "href", js_mkstr(js, href, href_len));
+    free(href);
+  }
+  else js_set(js, location, "href", js_mkstr(js, "file:///", 8));
+
+  js_set(js, location, "origin", js_mkstr(js, "null", 4));
+  js_set(js, location, "protocol", js_mkstr(js, "file:", 5));
+  js_set(js, location, "pathname", js_mkstr(js, pathname, pathname_len));
+  js_set(js, location, "search", js_mkstr(js, "", 0));
+  js_set(js, location, "hash", js_mkstr(js, "", 0));
+  free(cwd);
+
+  return location;
+}
 
 ant_value_t js_report_error(ant_t *js, ant_value_t *args, int nargs) {
   if (nargs < 1) return js_mkerr_typed(js, JS_ERR_TYPE, "reportError requires 1 argument");
@@ -104,6 +166,11 @@ void js_fire_rejection_handled(ant_t *js, ant_value_t promise_val, ant_value_t r
 void init_globals_module(void) {
   ant_t *js = rt->js;
   ant_value_t global = js_glob(js);
+
+  if (rt->flags & ANT_RUNTIME_WEB) {
+    js_set(js, global, "location", make_global_location(js));
+    js_set_descriptor(js, global, "location", 8, JS_DESC_W | JS_DESC_C);
+  }
 
   js_set(js, global, "reportError", js_mkfun(js_report_error));
   js_set_descriptor(js, global, "reportError", 11, JS_DESC_W | JS_DESC_C);

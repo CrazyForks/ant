@@ -21,6 +21,7 @@
 #endif
 
 typedef struct { char *buf; size_t size; } errbuf_t;
+enum { ERROR_CONTEXT_MAX_SOURCE_BYTES = 256 * 1024 };
 
 void print_error_value(ant_t *js, ant_value_t value, ant_value_t fallback_stack, const char *prefix) {
   ant_value_t obj = is_err(value) ? js_as_obj(value) : value;
@@ -502,6 +503,7 @@ static bool append_error_context(
   int error_line_no, int error_col, int error_span_cols
 ) {
   if (!src || src_len <= 0 || !n) return false;
+  if (src_len > ERROR_CONTEXT_MAX_SOURCE_BYTES) return false;
   if (src_pos > src_len) src_pos = src_len;
 
   ant_offset_t err_line_start = src_pos;
@@ -544,8 +546,9 @@ static bool append_error_context(
     bool was_clipped = (src_cols_limit > 0 && line_len > src_cols_limit);
 
     if (!io_no_color) {
+      size_t highlight_len = was_clipped ? (size_t)src_cols_limit : (size_t)line_len;
       highlight_js_line_clipped(
-        src + ls, (size_t)line_len, (size_t)src_cols_limit,
+        src + ls, highlight_len, (size_t)src_cols_limit,
         tagged, sizeof(tagged), &hl_state
       );
       crsprintf_stateful(rendered, sizeof(rendered), NULL, tagged);
@@ -702,6 +705,13 @@ static void js_prepare_error_render_site(ant_t *js, js_error_render_site_t *site
   ant_offset_t src_span_len = 0;
   ant_offset_t line_start = 0, line_end = 0;
   resolve_error_site(js, &site->src, &site->src_len, &site->src_pos, &src_span_len);
+
+  if (site->src_len > ERROR_CONTEXT_MAX_SOURCE_BYTES) {
+    get_line_col(site->src, site->src_len, site->src_pos, &site->line, &site->col);
+    site->src = NULL;
+    site->src_len = 0;
+    return;
+  }
 
   get_line_col(site->src, site->src_len, site->src_pos, &site->line, &site->col);
   get_error_line(

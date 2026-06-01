@@ -46,6 +46,7 @@
 #include "modules/napi.h"
 #include "modules/timer.h"
 #include "modules/string_decoder.h"
+#include "modules/fs.h"
 
 #ifndef _WIN32
 extern char **environ;
@@ -619,6 +620,23 @@ static bool stdout_is_tty(void) {
 static bool stderr_is_tty(void) {
   if (sandbox_terminal_enabled) return (sandbox_terminal_capabilities & ANT_SANDBOX_CAP_STDERR_TTY) != 0;
   return uv_guess_handle(STDERR_FILENO) == UV_TTY;
+}
+
+static ant_value_t process_binding(ant_t *js, ant_value_t *args, int nargs) {
+  const char *name;
+  ant_value_t constants;
+
+  if (nargs < 1 || vtype(args[0]) != T_STR)
+    return js_mkerr_typed(js, JS_ERR_TYPE, "process.binding() requires a module name");
+
+  name = js_getstr(js, args[0], NULL);
+  if (!name || strcmp(name, "constants") != 0)
+    return js_mkerr_typed(js, JS_ERR_TYPE, "No such module: %s", name ? name : "");
+
+  constants = js_mkobj(js);
+  js_set(js, constants, "fs", fs_make_constants(js));
+  
+  return constants;
 }
 
 static void get_tty_size(int fd, int *rows, int *cols) {
@@ -1978,6 +1996,7 @@ void init_process_module() {
   
   js_set_proto_init(process_obj, process_proto);
   process_set_methods(js, process_obj, false);
+  js_set(js, process_obj, "binding", js_mkfun(process_binding));
 
   load_dotenv_file(js, env_obj);
   js_set_keys(env_obj, env_keys);

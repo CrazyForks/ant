@@ -615,6 +615,7 @@ int main(int argc, char *argv[]) {
     X(struct arg_str *, eval, arg_str0("e", "eval", "<script>", "evaluate script")) \
     X(struct arg_lit *, print, arg_lit0("p", "print", "evaluate script and print result")) \
     X(struct arg_lit *, watch, arg_lit0("w", "watch", "restart process when entry file changes")) \
+    X(struct arg_lit *, web, arg_lit0(NULL, "web", "enable web-compatible globals")) \
     X(struct arg_lit *, no_clear_screen, arg_lit0(NULL, "no-clear-screen", "keep output when restarting in watch mode")) \
     X(struct arg_file *, localstorage_file, arg_file0(NULL, "localstorage-file", "<path>", "file path for localStorage persistence")) \
     X(struct arg_file *, file, arg_filen(NULL, NULL, NULL, 0, argc, NULL)) \
@@ -814,6 +815,7 @@ int main(int argc, char *argv[]) {
   
   proc_argv = build_process_argv(argc, argv, module_file, script_tail);
   ant_runtime_init(js, proc_argv.argc, proc_argv.argv, localstorage_file);
+  if (web->count > 0) rt->flags |= ANT_RUNTIME_WEB;
   
   if (sandbox_daemon) {
     io_set_sandbox_terminal(sandbox.capabilities);
