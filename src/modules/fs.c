@@ -2713,7 +2713,7 @@ static ant_value_t builtin_fs_ftruncateSync(ant_t *js, ant_value_t *args, int na
   int rc = uv_fs_ftruncate(NULL, &req, fd, len, NULL);
   uv_fs_req_cleanup(&req);
 
-  if (rc < 0) return js_mkerr(js, "ftruncateSync: %s", uv_strerror(rc));
+  if (rc < 0) return fs_mk_uv_error(js, rc, "ftruncate", NULL, NULL);
   return js_mkundef();
 }
 

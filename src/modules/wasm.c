@@ -1362,7 +1362,7 @@ static ant_value_t wasm_make_external_arraybuffer(ant_t *js, uint8_t *data, size
   buffer->data = data;
   buffer->length = len;
   buffer->capacity = len;
-  buffer->ref_count = 1;
+  buffer->ref_count = 0;
   return create_arraybuffer_obj(js, buffer);
 }
 

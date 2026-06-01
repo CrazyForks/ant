@@ -707,6 +707,7 @@ static void js_prepare_error_render_site(ant_t *js, js_error_render_site_t *site
   resolve_error_site(js, &site->src, &site->src_len, &site->src_pos, &src_span_len);
 
   if (site->src_len > ERROR_CONTEXT_MAX_SOURCE_BYTES) {
+    get_line_col(site->src, site->src_len, site->src_pos, &site->line, &site->col);
     site->src = NULL;
     site->src_len = 0;
     return;

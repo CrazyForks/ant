@@ -23,19 +23,43 @@
 #include "modules/events.h"
 #include "modules/globals.h"
 
+#ifdef _WIN32
+static bool is_windows_drive_path(const char *path) {
+  return path &&
+    ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) &&
+    path[1] == ':';
+}
+#endif
+
 static ant_value_t make_global_location(ant_t *js) {
   ant_value_t location = js_newobj(js);
   char *cwd = ant_getcwd(NULL, 0);
+
+#ifdef _WIN32
+  if (cwd) {
+    for (char *ch = cwd; *ch; ch++) {
+      if (*ch == '\\') *ch = '/';
+    }
+  }
+#endif
   
   const char *pathname = (cwd && cwd[0]) ? cwd : "/";
   size_t pathname_len = strlen(pathname);
   
   bool needs_slash = pathname_len > 0 && pathname[pathname_len - 1] != '/';
-  size_t href_len = 7 + pathname_len + (needs_slash ? 1 : 0);
+  size_t scheme_len = 7;
+#ifdef _WIN32
+  if (is_windows_drive_path(pathname)) scheme_len = 8;
+#endif
+  size_t href_len = scheme_len + pathname_len + (needs_slash ? 1 : 0);
   char *href = malloc(href_len + 1);
 
   if (href) {
-    snprintf(href, href_len + 1, "file://%s%s", pathname, needs_slash ? "/" : "");
+    const char *scheme = "file://";
+#ifdef _WIN32
+    if (is_windows_drive_path(pathname)) scheme = "file:///";
+#endif
+    snprintf(href, href_len + 1, "%s%s%s", scheme, pathname, needs_slash ? "/" : "");
     js_set(js, location, "href", js_mkstr(js, href, href_len));
     free(href);
   }

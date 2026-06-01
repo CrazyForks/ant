@@ -438,9 +438,10 @@ static int ant_hvf_session_create(const ant_sandbox_vm_config_t *config, void **
     rc = -errno;
     goto fail;
   }
-  if (pthread_mutex_init(&vm->virtio_lock, NULL) == 0) vm->virtio_lock_init = true;
+  int virtio_lock_rc = pthread_mutex_init(&vm->virtio_lock, NULL);
+  if (virtio_lock_rc == 0) vm->virtio_lock_init = true;
   else if (vm->net_enabled) {
-    rc = -errno;
+    rc = -virtio_lock_rc;
     goto fail;
   }
 
