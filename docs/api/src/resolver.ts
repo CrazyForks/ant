@@ -380,7 +380,7 @@ async function resolveActionNamedArtifact(
       return resolvedAction(
         kind,
         artifact,
-        undefined,
+        artifactVersion(env),
         actionSourceInfo(match.repository, match.run.path || workflow, match.run),
         downloadUrl(url, kind, arch, branch(env), runId),
       );
@@ -394,7 +394,7 @@ async function resolveActionNamedArtifact(
   return resolvedAction(
     kind,
     artifact,
-    undefined,
+    artifactVersion(env),
     actionSourceInfo(match.repository, workflow, match.run),
     downloadUrl(url, kind, arch, branch(env), match.run.id),
   );
@@ -412,7 +412,7 @@ async function resolveAnyActionNamedArtifact(
   return resolvedAction(
     kind,
     artifact,
-    undefined,
+    artifactVersion(env),
     actionSourceInfo(match.repository, match.run.path || match.run.name, match.run),
     downloadUrl(url, kind, arch, branch(env), match.run.id),
   );
@@ -453,7 +453,7 @@ async function resolveReleaseArtifact(
   const asset = findReleaseAsset(release, artifactName);
   if (!asset) throw new HttpError(`release asset not found: ${artifactName}`, 404);
 
-  const version = kind === 'ant' ? normalizeVersion(release.tag_name) : undefined;
+  const version = normalizeVersion(release.tag_name);
   return {
     kind,
     name: asset.name,
