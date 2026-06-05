@@ -2,7 +2,6 @@
 
 #include "sandbox/host.h"
 #include "assets.h"
-#include "cli/version.h"
 #include "modules/io.h"
 #include "sandbox/sandbox.h"
 #include "utils.h"
@@ -53,14 +52,14 @@ static bool sandbox_file_exists(const char *path) {
 
 static int sandbox_cache_path(char *out, size_t out_size, const char *filename) {
   char suffix[512];
-  int written = snprintf(suffix, sizeof(suffix), "sandbox/%s/%s", ant_semver(), filename);
+  int written = snprintf(suffix, sizeof(suffix), "sandbox/%s/%s", ANT_VERSION, filename);
   if (written < 0 || (size_t)written >= sizeof(suffix)) return -ENAMETOOLONG;
   return ant_xdg_cache_path(out, out_size, suffix) == 0 ? 0 : -EINVAL;
 }
 
 static int sandbox_cache_dir(char *out, size_t out_size) {
   char suffix[512];
-  int written = snprintf(suffix, sizeof(suffix), "sandbox/%s", ant_semver());
+  int written = snprintf(suffix, sizeof(suffix), "sandbox/%s", ANT_VERSION);
   if (written < 0 || (size_t)written >= sizeof(suffix)) return -ENAMETOOLONG;
   return ant_xdg_cache_path(out, out_size, suffix) == 0 ? 0 : -EINVAL;
 }

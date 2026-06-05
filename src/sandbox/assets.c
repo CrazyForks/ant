@@ -1,7 +1,6 @@
 #include <compat.h> // IWYU pragma: keep
 
 #include "assets.h"
-#include "cli/version.h"
 #include "modules/http.h"
 #include "progress.h"
 #include "sandbox/host.h"
@@ -567,13 +566,7 @@ static uint64_t sandbox_json_uint(yyjson_val *obj, const char *key) {
 }
 
 static bool sandbox_manifest_version_matches_local(const char *manifest_version) {
-  if (!manifest_version || !manifest_version[0]) return false;
-  const char *local = ant_semver();
-  size_t local_len = strlen(local);
-  if (strncmp(manifest_version, local, local_len) != 0) return false;
-
-  char next = manifest_version[local_len];
-  return next == '\0' || next == '.' || next == '-' || next == '+';
+  return manifest_version && strcmp(manifest_version, ANT_VERSION) == 0;
 }
 
 static yyjson_val *sandbox_manifest_find(yyjson_val *root, const char *array_key, const char *field, const char *value) {
@@ -716,7 +709,7 @@ static int sandbox_manifest_select(
     sandbox_asset_error(
       err, err_len,
       "manifest Ant version mismatch: current=%s manifest=%s",
-      ant_semver(),
+      ANT_VERSION,
       ant_version ? ant_version : "(missing)"
     );
     rc = -EINVAL;
