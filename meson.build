@@ -150,7 +150,7 @@ ant_exe = executable(
   export_dynamic: true
 )
 
-if host_machine.system() == 'darwin'
+if host_machine.system() == 'darwin' and get_option('codesign')
   codesign = find_program('codesign')
   custom_target(
     'ant_codesign',
