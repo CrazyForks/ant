@@ -140,6 +140,7 @@ async function cacheAndRespondBytes(
     useGzip ? 'application/gzip' : 'application/octet-stream',
     cacheTtl(env),
     useGzip ? 'gzip' : undefined,
+    useGzip ? gzipBody?.byteLength : body.byteLength,
     body.byteLength,
   );
 
@@ -240,6 +241,7 @@ function downloadHeaders(
   contentType: string,
   maxAge: number,
   encoding?: 'gzip',
+  contentLength?: number,
   uncompressedSize?: number,
 ): Headers {
   const headers = new Headers();
@@ -252,6 +254,7 @@ function downloadHeaders(
   headers.set('X-Ant-Artifact', artifact.name);
   headers.set('X-Ant-Source', artifact.source.type);
   if (artifact.version) headers.set('X-Ant-Version', artifact.version);
+  if (contentLength !== undefined) headers.set('Content-Length', String(contentLength));
   if (encoding) {
     headers.set('X-Ant-Compression', encoding);
   }

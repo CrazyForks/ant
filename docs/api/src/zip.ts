@@ -12,6 +12,7 @@ export async function readZipEntry(zip: ArrayBuffer, wantedName: string): Promis
   ensureZipRange(view, eocd, 22, 'end of central directory');
   const entries = view.getUint16(eocd + 10, true);
   let cursor = view.getUint32(eocd + 16, true);
+  let match: { compressed: Uint8Array; method: number } | undefined;
 
   for (let i = 0; i < entries; i++) {
     ensureZipRange(view, cursor, 46, 'central directory header');
@@ -30,6 +31,9 @@ export async function readZipEntry(zip: ArrayBuffer, wantedName: string): Promis
     const name = new TextDecoder().decode(bytes.slice(cursor + 46, cursor + 46 + filenameLength));
 
     if (name === wantedName || name.endsWith(`/${wantedName}`)) {
+      if (match) {
+        throw new HttpError(`zip entry ambiguous: ${wantedName}`, 502);
+      }
       ensureZipRange(view, localOffset, 30, 'local file header');
       if (view.getUint32(localOffset, true) !== 0x04034b50) {
         throw new HttpError('invalid zip local header', 502);
@@ -40,12 +44,13 @@ export async function readZipEntry(zip: ArrayBuffer, wantedName: string): Promis
       ensureZipRange(view, localOffset, dataStart - localOffset, 'local file entry');
       ensureZipRange(view, dataStart, compressedSize, 'zip entry data');
       const compressed = bytes.slice(dataStart, dataStart + compressedSize);
-      return decompressZipEntry(compressed, method);
+      match = { compressed, method };
     }
 
     cursor = entryEnd;
   }
 
+  if (match) return decompressZipEntry(match.compressed, match.method);
   throw new HttpError(`zip entry not found: ${wantedName}`, 502);
 }
 

@@ -355,13 +355,18 @@ async function resolveActionAntFromArtifacts(
     }
   }
 
-  return resolvedAction(
+  const resolved = resolvedAction(
     'ant',
     artifact,
     version,
     actionSourceInfo(sourceRepository, BUILD_WORKFLOW, run),
     downloadUrl(url, 'ant', target.key, branch(env), run.id),
   );
+
+  resolved.zip_entry = target.os === 'windows' ? 'ant.exe' : 'ant';
+  resolved.filename = target.os === 'windows' ? 'ant.exe' : 'ant';
+
+  return resolved;
 }
 
 async function resolveActionNamedArtifact(
