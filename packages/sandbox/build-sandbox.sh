@@ -132,7 +132,7 @@ if [[ -z "$ant_base_version" ]]; then
   exit 1
 fi
 
-sandbox_version="$ant_base_version"
+sandbox_version="$ant_base_version.$build_timestamp-g$build_git_hash"
 safe_version=${sandbox_version//[^A-Za-z0-9._-]/-}
 
 if [[ -d "$HOME/.ant" ]]; then
