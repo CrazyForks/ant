@@ -140,7 +140,11 @@ function requestOptions(c: AppContext): RequestOptions {
 function refreshOptions(c: AppContext): RequestOptions {
   const options = requestOptions(c);
   const query = RefreshQuerySchema.parse(c.req.query());
+  const headerVersion = c.req.header('X-Ant-Version');
   const headerRevision = c.req.header('X-Ant-Revision');
+  const requestedVersion =
+    query.version ||
+    (headerVersion ? RefreshQuerySchema.parse({ version: headerVersion }).version : undefined);
   const requestedRevision =
     query.revision ||
     (headerRevision
@@ -148,6 +152,7 @@ function refreshOptions(c: AppContext): RequestOptions {
       : undefined);
   return {
     ...options,
+    version: requestedVersion,
     revision: requestedRevision,
   };
 }

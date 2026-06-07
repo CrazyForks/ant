@@ -13,6 +13,13 @@ const ArtifactRevisionSchema = z
   .trim()
   .regex(/^[0-9a-fA-F]{40,64}$/, 'revision must be a full git hash');
 
+const ArtifactVersionSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9._+-]+$/, 'version contains unsupported characters');
+
 export const VersionQuerySchema = z
   .object({
     current: z.string().optional(),
@@ -55,5 +62,6 @@ export const BranchQuerySchema = z.object({
 });
 
 export const RefreshQuerySchema = BranchQuerySchema.extend({
+  version: ArtifactVersionSchema.optional(),
   revision: ArtifactRevisionSchema.optional(),
 });

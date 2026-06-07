@@ -16,6 +16,7 @@ export type RequestOptions = {
   branch?: string;
   runId?: number;
   revision?: string;
+  version?: string;
 };
 
 export function canDownloadActionsArtifacts(env: Env): boolean {

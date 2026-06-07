@@ -360,7 +360,7 @@ async function resolveActionAntFromArtifacts(
   const versionArtifact = artifacts.find(
     item => item.name === `version-${target.artifact}` && !item.expired,
   );
-  let version: string | undefined;
+  let version = options.version;
 
   if (versionArtifact) {
     try {
