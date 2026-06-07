@@ -1,6 +1,6 @@
 import { branch, manifestRefreshSeconds, repository } from './config';
 import type { RequestOptions } from './config';
-import { annotateGzipSizes, prefetchArtifacts } from './downloads';
+import { annotateGzipSizes, downloadCacheKeys, prefetchArtifacts } from './downloads';
 import type { Env, ResolvedArtifact } from './types';
 
 type WaitUntilContext = {
@@ -55,6 +55,7 @@ export async function forceRefreshManifest(
   await prefetchArtifacts(env, manifestArtifacts(body));
   const annotated = await annotateGzipSizes(env, body);
   await storeManifest(env, options, key, annotated);
+  await pruneR2ToLatest(env, key, annotated);
 
   return Response.json(
     {
@@ -77,7 +78,9 @@ async function refreshManifest(env: Env, options: RequestOptions, key: string, p
 
 async function storeManifestAndPrefetch(env: Env, options: RequestOptions, key: string, body: unknown): Promise<void> {
   await prefetchArtifacts(env, manifestArtifacts(body));
-  await storeManifest(env, options, key, await annotateGzipSizes(env, body));
+  const annotated = await annotateGzipSizes(env, body);
+  await storeManifest(env, options, key, annotated);
+  await pruneR2ToLatest(env, key, annotated);
 }
 
 async function storeManifest(env: Env, options: RequestOptions, key: string, body: unknown): Promise<void> {
@@ -108,6 +111,37 @@ function shouldRefreshManifest(env: Env, object: R2Object): boolean {
 
 function manifestKey(env: Env, options: RequestOptions): string {
   return `manifests/latest/${repository(env)}/${branch(env, options)}.json`;
+}
+
+async function pruneR2ToLatest(env: Env, manifestKey: string, body: unknown): Promise<void> {
+  try {
+    const keep = new Set<string>([manifestKey]);
+    for (const artifact of manifestArtifacts(body)) {
+      for (const key of downloadCacheKeys(artifact)) keep.add(key);
+    }
+
+    await prunePrefix(env, 'manifests/latest/', keep);
+    await prunePrefix(env, 'downloads/', keep);
+  } catch (error) {
+    console.warn('failed to prune R2 cache', error);
+  }
+}
+
+async function prunePrefix(env: Env, prefix: string, keep: Set<string>): Promise<void> {
+  const stale: string[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const listed = await env.DOWNLOADS.list({ prefix, cursor });
+    for (const object of listed.objects) {
+      if (!keep.has(object.key)) stale.push(object.key);
+    }
+    cursor = listed.truncated ? listed.cursor : undefined;
+  } while (cursor);
+
+  for (let i = 0; i < stale.length; i += 1000) {
+    await env.DOWNLOADS.delete(stale.slice(i, i + 1000));
+  }
 }
 
 function jsonHeaders(): Headers {

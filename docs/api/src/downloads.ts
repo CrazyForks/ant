@@ -127,6 +127,12 @@ export function downloadFilename(artifact: ResolvedArtifact): string {
   return `${artifact.name}.zip`;
 }
 
+export function downloadCacheKeys(artifact: ResolvedArtifact): string[] {
+  const keys = [downloadCacheKey(artifact, 'plain')];
+  if (artifact.zip_entry) keys.push(downloadCacheKey(artifact, 'gzip-file'));
+  return keys;
+}
+
 async function cacheAndRespondBytes(
   request: Request,
   env: Env,
