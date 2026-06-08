@@ -405,6 +405,7 @@ static ant_value_t create_map_iterator(ant_t *js, ant_value_t map_obj, iter_type
   
   ant_value_t iter = js_mkobj(js);
   js_set_proto_init(iter, g_map_iter_proto);
+  js_set_slot_wb(js, iter, SLOT_DATA, map_obj);
   js_set_native(iter, state, MAP_ITER_NATIVE_TAG);
   
   return iter;
@@ -459,6 +460,7 @@ static ant_value_t create_set_iterator(ant_t *js, ant_value_t set_obj, iter_type
   
   ant_value_t iter = js_mkobj(js);
   js_set_proto_init(iter, g_set_iter_proto);
+  js_set_slot_wb(js, iter, SLOT_DATA, set_obj);
   js_set_native(iter, state, SET_ITER_NATIVE_TAG);
   
   return iter;

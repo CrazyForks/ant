@@ -273,6 +273,12 @@ size_t js_to_pcre2_pattern(const char *src, size_t src_len, char *dst, size_t ds
 
   for (size_t si = 0; si < src_len && di < dst_size - 1; si++) {
     if (src[si] == '[') {
+      if (si + 2 < src_len && src[si + 1] == '^' && src[si + 2] == ']') {
+        OUT('['); OUT('\\'); OUT('s'); OUT('\\'); OUT('S'); OUT(']');
+        si += 2;
+        continue;
+      }
+
       if (v_flag && charclass_depth == 0) {
         size_t close = v_close_bracket(src, src_len, si);
         size_t op_pos;
