@@ -8184,8 +8184,6 @@ static ant_value_t builtin_object_defineProperty(ant_t *js, ant_value_t *args, i
   } else {
     ant_offset_t prop_off = vstr(js, prop, &prop_len);
     prop_str = (char *)(uintptr_t)(prop_off);
-    if (streq(prop_str, prop_len, STR_PROTO, STR_PROTO_LEN)) 
-      return js_mkerr(js, "Cannot define " STR_PROTO " property");
   }
   
   bool has_value = false, has_get = false, has_set = false;
