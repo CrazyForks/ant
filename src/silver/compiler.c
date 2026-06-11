@@ -774,10 +774,7 @@ static void merge_binding_meta(sv_binding_meta_t *dst, const sv_binding_meta_t *
     dst->import_name_len = src->import_name_len;
   }
 
-  if (src->export_name) {
-    dst->export_name = src->export_name;
-    dst->export_name_len = src->export_name_len;
-  }
+  if (src->exports) dst->exports = src->exports;
 }
 
 static void ensure_upvalue_capacity(sv_compiler_t *c) {
@@ -1111,6 +1108,16 @@ static void emit_get_var(sv_compiler_t *c, const char *name, uint32_t len) {
   else emit_atom_op(c, OP_GET_GLOBAL, name, len);
 }
 
+static void emit_export_dups(sv_compiler_t *c, const sv_export_name_t *exports) {
+  for (const sv_export_name_t *e = exports; e; e = e->next)
+    emit_op(c, OP_DUP);
+}
+
+static void emit_export_writes(sv_compiler_t *c, const sv_export_name_t *exports) {
+  for (const sv_export_name_t *e = exports; e; e = e->next)
+    emit_atom_op(c, OP_EXPORT, e->name, e->len);
+}
+
 static void emit_set_var(sv_compiler_t *c, const char *name, uint32_t len, bool keep) {
   int local = resolve_local(c, name, len);
   if (local != -1) {
@@ -1119,18 +1126,17 @@ static void emit_set_var(sv_compiler_t *c, const char *name, uint32_t len, bool 
       return;
     }
     set_local_inferred_type(c, local, SV_TI_UNKNOWN);
-    const char *export_name = c->locals[local].binding.export_name;
-    uint32_t export_name_len = c->locals[local].binding.export_name_len;
-    if (export_name) emit_op(c, OP_DUP);
+    const sv_export_name_t *exports = c->locals[local].binding.exports;
+    emit_export_dups(c, exports);
 
     if (c->with_depth > 0) {
       uint8_t kind = c->locals[local].depth == -1 ? WITH_FB_ARG : WITH_FB_LOCAL;
-      uint16_t idx = kind == WITH_FB_ARG 
+      uint16_t idx = kind == WITH_FB_ARG
         ? (uint16_t)local
         : (uint16_t)(local - c->param_locals);
       if (keep) emit_op(c, OP_DUP);
       emit_with_put(c, name, len, kind, idx);
-      if (export_name) emit_atom_op(c, OP_EXPORT, export_name, export_name_len);
+      emit_export_writes(c, exports);
       return;
     }
     if (c->locals[local].depth == -1) {
@@ -1138,14 +1144,14 @@ static void emit_set_var(sv_compiler_t *c, const char *name, uint32_t len, bool 
       emit_u16(c, (uint16_t)local);
     } else {
       int slot = local - c->param_locals;
-      sv_op_t op = keep 
+      sv_op_t op = keep
         ? (slot <= 255 ? OP_SET_LOCAL8 : OP_SET_LOCAL)
         : (slot <= 255 ? OP_PUT_LOCAL8 : OP_PUT_LOCAL);
       emit_op(c, op);
       if (slot <= 255) emit(c, (uint8_t)slot);
       else emit_u16(c, (uint16_t)slot);
     }
-    if (export_name) emit_atom_op(c, OP_EXPORT, export_name, export_name_len);
+    emit_export_writes(c, exports);
     return;
   }
   int upval = resolve_upvalue(c, name, len);
@@ -1154,19 +1160,17 @@ static void emit_set_var(sv_compiler_t *c, const char *name, uint32_t len, bool 
       emit_const_assign_error(c, name, len);
       return;
     }
-    sv_binding_meta_t *meta = &c->upval_bindings[upval];
-    const char *export_name = meta->export_name;
-    uint32_t export_name_len = meta->export_name_len;
-    if (export_name) emit_op(c, OP_DUP);
+    const sv_export_name_t *exports = c->upval_bindings[upval].exports;
+    emit_export_dups(c, exports);
     if (c->with_depth > 0) {
       if (keep) emit_op(c, OP_DUP);
       emit_with_put(c, name, len, WITH_FB_UPVAL, (uint16_t)upval);
-      if (export_name) emit_atom_op(c, OP_EXPORT, export_name, export_name_len);
+      emit_export_writes(c, exports);
       return;
     }
     emit_op(c, keep ? OP_SET_UPVAL : OP_PUT_UPVAL);
     emit_u16(c, (uint16_t)upval);
-    if (export_name) emit_atom_op(c, OP_EXPORT, export_name, export_name_len);
+    emit_export_writes(c, exports);
     return;
   }
   if (has_module_import_binding(c) && is_ident_str(name, len, "import", 6)) {
@@ -1499,11 +1503,34 @@ static void annex_b_collect_block_var_funcs(sv_ast_t *node, sv_ast_list_t *out) 
   }
 }
 
-static void mark_export_binding(sv_compiler_t *c, const char *name, uint32_t len) {
+static void mark_export_binding_as(
+  sv_compiler_t *c,
+  const char *name, uint32_t len,
+  const char *export_name, uint32_t export_name_len
+) {
   int local = resolve_local(c, name, len);
   if (local == -1) return;
-  c->locals[local].binding.export_name = name;
-  c->locals[local].binding.export_name_len = len;
+
+  /* tail-append so binding meta already copied into nested compilers
+     (which share the list head) sees later aliases too */
+  sv_export_name_t **slot = &c->locals[local].binding.exports;
+  while (*slot) {
+    if ((*slot)->len == export_name_len &&
+        memcmp((*slot)->name, export_name, export_name_len) == 0)
+      return;
+    slot = &(*slot)->next;
+  }
+
+  sv_export_name_t *node = code_arena_bump(sizeof(sv_export_name_t));
+  if (!node) return;
+  node->name = export_name;
+  node->len = export_name_len;
+  node->next = NULL;
+  *slot = node;
+}
+
+static void mark_export_binding(sv_compiler_t *c, const char *name, uint32_t len) {
+  mark_export_binding_as(c, name, len, name, len);
 }
 
 static void mark_export_pattern(sv_compiler_t *c, sv_ast_t *pat) {
@@ -1587,8 +1614,20 @@ static void hoist_lexical_decls(sv_compiler_t *c, sv_ast_list_t *stmts) {
         emit_op(c, OP_SET_LOCAL_UNDEF);
         emit_u16(c, (uint16_t)slot);
       }
+      if (node->type == N_EXPORT) {
+        if (node->flags & EX_DEFAULT)
+          mark_export_binding_as(c, decl_node->str, decl_node->len, "default", 7);
+        else
+          mark_export_binding(c, decl_node->str, decl_node->len);
+      }
     } else if (decl_node->type == N_FUNC && decl_node->str && !(decl_node->flags & (FN_ARROW | FN_PAREN))) {
       ensure_local_at_depth(c, decl_node->str, decl_node->len, false, c->scope_depth);
+      if (node->type == N_EXPORT) {
+        if (node->flags & EX_DEFAULT)
+          mark_export_binding_as(c, decl_node->str, decl_node->len, "default", 7);
+        else
+          mark_export_binding(c, decl_node->str, decl_node->len);
+      }
     }
     if (!c->is_strict && (decl_node->type == N_IF || decl_node->type == N_LABEL)) {
       sv_ast_list_t funcs = {0};
@@ -1607,6 +1646,35 @@ static void hoist_lexical_decls(sv_compiler_t *c, sv_ast_list_t *stmts) {
         if (resolve_local_at_depth(c, fn->str, fn->len, 0) == -1)
           add_local(c, fn->str, fn->len, false, 0);
       }
+    }
+  }
+
+  /* second pass: export clauses and exported var decls can precede the
+     declarations they reference, so mark them once every hoisted local
+     exists (var locals were hoisted before this function ran) */
+  for (int i = 0; i < stmts->count; i++) {
+    sv_ast_t *node = stmts->items[i];
+    if (!node || node->type != N_EXPORT) continue;
+
+    if ((node->flags & EX_DECL) && node->left && node->left->type == N_VAR) {
+      for (int j = 0; j < node->left->args.count; j++) {
+        sv_ast_t *decl = node->left->args.items[j];
+        if (!decl || decl->type != N_VARDECL) continue;
+        mark_export_pattern(c, decl->left);
+      }
+      continue;
+    }
+
+    if (!(node->flags & EX_NAMED) || (node->flags & (EX_FROM | EX_DECL | EX_DEFAULT | EX_STAR)))
+      continue;
+    for (int j = 0; j < node->args.count; j++) {
+      sv_ast_t *spec = node->args.items[j];
+      if (!spec || spec->type != N_IMPORT_SPEC || !spec->left || !spec->right ||
+          spec->left->type != N_IDENT || spec->right->type != N_IDENT)
+        continue;
+      mark_export_binding_as(
+        c, spec->left->str, spec->left->len,
+        spec->right->str, spec->right->len);
     }
   }
 }
@@ -4037,11 +4105,7 @@ void compile_import_decl(sv_compiler_t *c, sv_ast_t *node) {
 }
 
 static void compile_export_emit(sv_compiler_t *c, const char *name, uint32_t len) {
-  int local = resolve_local(c, name, len);
-  if (local != -1) {
-    c->locals[local].binding.export_name = name;
-    c->locals[local].binding.export_name_len = len;
-  }
+  mark_export_binding(c, name, len);
   emit_get_var(c, name, len);
   emit_atom_op(c, OP_EXPORT, name, len);
 }
