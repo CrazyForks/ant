@@ -7,6 +7,8 @@ export let multi = 0
 export { multi as multiB, multi as multiC }
 
 export var varBinding = 0
+export var deferredAlias
+export { deferredAlias as deferredAliasA, deferredAlias as deferredAliasB }
 export default function dflt() { return 'orig' }
 
 export function bump() { counter++ }

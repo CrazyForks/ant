@@ -4106,8 +4106,19 @@ void compile_import_decl(sv_compiler_t *c, sv_ast_t *node) {
 
 static void compile_export_emit(sv_compiler_t *c, const char *name, uint32_t len) {
   mark_export_binding(c, name, len);
+  int local = resolve_local(c, name, len);
+  const sv_export_name_t *exports =
+    (local >= 0) ? c->locals[local].binding.exports : NULL;
+
   emit_get_var(c, name, len);
-  emit_atom_op(c, OP_EXPORT, name, len);
+  if (!exports) {
+    emit_atom_op(c, OP_EXPORT, name, len);
+    return;
+  }
+
+  for (const sv_export_name_t *e = exports->next; e; e = e->next)
+    emit_op(c, OP_DUP);
+  emit_export_writes(c, exports);
 }
 
 static void defer_export(sv_compiler_t *c, const char *name, uint32_t len) {

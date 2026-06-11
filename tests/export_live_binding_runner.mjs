@@ -27,6 +27,10 @@ assert(ns.alias === 99, `aliased export clause: expected 99, got ${ns.alias}`);
 assert(ns.multi === 7 && ns.multiB === 7 && ns.multiC === 7,
   `multi-alias export must update every name: got ${ns.multi}/${ns.multiB}/${ns.multiC}`);
 assert(ns.varBinding === 11, `export var live binding: expected 11, got ${ns.varBinding}`);
+assert('deferredAlias' in ns && 'deferredAliasA' in ns && 'deferredAliasB' in ns,
+  'deferred export var aliases should be published');
+assert(ns.deferredAlias === undefined && ns.deferredAliasA === undefined && ns.deferredAliasB === undefined,
+  `deferred export var aliases should start undefined: got ${ns.deferredAlias}/${ns.deferredAliasA}/${ns.deferredAliasB}`);
 
 ns.swapDefault();
 assert(ns.default() === 'swapped',
