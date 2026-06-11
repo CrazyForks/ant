@@ -170,9 +170,12 @@ static inline bool sv_ic_try_get_hit(
     source = receiver;
     prop_shape = receiver->shape;
   } else {
+    /* Value-compare the proto before touching the cached holder: a live
+       receiver with an unchanged proto (epoch-protected) pins the whole
+       chain, so the holder cannot have been freed. */
+    if (receiver->proto != ic->guard.receiver_proto) return false;
     ant_object_t *holder = ic->cached_holder;
     if (!holder || holder->flags.is_exotic || !holder->shape) return false;
-    if (receiver->proto != ic->guard.receiver_proto) return false;
     source = holder;
     prop_shape = holder->shape;
   }
@@ -767,6 +770,26 @@ static inline void sv_op_define_field(
   sv_atom_t *a = &func->atoms[idx];
   ant_value_t val = vm->stack[--vm->sp];
   ant_value_t obj = vm->stack[vm->sp - 1];
+  if (!sv_try_define_field_fast(js, obj, a->str, val))
+    js_define_own_prop(js, obj, a->str, a->len, val);
+}
+
+static inline void sv_op_define_slot(
+  sv_vm_t *vm, ant_t *js,
+  sv_func_t *func, uint8_t *ip
+) {
+  uint32_t idx = sv_get_u32(ip + 1);
+  uint16_t slot = sv_get_u16(ip + 5);
+  ant_value_t val = vm->stack[--vm->sp];
+  ant_value_t obj = vm->stack[vm->sp - 1];
+  ant_object_t *ptr = is_object_type(obj) ? js_obj_ptr(js_as_obj(obj)) : NULL;
+  if (ptr && !ptr->flags.is_exotic && slot < ptr->prop_count) {
+    ant_object_prop_set_unchecked(ptr, slot, val);
+    gc_write_barrier(js, ptr, val);
+    return;
+  }
+  /* Pre-shaping failed (allocation pressure); define by name. */
+  sv_atom_t *a = &func->atoms[idx];
   if (!sv_try_define_field_fast(js, obj, a->str, val))
     js_define_own_prop(js, obj, a->str, a->len, val);
 }

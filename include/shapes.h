@@ -68,10 +68,20 @@ bool ant_gc_shapes_sweep(void);
 
 size_t ant_shape_total_bytes(void);
 extern uint32_t ant_ic_epoch_counter;
+/* Bumped whenever objects can be freed (minor + major GC). Guards IC
+   entries that cache raw object pointers without shape revalidation
+   (instanceof / is-prototype-of caches). Property ICs revalidate against
+   the live receiver's shape and survive minor GCs on the main epoch. */
+extern uint32_t ant_ic_obj_epoch_counter;
 
 static inline void ant_ic_epoch_bump(void) {
   ant_ic_epoch_counter++;
   if (ant_ic_epoch_counter == 0) ant_ic_epoch_counter = 1;
+}
+
+static inline void ant_ic_obj_epoch_bump(void) {
+  ant_ic_obj_epoch_counter++;
+  if (ant_ic_obj_epoch_counter == 0) ant_ic_obj_epoch_counter = 1;
 }
 
 #endif

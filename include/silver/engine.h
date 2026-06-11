@@ -110,6 +110,11 @@ typedef struct {
 typedef struct {
   uint32_t bc_off;
   ant_shape_t *shared_shape;
+  /* Static-literal sites: atom indices of the literal's keys, in order.
+     Non-NULL means shared_shape (once built) is the FINAL shape and the
+     following DEFINE_SLOTs store positionally. */
+  const uint32_t *key_atoms;
+  uint16_t key_count;
 } sv_obj_site_cache_t;
 
 #define SV_GF_IC_AUX_WARMUP_MASK    ((uintptr_t)0xFFu)

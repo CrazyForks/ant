@@ -11,6 +11,7 @@
 #include "silver/glue.h"
 
 #include "ops/calls.h"
+#include "ops/literals.h"
 #include "ops/globals.h"
 #include "ops/property.h"
 #include "ops/iteration.h"
@@ -935,11 +936,30 @@ ant_value_t jit_helper_put_global(
   return js_setprop(js, js->global, key, val);
 }
 
-ant_value_t jit_helper_object(sv_vm_t *vm, ant_t *js) {
+ant_value_t jit_helper_object(sv_vm_t *vm, ant_t *js, sv_func_t *func, int32_t bc_off) {
   ant_value_t obj = mkobj(js, 0);
+  ant_object_t *ptr = js_obj_ptr(js_as_obj(obj));
+  if (func && bc_off >= 0 && bc_off < func->code_len) {
+    sv_obj_site_cache_t *site = sv_obj_site_for_ip(func, func->code + bc_off);
+    sv_obj_site_apply(js, func, site, ptr);
+  }
   ant_value_t proto = js->sym.object_proto;
   if (vtype(proto) == T_OBJ) js_set_proto_init(obj, proto);
   return obj;
+}
+
+void jit_helper_define_slot(
+  sv_vm_t *vm, ant_t *js, ant_value_t obj, ant_value_t val,
+  const char *str, uint32_t len, uint32_t slot
+) {
+  ant_object_t *ptr = is_object_type(obj) ? js_obj_ptr(js_as_obj(obj)) : NULL;
+  if (ptr && !ptr->flags.is_exotic && slot < ptr->prop_count) {
+    ant_object_prop_set_unchecked(ptr, slot, val);
+    gc_write_barrier(js, ptr, val);
+    return;
+  }
+  if (!sv_try_define_field_fast(js, obj, str, val))
+    js_define_own_prop(js, obj, str, len, val);
 }
 
 ant_value_t jit_helper_array(sv_vm_t *vm, ant_t *js, ant_value_t *elements, int count) {

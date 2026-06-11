@@ -13119,26 +13119,39 @@ static ant_value_t builtin_string_lastIndexOf(ant_t *js, ant_value_t *args, int 
 
   ant_offset_t str_len, str_off = vstr(js, str, &str_len);
   ant_offset_t search_len, search_off = vstr(js, search, &search_len);
-  
-  ant_offset_t max_start = str_len;
-  double dstr_len = D(str_len);
-  if (nargs >= 2 && vtype(args[1]) == T_NUM) {
-    double pos = tod(args[1]);
-    if (isnan(pos)) pos = dstr_len;
-    if (pos < 0) pos = 0;
-    if (pos > dstr_len) pos = dstr_len;
-    max_start = (ant_offset_t) pos;
-  }
-  
-  if (search_len == 0) return tov((double) (max_start > str_len ? str_len : max_start));
-  if (search_len > str_len) return tov(-1);
 
   const char *str_ptr = (char *)(uintptr_t)(str_off);
   const char *search_ptr = (char *)(uintptr_t)(search_off);
+  size_t utf16_len = utf16_strlen(str_ptr, str_len);
 
-  ant_offset_t start = (max_start + search_len > str_len) ? str_len - search_len : max_start;
-  for (ant_offset_t i = start + 1; i > 0; i--) {
-    if (memcmp(str_ptr + i - 1, search_ptr, search_len) == 0) return tov((double)(i - 1));
+  /* The position argument and the result are in UTF-16 code units; the
+     scan itself runs over UTF-8 bytes (matches can only start on
+     codepoint boundaries, UTF-8 being self-synchronizing). */
+  size_t max_start = utf16_len;
+  if (nargs >= 2 && vtype(args[1]) == T_NUM) {
+    double pos = tod(args[1]);
+    if (isnan(pos)) pos = D(utf16_len);
+    if (pos < 0) pos = 0;
+    if (pos > D(utf16_len)) pos = D(utf16_len);
+    max_start = (size_t) pos;
+  }
+
+  if (search_len == 0) return tov(D(max_start));
+  if (search_len > str_len) return tov(-1);
+
+  size_t byte_limit;
+  if (max_start >= utf16_len) byte_limit = (size_t)str_len;
+  else {
+    int off = utf16_index_to_byte_offset(str_ptr, str_len, max_start, NULL);
+    if (off < 0) return tov(-1);
+    byte_limit = (size_t)off;
+  }
+  if (byte_limit > (size_t)str_len - search_len)
+    byte_limit = (size_t)str_len - search_len;
+
+  for (size_t i = byte_limit + 1; i > 0; i--) {
+    if (memcmp(str_ptr + i - 1, search_ptr, search_len) == 0)
+      return tov(D(byte_offset_to_utf16(str_ptr, i - 1)));
   }
   return tov(-1);
 }

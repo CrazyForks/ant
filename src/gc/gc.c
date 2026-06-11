@@ -180,6 +180,7 @@ void gc_run(ant_t *js) {
   gc_ropes_begin(js);
   gc_objects_run(js, gc_mark_str);
   ant_ic_epoch_bump();
+  ant_ic_obj_epoch_bump();
 
   gc_strings_sweep(js);
   gc_ropes_sweep(js);
@@ -206,7 +207,7 @@ void gc_run_minor(ant_t *js) {
   size_t young_before = live_before > old_before ? live_before - old_before : 0;
 
   gc_objects_run_minor(js, NULL);
-  ant_ic_epoch_bump();
+  ant_ic_obj_epoch_bump();
 
   js->gc_last_live = js->obj_arena.live_count;
   js->old_live_count = js->obj_arena.live_count;

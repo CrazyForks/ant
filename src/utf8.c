@@ -25,12 +25,24 @@ typedef struct {
   size_t utf16_pos;
 } utf16_scan_cursor_t;
 
-static _Thread_local utf16_scan_cache_t utf16_scan_cache = { 0 };
+/* Small set-associative cache: a single entry degenerates to O(n) per
+   access (quadratic scans) whenever a loop alternates between two
+   strings, e.g. lexicographic compares. */
+#define UTF16_SCAN_CACHE_WAYS 4
+static _Thread_local utf16_scan_cache_t utf16_scan_caches[UTF16_SCAN_CACHE_WAYS];
+static _Thread_local uint32_t utf16_scan_cache_victim;
 
 static inline void utf16_scan_cache_sync_epoch(void) {
   uint64_t epoch = gc_get_epoch();
-  if (utf16_scan_cache.epoch == epoch) return;
-  utf16_scan_cache = (utf16_scan_cache_t){ .epoch = epoch };
+  if (utf16_scan_caches[0].epoch == epoch) return;
+  for (int i = 0; i < UTF16_SCAN_CACHE_WAYS; i++)
+    utf16_scan_caches[i] = (utf16_scan_cache_t){ .epoch = epoch };
+}
+
+static inline utf16_scan_cache_t *utf16_scan_cache_find(const char *str) {
+  for (int i = 0; i < UTF16_SCAN_CACHE_WAYS; i++)
+    if (utf16_scan_caches[i].str == str) return &utf16_scan_caches[i];
+  return NULL;
 }
 
 static inline void utf16_scan_cursor_init(
@@ -47,42 +59,141 @@ static inline void utf16_scan_cursor_init(
   cursor->utf16_pos = 0;
 }
 
-static inline bool utf16_scan_cache_matches(const utf16_scan_cursor_t *cursor) {
-  return utf16_scan_cache.str == cursor->str
-    && utf16_scan_cache.byte_pos <= cursor->byte_len;
+static inline bool utf16_scan_cache_entry_ok(
+  const utf16_scan_cache_t *e, const utf16_scan_cursor_t *cursor
+) {
+  return e && e->byte_pos <= cursor->byte_len;
 }
 
 static inline void utf16_scan_cursor_resume_cached(utf16_scan_cursor_t *cursor) {
-  if (!utf16_scan_cache_matches(cursor)) return;
-  cursor->p = cursor->start + utf16_scan_cache.byte_pos;
-  cursor->utf16_pos = utf16_scan_cache.utf16_pos;
+  utf16_scan_cache_t *e = utf16_scan_cache_find(cursor->str);
+  if (!utf16_scan_cache_entry_ok(e, cursor)) return;
+  cursor->p = cursor->start + e->byte_pos;
+  cursor->utf16_pos = e->utf16_pos;
 }
 
 static inline void utf16_scan_cursor_resume_utf16(
   utf16_scan_cursor_t *cursor,
   size_t target_utf16
 ) {
-  if (!utf16_scan_cache_matches(cursor)) return;
-  if (target_utf16 < utf16_scan_cache.utf16_pos) return;
-  cursor->p = cursor->start + utf16_scan_cache.byte_pos;
-  cursor->utf16_pos = utf16_scan_cache.utf16_pos;
+  utf16_scan_cache_t *e = utf16_scan_cache_find(cursor->str);
+  if (!utf16_scan_cache_entry_ok(e, cursor)) return;
+  if (target_utf16 < e->utf16_pos) return;
+  cursor->p = cursor->start + e->byte_pos;
+  cursor->utf16_pos = e->utf16_pos;
 }
 
 static inline void utf16_scan_cursor_resume_byte(
   utf16_scan_cursor_t *cursor,
   size_t target_byte
 ) {
-  if (!utf16_scan_cache_matches(cursor)) return;
-  if (target_byte < utf16_scan_cache.byte_pos) return;
-  cursor->p = cursor->start + utf16_scan_cache.byte_pos;
-  cursor->utf16_pos = utf16_scan_cache.utf16_pos;
+  utf16_scan_cache_t *e = utf16_scan_cache_find(cursor->str);
+  if (!utf16_scan_cache_entry_ok(e, cursor)) return;
+  if (target_byte < e->byte_pos) return;
+  cursor->p = cursor->start + e->byte_pos;
+  cursor->utf16_pos = e->utf16_pos;
 }
 
 static inline void utf16_scan_cursor_store(const utf16_scan_cursor_t *cursor) {
-  utf16_scan_cache.str = cursor->str;
-  utf16_scan_cache.byte_len = cursor->byte_len;
-  utf16_scan_cache.byte_pos = (size_t)(cursor->p - cursor->start);
-  utf16_scan_cache.utf16_pos = cursor->utf16_pos;
+  utf16_scan_cache_t *e = utf16_scan_cache_find(cursor->str);
+  if (!e) {
+    e = &utf16_scan_caches[utf16_scan_cache_victim];
+    utf16_scan_cache_victim = (utf16_scan_cache_victim + 1u) % UTF16_SCAN_CACHE_WAYS;
+  }
+  e->str = cursor->str;
+  e->byte_len = cursor->byte_len;
+  e->byte_pos = (size_t)(cursor->p - cursor->start);
+  e->utf16_pos = cursor->utf16_pos;
+}
+
+/* Random-access index for non-ASCII strings: byte offset + exact utf16
+   position of a codepoint boundary at (or just before) every 64-unit
+   chunk. Sliding cursors only help sequential access; source-span
+   lookups are random and were walking from byte 0 every call. */
+#define U16_IDX_CHUNK 64
+#define U16_IDX_WAYS  8
+#define U16_IDX_MIN_BYTES 256
+
+typedef struct {
+  uint32_t byte_off;
+  uint32_t u16_pos;
+} u16_idx_point_t;
+
+typedef struct {
+  const char *str;
+  size_t byte_len;
+  u16_idx_point_t *points;
+  size_t n_points;
+} u16_idx_entry_t;
+
+static _Thread_local struct {
+  uint64_t epoch;
+  uint32_t victim;
+  u16_idx_entry_t e[U16_IDX_WAYS];
+} u16_idx;
+
+static size_t u16_index_decode_len(const unsigned char *p, const unsigned char *end,
+                                   size_t *units_out);
+
+static void u16_index_sync_epoch(void) {
+  uint64_t ep = gc_get_epoch();
+  if (u16_idx.epoch == ep) return;
+  for (int i = 0; i < U16_IDX_WAYS; i++) {
+    free(u16_idx.e[i].points);
+    u16_idx.e[i] = (u16_idx_entry_t){0};
+  }
+  u16_idx.victim = 0;
+  u16_idx.epoch = ep;
+}
+
+static const u16_idx_entry_t *u16_index_get(const char *str, size_t byte_len) {
+  if (byte_len < U16_IDX_MIN_BYTES || byte_len > UINT32_MAX) return NULL;
+  u16_index_sync_epoch();
+  for (int i = 0; i < U16_IDX_WAYS; i++)
+    if (u16_idx.e[i].str == str && u16_idx.e[i].byte_len == byte_len)
+      return &u16_idx.e[i];
+
+  size_t max_points = byte_len / U16_IDX_CHUNK + 2;
+  u16_idx_point_t *pts = malloc(max_points * sizeof(*pts));
+  if (!pts) return NULL;
+
+  const unsigned char *s = (const unsigned char *)str;
+  const unsigned char *end = s + byte_len;
+  const unsigned char *p = s;
+  size_t u16_pos = 0, n = 0;
+  pts[n++] = (u16_idx_point_t){0, 0};
+
+  while (p < end) {
+    size_t units;
+    size_t slen = u16_index_decode_len(p, end, &units);
+    if (u16_pos + units > n * (size_t)U16_IDX_CHUNK && n < max_points) {
+      pts[n++] = (u16_idx_point_t){(uint32_t)(p - s), (uint32_t)u16_pos};
+    }
+    u16_pos += units;
+    p += slen;
+  }
+
+  u16_idx_entry_t *e = &u16_idx.e[u16_idx.victim];
+  u16_idx.victim = (u16_idx.victim + 1u) % U16_IDX_WAYS;
+  free(e->points);
+  e->str = str;
+  e->byte_len = byte_len;
+  e->points = pts;
+  e->n_points = n;
+  return e;
+}
+
+static inline void u16_index_seek(
+  const u16_idx_entry_t *ix, utf16_scan_cursor_t *cursor, size_t target_u16
+) {
+  size_t chunk = target_u16 / U16_IDX_CHUNK;
+  if (chunk >= ix->n_points) chunk = ix->n_points - 1;
+  /* points[] positions are <= chunk*64 by construction; never overshoot */
+  while (chunk > 0 && ix->points[chunk].u16_pos > target_u16) chunk--;
+  if (ix->points[chunk].u16_pos > cursor->utf16_pos) {
+    cursor->p = cursor->start + ix->points[chunk].byte_off;
+    cursor->utf16_pos = ix->points[chunk].u16_pos;
+  }
 }
 
 static inline void utf16_scan_decode(
@@ -364,6 +475,10 @@ int utf16_range_to_byte_range(
   utf16_scan_cursor_t cursor;
   utf16_scan_cursor_init(&cursor, str, byte_len);
   utf16_scan_cursor_resume_utf16(&cursor, utf16_start);
+  {
+    const u16_idx_entry_t *ix = u16_index_get(str, byte_len);
+    if (ix) u16_index_seek(ix, &cursor, utf16_start);
+  }
 
   size_t b_start = 0, b_end = byte_len;
   int found_start = 0, found_end = 0;
@@ -413,8 +528,25 @@ size_t byte_offset_to_utf16(const char *str, size_t byte_off) {
   return cursor.utf16_pos;
 }
 
+size_t u16_dbg_calls, u16_dbg_ascii, u16_dbg_resumed, u16_dbg_walk;
+__attribute__((destructor)) static void u16_dbg_report(void) {
+  if (getenv("ANT_U16_STATS"))
+    fprintf(stderr, "u16: calls=%zu ascii=%zu resumed=%zu walked=%zu\n",
+            u16_dbg_calls, u16_dbg_ascii, u16_dbg_resumed, u16_dbg_walk);
+}
+
+static size_t u16_index_decode_len(const unsigned char *p, const unsigned char *end,
+                                   size_t *units_out) {
+  size_t slen, units;
+  utf16_scan_decode(p, end, &slen, &units, NULL);
+  if (units_out) *units_out = units;
+  return slen;
+}
+
 uint32_t utf16_code_unit_at(const char *str, size_t byte_len, size_t utf16_idx) {
+  u16_dbg_calls++;
   if (str_is_ascii(str)) {
+    u16_dbg_ascii++;
     if (utf16_idx >= byte_len) return 0xFFFFFFFF;
     return (unsigned char)str[utf16_idx];
   }
@@ -422,6 +554,10 @@ uint32_t utf16_code_unit_at(const char *str, size_t byte_len, size_t utf16_idx) 
   utf16_scan_cursor_t cursor;
   utf16_scan_cursor_init(&cursor, str, byte_len);
   utf16_scan_cursor_resume_utf16(&cursor, utf16_idx);
+  const u16_idx_entry_t *ix = u16_index_get(str, byte_len);
+  if (ix) u16_index_seek(ix, &cursor, utf16_idx);
+  if (cursor.utf16_pos > 0) u16_dbg_resumed++;
+  u16_dbg_walk += utf16_idx - cursor.utf16_pos;
   
   while (cursor.p < cursor.end) {
     size_t slen, units;
@@ -540,6 +676,10 @@ uint32_t utf16_codepoint_at(const char *str, size_t byte_len, size_t utf16_idx) 
   utf16_scan_cursor_t cursor;
   utf16_scan_cursor_init(&cursor, str, byte_len);
   utf16_scan_cursor_resume_utf16(&cursor, utf16_idx);
+  {
+    const u16_idx_entry_t *ix = u16_index_get(str, byte_len);
+    if (ix) u16_index_seek(ix, &cursor, utf16_idx);
+  }
   
   while (cursor.p < cursor.end) {
     size_t slen, units;

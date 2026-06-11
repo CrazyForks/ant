@@ -94,6 +94,7 @@ static void jit_load_externals_once(sv_jit_ctx_t *jc) {
   LOAD_EXT(jit_helper_put_elem);
   LOAD_EXT(jit_helper_put_global);
   LOAD_EXT(jit_helper_object);
+  LOAD_EXT(jit_helper_define_slot);
   LOAD_EXT(jit_helper_array);
   LOAD_EXT(jit_helper_catch_value);
   LOAD_EXT(jit_helper_throw);
@@ -2713,6 +2714,16 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
     MIR_T_P,   "str",
     MIR_T_I32, "len");
 
+  MIR_item_t define_slot_proto = MIR_new_proto(ctx, "ds_proto",
+    0, NULL, 7,
+    MIR_T_I64, "vm",
+    MIR_T_I64, "js",
+    MIR_JSVAL,  "obj",
+    MIR_JSVAL,  "val",
+    MIR_T_P,   "str",
+    MIR_T_I32, "len",
+    MIR_T_I32, "slot");
+
   MIR_item_t define_method_comp_proto = MIR_new_proto(ctx, "dmc_proto",
     0, NULL, 5,
     MIR_T_I64, "js",
@@ -2752,9 +2763,11 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
 
   MIR_type_t obj_ret = MIR_JSVAL;
   MIR_item_t object_proto = MIR_new_proto(ctx, "obj_proto",
-    1, &obj_ret, 2,
+    1, &obj_ret, 4,
     MIR_T_I64, "vm",
-    MIR_T_I64, "js");
+    MIR_T_I64, "js",
+    MIR_T_P,   "func",
+    MIR_T_I32, "bc_off");
 
   MIR_type_t arr_ret = MIR_JSVAL;
   MIR_item_t array_proto = MIR_new_proto(ctx, "arr_proto",
@@ -2860,6 +2873,7 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
   MIR_item_t imp_put_elem    = MIR_new_import(ctx, "jit_helper_put_elem");
   MIR_item_t imp_put_global  = MIR_new_import(ctx, "jit_helper_put_global");
   MIR_item_t imp_object      = MIR_new_import(ctx, "jit_helper_object");
+  MIR_item_t imp_define_slot = MIR_new_import(ctx, "jit_helper_define_slot");
   MIR_item_t imp_array       = MIR_new_import(ctx, "jit_helper_array");
   MIR_item_t imp_catch_value = MIR_new_import(ctx, "jit_helper_catch_value");
   MIR_item_t imp_throw       = MIR_new_import(ctx, "jit_helper_throw");
@@ -6730,6 +6744,29 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
         break;
       }
 
+      case OP_DEFINE_SLOT: {
+        uint32_t idx = sv_get_u32(ip + 1);
+        uint16_t slot = sv_get_u16(ip + 5);
+        if (idx >= (uint32_t)func->atom_count) { ok = false; break; }
+        sv_atom_t *atom = &func->atoms[idx];
+        vstack_ensure_boxed(&vs, vs.sp - 1, ctx, jit_func, r_d_slot);
+        vstack_ensure_boxed(&vs, vs.sp - 2, ctx, jit_func, r_d_slot);
+        MIR_reg_t val = vstack_pop(&vs);
+        MIR_reg_t obj = vstack_top(&vs);
+        MIR_append_insn(ctx, jit_func,
+          MIR_new_call_insn(ctx, 9,
+            MIR_new_ref_op(ctx, define_slot_proto),
+            MIR_new_ref_op(ctx, imp_define_slot),
+            MIR_new_reg_op(ctx, r_vm),
+            MIR_new_reg_op(ctx, r_js),
+            MIR_new_reg_op(ctx, obj),
+            MIR_new_reg_op(ctx, val),
+            MIR_new_uint_op(ctx, (uint64_t)(uintptr_t)atom->str),
+            MIR_new_uint_op(ctx, (uint64_t)atom->len),
+            MIR_new_int_op(ctx, (int64_t)slot)));
+        break;
+      }
+
       case OP_DEFINE_METHOD_COMP: {
         uint8_t flags = sv_get_u8(ip + 1);
         vstack_ensure_boxed(&vs, vs.sp - 1, ctx, jit_func, r_d_slot);
@@ -7060,12 +7097,14 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
       case OP_OBJECT: {
         MIR_reg_t dst = vstack_push(&vs);
         MIR_append_insn(ctx, jit_func,
-          MIR_new_call_insn(ctx, 5,
+          MIR_new_call_insn(ctx, 7,
             MIR_new_ref_op(ctx, object_proto),
             MIR_new_ref_op(ctx, imp_object),
             MIR_new_reg_op(ctx, dst),
             MIR_new_reg_op(ctx, r_vm),
-            MIR_new_reg_op(ctx, r_js)));
+            MIR_new_reg_op(ctx, r_js),
+            MIR_new_uint_op(ctx, (uint64_t)(uintptr_t)func),
+            MIR_new_int_op(ctx, bc_off)));
         break;
       }
 
