@@ -35,6 +35,7 @@
 #include "cli/pkg.h"
 #include "cli/misc.h"
 #include "cli/version.h"
+#include "sandbox/assets.h"
 #include "sandbox/cli.h"
 #include "sandbox/host.h"
 #include "sandbox/policy.h"
@@ -166,6 +167,10 @@ static void ant_debug_apply(const char *key, const char *val) {
     if (strcmp(val, "bytecode") == 0 || strcmp(val, "all") == 0) sv_debug_enable(SV_DEBUG_DUMP_BYTECODE);
     if (strcmp(val, "jit") == 0      || strcmp(val, "all") == 0) sv_debug_enable(SV_DEBUG_DUMP_JIT);
     if (strcmp(val, "op-warn") == 0  || strcmp(val, "all") == 0) sv_debug_enable(SV_DEBUG_JIT_WARN);
+  }
+
+  else if (strcmp(key, "sandbox") == 0) {
+    if (strcmp(val, "bypass-manifest") == 0) ant_sandbox_assets_bypass_manifest = true;
   }
 }
 

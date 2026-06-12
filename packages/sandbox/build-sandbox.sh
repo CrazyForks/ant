@@ -41,7 +41,7 @@ arch=native
 docker_no_cache=()
 skip_docker=false
 nanos_src="$nanos_cache_dir/nanos"
-nanos_ref=${NANOS_REF:-8f75979ab152e8a71f4afe70762d5902b7d71fcc}
+nanos_ref=${NANOS_REF:-125520f4d2db172e5fbf384bd1afc7a2d1171570}
 nanos_url=${NANOS_URL:-https://github.com/nanovms/nanos.git}
 
 while (($#)); do

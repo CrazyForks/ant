@@ -73,6 +73,11 @@ static int sandbox_cache_root(char *out, size_t out_size) {
   return ant_xdg_cache_path(out, out_size, "sandbox") == 0 ? 0 : -EINVAL;
 }
 
+static int sandbox_join_path(char *out, size_t out_size, const char *dir, const char *name) {
+  int written = snprintf(out, out_size, "%s/%s", dir, name);
+  return written < 0 || (size_t)written >= out_size ? -ENAMETOOLONG : 0;
+}
+
 static int sandbox_remove_tree(const char *path) {
   struct stat st;
   if (lstat(path, &st) != 0) return errno == ENOENT ? 0 : -errno;
@@ -149,9 +154,95 @@ static int sandbox_resolve_asset(
   return -ENOENT;
 }
 
+static int sandbox_resolve_latest_cache_dir(
+  ant_sandbox_assets_t *assets,
+  const char *image_name,
+  const char *kernel_name,
+  char *err,
+  size_t err_len
+) {
+  char root[4096];
+  int rc = sandbox_cache_root(root, sizeof(root));
+  if (rc != 0) {
+    sandbox_host_error(err, err_len, "failed to resolve sandbox cache root");
+    return rc;
+  }
+
+  DIR *dir = opendir(root);
+  if (!dir) {
+    sandbox_host_error(err, err_len, "failed to open sandbox cache root %s: %s", root, strerror(errno));
+    return -errno;
+  }
+
+  bool found = false;
+  time_t best_mtime = 0;
+  
+  char best_name[256] = { 0 };
+  char best_dir[4096] = { 0 };
+  char best_image[4096] = { 0 };
+  char best_kernel[4096] = { 0 };
+
+  struct dirent *ent = NULL;
+  while ((ent = readdir(dir))) {
+    if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+
+    char candidate_dir[4096];
+    rc = sandbox_join_path(candidate_dir, sizeof(candidate_dir), root, ent->d_name);
+    if (rc != 0) continue;
+
+    struct stat st;
+    if (stat(candidate_dir, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+
+    char candidate_image[4096];
+    char candidate_kernel[4096];
+    
+    if (sandbox_join_path(candidate_image, sizeof(candidate_image), candidate_dir, image_name) != 0) continue;
+    if (sandbox_join_path(candidate_kernel, sizeof(candidate_kernel), candidate_dir, kernel_name) != 0) continue;
+    if (!sandbox_file_exists(candidate_image) || !sandbox_file_exists(candidate_kernel)) continue;
+
+    if (!found || st.st_mtime > best_mtime || (st.st_mtime == best_mtime && strcmp(ent->d_name, best_name) > 0)) {
+      found = true;
+      best_mtime = st.st_mtime;
+      snprintf(best_name, sizeof(best_name), "%s", ent->d_name);
+      snprintf(best_dir, sizeof(best_dir), "%s", candidate_dir);
+      snprintf(best_image, sizeof(best_image), "%s", candidate_image);
+      snprintf(best_kernel, sizeof(best_kernel), "%s", candidate_kernel);
+    }
+  }
+
+  closedir(dir);
+
+  if (!found) {
+    sandbox_host_error(err, err_len, "no complete sandbox cache entries found under %s", root);
+    return -ENOENT;
+  }
+
+  snprintf(assets->cache_dir, sizeof(assets->cache_dir), "%s", best_dir);
+  snprintf(assets->image, sizeof(assets->image), "%s", best_image);
+  snprintf(assets->kernel, sizeof(assets->kernel), "%s", best_kernel);
+  
+  return 0;
+}
+
 int ant_sandbox_assets_resolve(ant_sandbox_assets_t *assets, char *err, size_t err_len) {
   if (!assets) return -EINVAL;
   memset(assets, 0, sizeof(*assets));
+
+  char image_name[128];
+  char kernel_name[128];
+  
+  int written = snprintf(image_name, sizeof(image_name), "ant-sandbox-%s.img", ant_sandbox_cache_arch());
+  if (written < 0 || (size_t)written >= sizeof(image_name)) return -ENAMETOOLONG;
+
+  written = snprintf(kernel_name, sizeof(kernel_name), "ant-kernel-%s.img", ant_sandbox_cache_arch());
+  if (written < 0 || (size_t)written >= sizeof(kernel_name)) return -ENAMETOOLONG;
+
+  const char *image_override = getenv("ANT_SANDBOX_IMAGE");
+  const char *kernel_override = getenv("ANT_SANDBOX_KERNEL");
+  bool using_overrides = (image_override && image_override[0]) || (kernel_override && kernel_override[0]);
+
+  if (!using_overrides && ant_sandbox_assets_bypass_manifest)
+    return sandbox_resolve_latest_cache_dir(assets, image_name, kernel_name, err, err_len);
 
   int rc = sandbox_cache_dir(assets->cache_dir, sizeof(assets->cache_dir));
   if (rc != 0) {
@@ -165,24 +256,11 @@ int ant_sandbox_assets_resolve(ant_sandbox_assets_t *assets, char *err, size_t e
     return -errno;
   }
 
-  char image_name[128];
-  char kernel_name[128];
-  int written = snprintf(image_name, sizeof(image_name), "ant-sandbox-%s.img", ant_sandbox_cache_arch());
-  if (written < 0 || (size_t)written >= sizeof(image_name)) return -ENAMETOOLONG;
-
-  written = snprintf(kernel_name, sizeof(kernel_name), "ant-kernel-%s.img", ant_sandbox_cache_arch());
-  if (written < 0 || (size_t)written >= sizeof(kernel_name)) return -ENAMETOOLONG;
-
   rc = sandbox_cache_path(assets->image, sizeof(assets->image), image_name);
   if (rc != 0) return rc;
 
   rc = sandbox_cache_path(assets->kernel, sizeof(assets->kernel), kernel_name);
   if (rc != 0) return rc;
-
-  const char *image_override = getenv("ANT_SANDBOX_IMAGE");
-  const char *kernel_override = getenv("ANT_SANDBOX_KERNEL");
-
-  bool using_overrides = (image_override && image_override[0]) || (kernel_override && kernel_override[0]);
   if (!using_overrides && (!sandbox_file_exists(assets->image) || !sandbox_file_exists(assets->kernel))) {
     rc = ant_sandbox_assets_download_missing(assets->image, assets->kernel, err, err_len);
     if (rc != 0) return rc;

@@ -28,6 +28,7 @@
 #endif
 
 #define ANT_SANDBOX_MANIFEST_URL "https://manifest.antjs.org/v1/latest"
+bool ant_sandbox_assets_bypass_manifest = false;
 
 typedef struct {
   char *data;
@@ -703,9 +704,11 @@ static int sandbox_manifest_select(
   yyjson_val *ant_source = yyjson_obj_get(ant, "source");
   yyjson_val *sandbox_source = yyjson_obj_get(sandbox, "source");
   yyjson_val *kernel_source = yyjson_obj_get(kernel, "source");
+  
   const char *ant_revision = sandbox_json_string(ant, "revision");
+  bool bypass_manifest = ant_sandbox_assets_bypass_manifest;
 
-  if (!ant_revision || strcmp(ant_revision, ANT_GIT_LONGHASH) != 0) {
+  if (!bypass_manifest && (!ant_revision || strcmp(ant_revision, ANT_GIT_LONGHASH) != 0)) {
     sandbox_asset_error(err, err_len,
       "manifest Ant revision mismatch: current=%s manifest=%s",
       ANT_GIT_LONGHASH, ant_revision ? ant_revision : "(missing)"
@@ -718,7 +721,7 @@ static int sandbox_manifest_select(
   uint64_t sandbox_run = sandbox_json_uint(sandbox_source, "run_id");
   uint64_t kernel_run = sandbox_json_uint(kernel_source, "run_id");
   
-  if (!ant_run || sandbox_run != ant_run || kernel_run != ant_run) {
+  if (!bypass_manifest && (!ant_run || sandbox_run != ant_run || kernel_run != ant_run)) {
     sandbox_asset_error(err, err_len,
       "manifest sandbox build mismatch: ant=%llu sandbox=%llu kernel=%llu",
       (unsigned long long)ant_run,
@@ -732,13 +735,13 @@ static int sandbox_manifest_select(
   const char *sandbox_revision = sandbox_json_string(sandbox, "revision");
   const char *kernel_revision = sandbox_json_string(kernel, "revision");
 
-  if (!sandbox_revision || strcmp(sandbox_revision, ant_revision) != 0) {
+  if (!bypass_manifest && (!sandbox_revision || strcmp(sandbox_revision, ant_revision) != 0)) {
     sandbox_asset_error(err, err_len, "manifest sandbox commit mismatch");
     rc = -EINVAL;
     goto done;
   }
 
-  if (!kernel_revision || strcmp(kernel_revision, ant_revision) != 0) {
+  if (!bypass_manifest && (!kernel_revision || strcmp(kernel_revision, ant_revision) != 0)) {
     sandbox_asset_error(err, err_len, "manifest kernel commit mismatch");
     rc = -EINVAL;
     goto done;

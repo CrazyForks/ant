@@ -33,6 +33,44 @@ void ant_hvf_wake_vcpu(ant_hvf_vm_t *vm) {
   if (vm && vm->vcpu) hv_vcpus_exit(&vm->vcpu, 1);
 }
 
+static int ant_hvf_create_vcpu(ant_hvf_vm_t *vm) {
+  hv_vcpu_config_t config = hv_vcpu_config_create();
+  if (!config) return -EIO;
+
+  uint64_t dczid = 0;
+  hv_return_t dczid_rc =
+    hv_vcpu_config_get_feature_reg(config, HV_FEATURE_REG_DCZID_EL0, &dczid);
+  if (dczid_rc == HV_SUCCESS) ant_hvf_verbosef(vm, "vCPU feature DCZID_EL0=0x%llx", (u64)dczid);
+  else ant_hvf_verbosef(vm, "vCPU feature DCZID_EL0 unavailable rc=%d", dczid_rc);
+
+  hv_return_t create_rc = hv_vcpu_create(&vm->vcpu, &vm->vcpu_exit, config);
+  os_release(config);
+  return ant_hvf_check(create_rc, "hv_vcpu_create");
+}
+
+typedef hv_return_t (
+  *ant_hvf_vm_config_set_ipa_granule_fn
+)(hv_vm_config_t, uint32_t);
+
+static int ant_hvf_create_vm(ant_hvf_vm_t *vm) {
+  hv_vm_config_t config = hv_vm_config_create();
+  if (!config) return ant_hvf_check(hv_vm_create(NULL), "hv_vm_create");
+
+  ant_hvf_vm_config_set_ipa_granule_fn set_ipa_granule = 
+    (ant_hvf_vm_config_set_ipa_granule_fn)
+    dlsym(RTLD_DEFAULT, "hv_vm_config_set_ipa_granule");
+  
+  if (set_ipa_granule) {
+    hv_return_t granule_rc = set_ipa_granule(config, 0);
+    if (granule_rc == HV_SUCCESS) ant_hvf_verbose(vm, "configured VM IPA granule=4KB");
+    else ant_hvf_verbosef(vm, "VM IPA granule=4KB unavailable rc=%d", granule_rc);
+  }
+
+  hv_return_t create_rc = hv_vm_create(config);
+  os_release(config);
+  return ant_hvf_check(create_rc, "hv_vm_create");
+}
+
 static void ant_hvf_verbose_prefix(void) {
   struct timespec ts;
   if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
@@ -111,15 +149,18 @@ int ant_hvf_run(ant_hvf_vm_t *vm, unsigned int timeout_ms, bool timeout_until_re
       else rc = ant_hvf_handle_mmio(vm, &vm->vcpu_exit->exception);
       if (rc == ANT_HVF_GUEST_SHUTDOWN) { rc = 0; goto done; }
       if (rc != 0) {
-        uint64_t pc = 0;
+        uint64_t pc = 0; uint64_t elr = 0; uint64_t esr_el1 = 0; uint64_t far = 0; uint64_t vbar = 0;
         hv_vcpu_get_reg(vm->vcpu, HV_REG_PC, &pc);
-        fprintf(
-          stderr,
-          "sandbox vm: unhandled guest exception at pc=0x%llx esr=0x%llx ipa=0x%llx va=0x%llx\n",
-          (unsigned long long)pc,
-          (unsigned long long)vm->vcpu_exit->exception.syndrome,
-          (unsigned long long)vm->vcpu_exit->exception.physical_address,
-          (unsigned long long)vm->vcpu_exit->exception.virtual_address
+        hv_vcpu_get_sys_reg(vm->vcpu, HV_SYS_REG_ELR_EL1, &elr);
+        hv_vcpu_get_sys_reg(vm->vcpu, HV_SYS_REG_ESR_EL1, &esr_el1);
+        hv_vcpu_get_sys_reg(vm->vcpu, HV_SYS_REG_FAR_EL1, &far);
+        hv_vcpu_get_sys_reg(vm->vcpu, HV_SYS_REG_VBAR_EL1, &vbar);
+        fprintf(stderr, "sandbox vm: unhandled guest exception at pc=0x%llx esr=0x%llx ipa=0x%llx va=0x%llx elr=0x%llx guest_esr=0x%llx far=0x%llx vbar=0x%llx\n",
+          (u64)pc,
+          (u64)vm->vcpu_exit->exception.syndrome,
+          (u64)vm->vcpu_exit->exception.physical_address,
+          (u64)vm->vcpu_exit->exception.virtual_address,
+          (u64)elr, (u64)esr_el1, (u64)far, (u64)vbar
         );
         goto done;
       }
@@ -144,21 +185,11 @@ int ant_hvf_run(ant_hvf_vm_t *vm, unsigned int timeout_ms, bool timeout_until_re
         hv_vcpu_get_sys_reg(vm->vcpu, ANT_HVF_SYS_REG_CNTVCT_EL0, &cntvct);
         hv_vcpu_get_sys_reg(vm->vcpu, ANT_HVF_SYS_REG_CNTFRQ_EL0, &cntfrq);
         ant_hvf_guest_read(vm, ANT_HVF_NANOS_KAS_OFFSET_SYMBOL, &kas_offset, sizeof(kas_offset));
-        fprintf(
-          stderr,
-          "sandbox vm: guest timed out at pc=0x%llx low_pc=0x%llx kas_offset=0x%llx last_exit=%u last_pc=0x%llx last_esr=0x%llx last_ipa=0x%llx last_va=0x%llx cntv_ctl=0x%llx cntv_cval=0x%llx cntvct=0x%llx cntfrq=%llu\n",
-          (unsigned long long)pc,
-          (unsigned long long)(kas_offset ? pc - kas_offset : 0),
-          (unsigned long long)kas_offset,
-          vm->last_exit_reason,
-          (unsigned long long)vm->last_exit_pc,
-          (unsigned long long)vm->last_exit_esr,
-          (unsigned long long)vm->last_exit_ipa,
-          (unsigned long long)vm->last_exit_va,
-          (unsigned long long)cntv_ctl,
-          (unsigned long long)cntv_cval,
-          (unsigned long long)cntvct,
-          (unsigned long long)cntfrq
+        fprintf(stderr, "sandbox vm: guest timed out at pc=0x%llx low_pc=0x%llx kas_offset=0x%llx last_exit=%u last_pc=0x%llx last_esr=0x%llx last_ipa=0x%llx last_va=0x%llx cntv_ctl=0x%llx cntv_cval=0x%llx cntvct=0x%llx cntfrq=%llu\n",
+          (u64)pc,
+          (u64)(kas_offset ? pc - kas_offset : 0), (u64)kas_offset,
+          vm->last_exit_reason, (u64)vm->last_exit_pc, (u64)vm->last_exit_esr, (u64)vm->last_exit_ipa,
+          (u64)vm->last_exit_va, (u64)cntv_ctl, (u64)cntv_cval, (u64)cntvct, (u64)cntfrq
         );
         rc = -ETIMEDOUT;
         goto done;
@@ -391,11 +422,7 @@ static int ant_hvf_session_create(const ant_sandbox_vm_config_t *config, void **
   
   vm->cntfrq = ant_hvf_host_cntfrq();
   if (vm->cntfrq == 0 || vm->cntfrq > UINT32_MAX) {
-    fprintf(
-      stderr,
-      "sandbox vm: unsupported host generic timer frequency %llu\n",
-      (unsigned long long)vm->cntfrq
-    );
+    fprintf(stderr, "sandbox vm: unsupported host generic timer frequency %llu\n", (u64)vm->cntfrq);
     rc = -EIO;
     goto fail;
   }
@@ -466,7 +493,7 @@ static int ant_hvf_session_create(const ant_sandbox_vm_config_t *config, void **
   }
   
   ant_hvf_verbosef(vm, "allocated guest RAM at %p", vm->host_mem);
-  rc = ant_hvf_check(hv_vm_create(NULL), "hv_vm_create");
+  rc = ant_hvf_create_vm(vm);
   
   if (rc != 0) goto fail;
   session->vm_created = true;
@@ -489,7 +516,7 @@ static int ant_hvf_session_create(const ant_sandbox_vm_config_t *config, void **
   
   ant_hvf_verbosef(vm,
     "mapped guest RAM base=0x%llx size=%zu MiB",
-    (unsigned long long)ANT_HVF_GUEST_BASE,
+    (u64)ANT_HVF_GUEST_BASE,
     vm->mem_size / ((size_t)1024 * 1024)
   );
 
@@ -501,7 +528,7 @@ static int ant_hvf_session_create(const ant_sandbox_vm_config_t *config, void **
   if (rc != 0) goto fail;
   ant_hvf_verbose(vm, "built boot device tree");
 
-  rc = ant_hvf_check(hv_vcpu_create(&vm->vcpu, &vm->vcpu_exit, NULL), "hv_vcpu_create");
+  rc = ant_hvf_create_vcpu(vm);
   if (rc != 0) goto fail;
   
   session->vcpu_created = true;

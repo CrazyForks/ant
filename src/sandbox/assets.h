@@ -2,6 +2,7 @@
 #define ANT_SANDBOX_ASSETS_H
 
 #include <stddef.h>
+#include <stdbool.h>
 
 int ant_sandbox_assets_download_missing(
   const char *image_path,
@@ -9,5 +10,7 @@ int ant_sandbox_assets_download_missing(
   char *err,
   size_t err_len
 );
+
+extern bool ant_sandbox_assets_bypass_manifest;
 
 #endif

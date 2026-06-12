@@ -90,7 +90,7 @@ index a2b7a0ec..21a5435f 100644
 +    eventbuf->phys = phys;
 +    eventbuf->event.id = 0;
 +
-+    vqmsg m = allocate_vqmsg(vq);
++    vqmsg m = allocate_vqmsg(vq, 1);
 +    if (m == INVALID_ADDRESS) {
 +        dealloc_unmap(vs->backed, eventbuf, phys, sizeof(*eventbuf));
 +        return false;
