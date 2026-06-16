@@ -6,6 +6,7 @@
 
 .claude
 .github/artifacts
+.github/install/dist
 
 *.so
 *.dylib
