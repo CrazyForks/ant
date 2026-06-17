@@ -174,11 +174,9 @@ export async function exec(
   env?: Record<string, string | undefined>,
   captureOutput?: boolean
 ): Promise<ExecOutput> {
-  const cp = spawn(
-    cmd,
-    args.map(arg => (process.platform === 'win32' ? `"${arg}"` : `'${arg}'`)),
-    { stdio: captureOutput ? 'pipe' : 'inherit', cwd, shell: true, env }
-  );
+  const quote = (arg: string) => (process.platform === 'win32' ? `"${arg}"` : `'${arg.replace(/'/g, `'\\''`)}'`);
+  const line = [cmd, ...args.map(quote)].join(' ');
+  const cp = spawn(line, [], { stdio: captureOutput ? 'pipe' : 'inherit', cwd, shell: true, env });
 
   let combined = '';
   let stdout = '';
