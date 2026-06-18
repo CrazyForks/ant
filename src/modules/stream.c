@@ -14,6 +14,7 @@
 #include "modules/stream.h"
 #include "modules/symbol.h"
 #include "modules/string_decoder.h"
+#include "streams/readable.h"
 
 enum { STREAM_NATIVE_TAG = 0x5354524Du }; // STRM
 
@@ -1694,6 +1695,116 @@ static ant_value_t js_readable_from_web(ant_t *js, ant_value_t *args, int nargs)
   return js_readable_from(js, args, nargs);
 }
 
+static bool stream_to_web_closed(ant_t *js, ant_value_t state_obj) {
+  return js_truthy(js, js_get(js, state_obj, "closed"));
+}
+
+static void stream_to_web_cleanup(ant_t *js, ant_value_t state_obj) {
+  ant_value_t source = js_get(js, state_obj, "source");
+  ant_value_t on_data = js_get(js, state_obj, "onData");
+  ant_value_t on_end = js_get(js, state_obj, "onEnd");
+  ant_value_t on_error = js_get(js, state_obj, "onError");
+
+  if (!is_object_type(source)) return;
+  if (is_callable(on_data)) stream_remove_listener(js, source, "data", on_data);
+  if (is_callable(on_end)) stream_remove_listener(js, source, "end", on_end);
+  if (is_callable(on_error)) stream_remove_listener(js, source, "error", on_error);
+}
+
+static ant_value_t stream_to_web_on_data(ant_t *js, ant_value_t *args, int nargs) {
+  ant_value_t state_obj = js_get_slot(js_getcurrentfunc(js), SLOT_DATA);
+  ant_value_t controller = js_get(js, state_obj, "controller");
+  ant_value_t chunk = nargs > 0 ? args[0] : js_mkundef();
+
+  if (stream_to_web_closed(js, state_obj)) return js_mkundef();
+  return rs_controller_enqueue(js, controller, chunk);
+}
+
+static ant_value_t stream_to_web_on_end(ant_t *js, ant_value_t *args, int nargs) {
+  ant_value_t state_obj = js_get_slot(js_getcurrentfunc(js), SLOT_DATA);
+  ant_value_t controller = js_get(js, state_obj, "controller");
+
+  if (stream_to_web_closed(js, state_obj)) return js_mkundef();
+  js_set(js, state_obj, "closed", js_true);
+  stream_to_web_cleanup(js, state_obj);
+  rs_controller_close(js, controller);
+  return js_mkundef();
+}
+
+static ant_value_t stream_to_web_on_error(ant_t *js, ant_value_t *args, int nargs) {
+  ant_value_t state_obj = js_get_slot(js_getcurrentfunc(js), SLOT_DATA);
+  ant_value_t web_stream = js_get(js, state_obj, "webStream");
+  ant_value_t error = nargs > 0 ? args[0] : js_mkerr(js, "stream error");
+
+  if (stream_to_web_closed(js, state_obj)) return js_mkundef();
+  js_set(js, state_obj, "closed", js_true);
+  stream_to_web_cleanup(js, state_obj);
+  readable_stream_error(js, web_stream, error);
+  return js_mkundef();
+}
+
+static ant_value_t stream_to_web_cancel(ant_t *js, ant_value_t *args, int nargs) {
+  ant_value_t state_obj = js_get_slot(js_getcurrentfunc(js), SLOT_DATA);
+  ant_value_t source = js_get(js, state_obj, "source");
+  ant_value_t reason = nargs > 0 ? args[0] : js_mkundef();
+  ant_value_t destroy_fn = 0;
+  ant_value_t cancel_result = 0;
+
+  if (stream_to_web_closed(js, state_obj)) return js_mkundef();
+  js_set(js, state_obj, "closed", js_true);
+  stream_to_web_cleanup(js, state_obj);
+
+  if (!is_object_type(source)) return js_mkundef();
+  destroy_fn = js_getprop_fallback(js, source, "destroy");
+  if (!is_callable(destroy_fn)) return js_mkundef();
+
+  cancel_result = stream_call(js, destroy_fn, source, &reason, 1, false);
+  return is_err(cancel_result) ? cancel_result : js_mkundef();
+}
+
+static ant_value_t js_readable_to_web(ant_t *js, ant_value_t *args, int nargs) {
+  ant_value_t source = nargs > 0 ? args[0] : js_mkundef();
+  ant_value_t state_obj = 0;
+  ant_value_t cancel_fn = 0;
+  ant_value_t web_stream = 0;
+  ant_value_t controller = 0;
+  ant_value_t on_data = 0;
+  ant_value_t on_end = 0;
+  ant_value_t on_error = 0;
+
+  if (!is_object_type(source))
+    return js_mkerr_typed(js, JS_ERR_TYPE, "Readable.toWeb requires a stream");
+
+  state_obj = js_mkobj(js);
+  js_set(js, state_obj, "source", source);
+  js_set(js, state_obj, "closed", js_false);
+
+  cancel_fn = js_heavy_mkfun(js, stream_to_web_cancel, state_obj);
+  web_stream = rs_create_stream(js, js_mkundef(), cancel_fn, 1.0);
+  if (is_err(web_stream)) return web_stream;
+
+  controller = rs_stream_controller(js, web_stream);
+  js_set(js, state_obj, "webStream", web_stream);
+  js_set(js, state_obj, "controller", controller);
+
+  on_data = js_heavy_mkfun(js, stream_to_web_on_data, state_obj);
+  on_end = js_heavy_mkfun(js, stream_to_web_on_end, state_obj);
+  on_error = js_heavy_mkfun(js, stream_to_web_on_error, state_obj);
+
+  js_set(js, state_obj, "onData", on_data);
+  js_set(js, state_obj, "onEnd", on_end);
+  js_set(js, state_obj, "onError", on_error);
+
+  if (
+    !eventemitter_add_listener(js, source, "data", on_data, false) ||
+    !eventemitter_add_listener(js, source, "end", on_end, true) ||
+    !eventemitter_add_listener(js, source, "error", on_error, true)
+  ) return js_mkerr_typed(js, JS_ERR_TYPE, "Readable.toWeb requires an EventEmitter-compatible stream");
+
+  stream_call_prop(js, source, "resume", NULL, 0);
+  return web_stream;
+}
+
 static ant_value_t js_stream_ctor(ant_t *js, ant_value_t *args, int nargs) {
   return stream_construct(js, g_stream_proto, nargs > 0 ? args[0] : js_mkundef(), stream_init_base);
 }
@@ -1798,6 +1909,7 @@ void stream_init_constructors(ant_t *js) {
   g_readable_ctor = js_make_ctor(js, js_readable_ctor, g_readable_proto, "Readable", 8);
   js_set(js, g_readable_ctor, "from", js_mkfun(js_readable_from));
   js_set(js, g_readable_ctor, "fromWeb", js_mkfun(js_readable_from_web));
+  js_set(js, g_readable_ctor, "toWeb", js_mkfun(js_readable_to_web));
 
   g_writable_proto = js_mkobj(js);
   js_set_proto_init(g_writable_proto, g_stream_proto);

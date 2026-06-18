@@ -25,6 +25,7 @@ declare module 'stream' {
     on(event: string, listener: (...args: unknown[]) => void): this;
     static from(source: unknown, options?: Record<string, unknown>): Readable;
     static fromWeb(source: unknown, options?: Record<string, unknown>): Readable;
+    static toWeb(source: Readable, options?: Record<string, unknown>): ReadableStream;
   }
 
   class Writable extends Stream {

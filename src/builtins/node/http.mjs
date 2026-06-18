@@ -4,6 +4,7 @@ import tls from 'node:tls';
 import httpParser from 'ant:internal/http_parser';
 import httpWriter from 'ant:internal/http_writer';
 
+import { Readable } from 'node:stream';
 import { EventEmitter } from 'node:events';
 import { STATUS_CODES } from 'ant:internal/http_metadata';
 
@@ -897,7 +898,7 @@ export class Agent extends EventEmitter {
 
 export const globalAgent = new Agent();
 
-export class IncomingMessage extends EventEmitter {
+export class IncomingMessage extends Readable {
   constructor(socket, parsed) {
     super();
     this.socket = socket;
@@ -928,11 +929,9 @@ export class IncomingMessage extends EventEmitter {
     if (this.destroyed || this.complete) return;
 
     const body = this._takeBody();
-    if (body.length > 0) this.emit('data', body);
     this.complete = true;
-    this.readableEnded = true;
-    this.emit('end');
-    this.emit('close');
+    if (body.length > 0) this.push(body);
+    this.push(null);
   }
 
   [Symbol.asyncIterator]() {
