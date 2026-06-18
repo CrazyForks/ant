@@ -22,7 +22,8 @@ let
   zigPkg = if zig_0_15 != null then zig_0_15 else zig;
 
   cpuTuneFlag = "-mcpu=native";
-  antVendor = callPackage ./vendor.nix { };
+  antVersion = import ./version.nix { inherit lib gitRev; };
+  antVendor = callPackage ./vendor.nix { inherit gitRev; };
 
   toolsNodeModules = importNpmLock.buildNodeModules {
     package = lib.importJSON ../../src/tools/package.json;
@@ -46,7 +47,7 @@ in
 llvmPackages_21.stdenv.mkDerivation (finalAttrs: {
   pname = "ant";
   src = ../..;
-  version = lib.fileContents ../../meson/ant.version;
+  version = antVersion;
 
   nativeBuildInputs = [
     meson

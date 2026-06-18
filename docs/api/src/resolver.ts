@@ -131,6 +131,7 @@ async function resolveManifestEntry<T extends Record<string, unknown>>(
 type VersionCheckQuery = {
   target?: string;
   current: string;
+  buildTimestamp?: number;
 };
 
 const arches = ['x64', 'aarch64'];
@@ -164,7 +165,14 @@ export async function versionCheck(
     current: current || null,
     latest: latestVersion,
     latest_sha: latest.revision || (latest.source.type === 'actions' ? latest.source.head_sha : null),
-    out_of_date: isOutOfDate(current, latestVersion, undefined),
+    latest_build_timestamp: latest.build_timestamp ?? null,
+    out_of_date: isOutOfDate(
+      current,
+      latestVersion,
+      undefined,
+      query.buildTimestamp,
+      latest.build_timestamp,
+    ),
     download_url: latest.download_url,
     source: latest.source,
   };
@@ -361,10 +369,13 @@ async function resolveActionAntFromArtifacts(
     item => item.name === `version-${target.artifact}` && !item.expired,
   );
   let version = options.version;
+  let buildTimestamp: number | undefined;
 
   if (versionArtifact) {
     try {
-      version = await readVersionArtifact(env, sourceRepository, versionArtifact);
+      const info = await readVersionArtifact(env, sourceRepository, versionArtifact);
+      version = info.version;
+      buildTimestamp = info.buildTimestamp;
     } catch (error) {
       console.warn(`failed to read ${versionArtifact.name}`, error);
     }
@@ -374,6 +385,7 @@ async function resolveActionAntFromArtifacts(
     'ant',
     artifact,
     version,
+    buildTimestamp,
     options.revision || run.head_sha,
     actionSourceInfo(sourceRepository, BUILD_WORKFLOW, run),
     downloadUrl(url, 'ant', target.key, branch(env, options), run.id),
@@ -403,6 +415,7 @@ async function resolveActionNamedArtifact(
         kind,
         artifact,
         undefined,
+        undefined,
         options.revision || match.run.head_sha,
         actionSourceInfo(match.repository, match.run.path || workflow, match.run),
         downloadUrl(url, kind, arch, branch(env, options), runId),
@@ -417,6 +430,7 @@ async function resolveActionNamedArtifact(
   return resolvedAction(
     kind,
     artifact,
+    undefined,
     undefined,
     options.revision || match.run.head_sha,
     actionSourceInfo(match.repository, workflow, match.run),
@@ -438,6 +452,7 @@ async function resolveAnyActionNamedArtifact(
     kind,
     artifact,
     undefined,
+    undefined,
     options.revision || match.run.head_sha,
     actionSourceInfo(match.repository, match.run.path || match.run.name, match.run),
     downloadUrl(url, kind, arch, branch(env, options), match.run.id),
@@ -448,6 +463,7 @@ function resolvedAction(
   kind: ArtifactKind,
   artifact: Artifact,
   version: string | undefined,
+  buildTimestamp: number | undefined,
   revision: string,
   source: ActionSourceInfo,
   download_url: string,
@@ -456,6 +472,7 @@ function resolvedAction(
     kind,
     name: artifact.name,
     version: kind === 'ant' ? version : undefined,
+    build_timestamp: kind === 'ant' ? buildTimestamp : undefined,
     revision,
     download_url,
     artifact: {

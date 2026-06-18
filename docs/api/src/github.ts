@@ -30,6 +30,11 @@ type GitHubTag = {
   object: GitHubGitObject;
 };
 
+export type VersionArtifactInfo = {
+  version: string;
+  buildTimestamp?: number;
+};
+
 export async function findLatestRunWithArtifacts(
   env: Env,
   workflow: string,
@@ -222,13 +227,23 @@ export async function readVersionArtifact(
   env: Env,
   repo: string,
   artifact: Artifact,
-): Promise<string> {
+): Promise<VersionArtifactInfo> {
   const response = await githubFetch(env, artifactApiPath(repo, artifact.id));
   if (!response.ok) throw new HttpError(`failed to download ${artifact.name}`, response.status);
 
   const zip = await response.arrayBuffer();
   const text = await readZipText(zip, 'version.txt');
-  return text.trim();
+  const version = text.trim();
+  let buildTimestamp: number | undefined;
+  try {
+    const timestampText = (await readZipText(zip, 'build-timestamp.txt')).trim();
+    if (/^[0-9]+$/.test(timestampText)) buildTimestamp = Number(timestampText);
+  } catch (error) {
+    if (!(error instanceof HttpError) || !error.message.includes('zip entry not found')) {
+      throw error;
+    }
+  }
+  return { version, buildTimestamp };
 }
 
 export async function fetchArtifactDownload(

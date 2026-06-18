@@ -24,6 +24,10 @@ export const VersionQuerySchema = z
   .object({
     current: z.string().optional(),
     version: z.string().optional(),
+    build_timestamp: z
+      .string()
+      .regex(/^[0-9]+$/)
+      .optional(),
     target: z.string().optional(),
   })
   .superRefine((query, ctx) => {
@@ -45,6 +49,7 @@ export const VersionQuerySchema = z
   })
   .transform(query => ({
     current: query.current || query.version || '',
+    buildTimestamp: query.build_timestamp ? Number(query.build_timestamp) : undefined,
     target: query.target || '',
   }));
 

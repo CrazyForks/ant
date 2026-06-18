@@ -14,7 +14,6 @@
 #include "internal.h"
 #include "reactor.h"
 #include "utils.h"
-#include "cli/version.h"
 
 #include "silver/engine.h"
 #include "modules/assert.h"
@@ -820,7 +819,7 @@ static void crash_print_report_summary(ant_t *js, ant_value_t report, ant_value_
 
   fprintf(stderr, "=== (%llu) ===================================================\n", pid);
 
-  crfprintf(stderr, "<dim>Ant v%s (%s) %s</>\n", ant_semver(), ANT_GIT_HASH, ANT_TARGET_TRIPLE);
+  crfprintf(stderr, "<dim>Ant v%s %s</>\n", ANT_VERSION, ANT_TARGET_TRIPLE);
   crfprintf(stderr, "<dim>%s</>\n", os_display_name());
 
   crash_print_args(js, argv);

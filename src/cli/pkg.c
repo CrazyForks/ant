@@ -13,8 +13,6 @@
 #include <yyjson.h>
 
 #include "cli/pkg.h"
-#include "cli/version.h"
-
 #include "utils.h"
 #include "progress.h"
 #include "modules/io.h"
@@ -93,12 +91,7 @@ static void print_elapsed(uint64_t elapsed_ms) {
 }
 
 static void print_install_header(const char *cmd) {
-  const char *version = ant_semver();
-  
-  printf("%sant %s%s v%s %s(%s)%s\n", 
-    C_BOLD, cmd, C_RESET, version, 
-    C_DIM, ANT_GIT_HASH, C_RESET
-  );
+  printf("%sant %s%s v%s\n", C_BOLD, cmd, C_RESET, ANT_VERSION);
 }
 
 static void print_bin_callback(const char *name, void *user_data) {

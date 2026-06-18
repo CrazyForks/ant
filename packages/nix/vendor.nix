@@ -1,6 +1,7 @@
-{ lib, stdenvNoCC, meson, ninja, git, cacert }:
+{ lib, stdenvNoCC, meson, ninja, git, cacert, gitRev ? "unknown" }:
 
 let
+  antVersion = import ./version.nix { inherit lib gitRev; };
   src = lib.fileset.toSource {
     root = ../..;
     fileset = lib.fileset.unions [
@@ -14,7 +15,7 @@ let
 in
 stdenvNoCC.mkDerivation {
   pname = "ant-vendor";
-  version = lib.fileContents ../../meson/ant.version;
+  version = antVersion;
 
   inherit src;
   nativeBuildInputs = [ meson ninja git cacert ];

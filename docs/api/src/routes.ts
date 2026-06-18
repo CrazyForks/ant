@@ -144,9 +144,14 @@ app.on(['GET', 'HEAD'], '/v1/download/:kind/:name', async c => {
 });
 
 async function versionRoute(c: AppContext) {
-  const query = VersionQuerySchema.parse(c.req.query());
+  const headerBuildTimestamp = c.req.header('X-Ant-Build-Timestamp');
+  const rawQuery = c.req.query();
+  const query = VersionQuerySchema.parse({
+    ...rawQuery,
+    build_timestamp: rawQuery.build_timestamp || headerBuildTimestamp,
+  });
   const options = requestOptions(c);
-  const cacheKey = `version:${repository(c.env)}:${branch(c.env, options)}:${query.target}:${query.current}`;
+  const cacheKey = `version:${repository(c.env)}:${branch(c.env, options)}:${query.target}:${query.current}:${query.buildTimestamp || ''}`;
 
   return cachedJson(c.req.raw, c.executionCtx, c.env, cacheKey, () =>
     versionCheck(new URL(c.req.url), c.env, query, options),

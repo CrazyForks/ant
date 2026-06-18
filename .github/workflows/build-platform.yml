@@ -208,11 +208,15 @@ jobs:
 
       - name: Save version info
         shell: bash
-        run: echo "${{ steps.build.outputs.version }}" > version.txt
+        run: |
+          echo "${{ steps.build.outputs.version }}" > version.txt
+          echo "${{ inputs.build_timestamp }}" > build-timestamp.txt
 
       - name: Upload version info
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: version-${{ steps.config.outputs.artifact_name }}
-          path: version.txt
+          path: |
+            version.txt
+            build-timestamp.txt
           retention-days: 1

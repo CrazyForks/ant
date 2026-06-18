@@ -37,6 +37,9 @@ export async function downloadArtifact(
   headers.set('X-Ant-Source', artifact.source.type);
 
   if (artifact.version) headers.set('X-Ant-Version', artifact.version);
+  if (artifact.build_timestamp) {
+    headers.set('X-Ant-Build-Timestamp', String(artifact.build_timestamp));
+  }
   if (artifact.revision) headers.set('X-Ant-Revision', artifact.revision);
   headers.set('Access-Control-Allow-Origin', '*');
 
@@ -55,6 +58,9 @@ export async function downloadArtifact(
         kind: artifact.kind,
         source: artifact.source.type,
         version: artifact.version || '',
+        build_timestamp: artifact.build_timestamp
+          ? String(artifact.build_timestamp)
+          : '',
         revision: artifact.revision || '',
       },
     }).catch(error => console.warn(`failed to cache ${r2Key} in R2`, error)),
@@ -221,6 +227,7 @@ function metadataFor(artifact: ResolvedArtifact): Record<string, string> {
     kind: artifact.kind,
     source: artifact.source.type,
     version: artifact.version || '',
+    build_timestamp: artifact.build_timestamp ? String(artifact.build_timestamp) : '',
     revision: artifact.revision || '',
     zip_entry: artifact.zip_entry || '',
   };
@@ -332,6 +339,8 @@ function r2DownloadResponse(
 
   const version = object.customMetadata?.version || artifact.version;
   if (version) headers.set('X-Ant-Version', version);
+  const buildTimestamp = object.customMetadata?.build_timestamp || artifact.build_timestamp;
+  if (buildTimestamp) headers.set('X-Ant-Build-Timestamp', String(buildTimestamp));
   const revision = object.customMetadata?.revision || artifact.revision;
   if (revision) headers.set('X-Ant-Revision', revision);
   if (!headers.has('Cache-Control')) {

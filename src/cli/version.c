@@ -18,7 +18,6 @@
 #include <yyjson.h>
 
 #ifndef _WIN32
-#include <pthread.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <strings.h>
@@ -30,9 +29,6 @@
 #endif
 
 #define ANT_MANIFEST_URL "https://manifest.antjs.org/v1/latest"
-
-static char ant_semver_buf[32];
-static pthread_once_t ant_semver_once = PTHREAD_ONCE_INIT;
 
 typedef struct {
   char *data;
@@ -54,6 +50,7 @@ typedef struct {
   char target[64];
   char version[96];
   char download_url[2048];
+  uint64_t build_timestamp;
   uint64_t size;
 } ant_latest_info_t;
 
@@ -61,24 +58,8 @@ typedef struct {
   unsigned major;
   unsigned minor;
   unsigned patch;
-  uint64_t build;
   bool ok;
 } ant_version_parts_t;
-
-static void ant_semver_init(void) {
-  const char *s = ANT_VERSION;
-  int d = 0, i = 0;
-  while (s[i] && d < 3 && i < 31) {
-    if (s[i] == '.') d++;
-    ant_semver_buf[i] = s[i]; i++;
-  }
-  ant_semver_buf[i - (d == 3)] = '\0';
-}
-
-const char *ant_semver(void) {
-  pthread_once(&ant_semver_once, ant_semver_init);
-  return ant_semver_buf;
-}
 
 static void version_format_bytes(char *out, size_t out_len, uint64_t bytes) {
   static const char *units[] = {"B", "KiB", "MiB", "GiB"};
@@ -306,14 +287,16 @@ static ant_version_parts_t ant_parse_version(const char *s) {
   if (!end || *end != '.') return out;
   unsigned long minor = strtoul(end + 1, &end, 10);
   if (!end || *end != '.') return out;
-  unsigned long patch = strtoul(end + 1, &end, 10);
-  uint64_t build = 0;
-  if (end && *end == '.') build = strtoull(end + 1, NULL, 10);
+  const char *build = end + 1;
+  const char *patch_start = strchr(build, '.');
+  if (!patch_start) return out;
+  if (patch_start == build) return out;
+  unsigned long patch = strtoul(patch_start + 1, &end, 10);
+  if (!end || *end != '\0') return out;
   if (major > UINT_MAX || minor > UINT_MAX || patch > UINT_MAX) return out;
   out.major = (unsigned)major;
   out.minor = (unsigned)minor;
   out.patch = (unsigned)patch;
-  out.build = build;
   out.ok = true;
   return out;
 }
@@ -325,12 +308,15 @@ static int ant_version_compare(const char *a, const char *b) {
   if (av.major != bv.major) return av.major < bv.major ? -1 : 1;
   if (av.minor != bv.minor) return av.minor < bv.minor ? -1 : 1;
   if (av.patch != bv.patch) return av.patch < bv.patch ? -1 : 1;
-  if (av.build != bv.build) return av.build < bv.build ? -1 : 1;
   return 0;
 }
 
 static bool ant_latest_is_newer(const ant_latest_info_t *latest) {
-  return latest && latest->version[0] && ant_version_compare(ANT_VERSION, latest->version) < 0;
+  if (!latest || !latest->version[0]) return false;
+  int cmp = ant_version_compare(ANT_VERSION, latest->version);
+  if (cmp != 0) return cmp < 0;
+  if (strcmp(ANT_VERSION, latest->version) == 0) return false;
+  return latest->build_timestamp > (uint64_t)ANT_BUILD_TIMESTAMP;
 }
 
 static int ant_manifest_select_latest(const char *json, size_t json_len, ant_latest_info_t *latest, char *err, size_t err_len) {
@@ -362,6 +348,7 @@ static int ant_manifest_select_latest(const char *json, size_t json_len, ant_lat
       if (!version || !download_url) break;
       snprintf(latest->version, sizeof(latest->version), "%s", version);
       snprintf(latest->download_url, sizeof(latest->download_url), "%s", download_url);
+      latest->build_timestamp = version_json_uint(item, "build_timestamp");
       yyjson_val *artifact = yyjson_obj_get(item, "artifact");
       latest->size = version_json_uint(artifact, "size_in_bytes");
       rc = 0;

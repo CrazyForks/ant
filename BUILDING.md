@@ -206,6 +206,20 @@ To verify the build:
 ./build/ant -e "console.log('Hello from Ant ' + Ant.version)"
 ```
 
+Ant versions are generated as `major.minor.build.patch`. The
+`meson/ant.version` file defines the numeric release fields:
+
+```ini
+major=12
+minor=0
+patch=2
+```
+
+Meson fills the `build` field with the short git hash, so a build from
+`64324a91...` reports `12.0.64324a91.2`. The Meson `build_timestamp` option is
+still embedded as `ANT_BUILD_TIMESTAMP` and shown by `ant --version`; it is not
+part of the version string.
+
 #### Installing Ant
 
 You can install the built binary using:
@@ -406,7 +420,7 @@ Configure options are set via `meson setup` or `meson configure`:
 | Option              | Type    | Default | Description                                |
 | ------------------- | ------- | ------- | ------------------------------------------ |
 | `static_link`       | boolean | `false` | Statically link the final binary           |
-| `build_timestamp`   | string  | (auto)  | Build timestamp (defaults to current time) |
+| `build_timestamp`   | string  | (auto)  | Embedded build timestamp metadata          |
 | `deps_prefix_cmake` | string  | (empty) | Prefix path for cmake dependency lookup    |
 
 Standard Meson built-in options used by Ant:
