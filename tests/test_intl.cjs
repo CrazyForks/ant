@@ -10,6 +10,16 @@ assert(collator instanceof Intl.Collator, 'expected Intl.Collator() to create an
 assert(typeof collator.compare === 'function', 'expected collator.compare');
 assert(typeof collator.resolvedOptions === 'function', 'expected collator.resolvedOptions');
 
+const defaultLocale = Intl.Collator().resolvedOptions().locale;
+assert(Intl.Collator(0, { numeric: 1 }).resolvedOptions().locale === defaultLocale, 'expected numeric locale argument to default');
+assert(Intl.Collator(true).resolvedOptions().locale === defaultLocale, 'expected boolean locale argument to default');
+assert(Intl.Collator({}).resolvedOptions().locale === defaultLocale, 'expected empty locale-list object to default');
+assert(Intl.Collator({ 0: 'de-DE', length: 1 }).resolvedOptions().locale === 'de-DE', 'expected object locale list entry');
+
+const numericCompare = new Intl.Collator(0, { numeric: 1 }).compare;
+assert(numericCompare('2', '10') < 0, 'expected extracted numeric collator compare to sort numbers numerically');
+assert(numericCompare('a2', 'a10') < 0, 'expected extracted numeric collator compare to sort embedded numbers numerically');
+
 const numberFormat = new Intl.NumberFormat('en-US');
 assert(numberFormat instanceof Intl.NumberFormat, 'expected NumberFormat instance');
 assert(numberFormat.format(1234567.5) === '1,234,567.5', `unexpected formatted number: ${numberFormat.format(1234567.5)}`);
@@ -33,6 +43,14 @@ try {
   rejected = true;
 }
 assert(rejected, 'expected invalid language tags to throw');
+
+rejected = false;
+try {
+  Intl.Collator([0]);
+} catch (error) {
+  rejected = error instanceof TypeError;
+}
+assert(rejected, 'expected non-string locale list entries to throw TypeError');
 
 const segmenter = Intl.Segmenter('en-US', { granularity: 'word' });
 const segments = segmenter.segment('ok');

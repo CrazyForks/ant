@@ -109,19 +109,48 @@ static bool intl_is_valid_language_tag(const char *tag, size_t len) {
   return true;
 }
 
-static ant_value_t intl_resolve_locale(ant_t *js, ant_value_t input) {
-  if (vtype(input) == T_ARR) input = js_get(js, input, "0");
-  if (vtype(input) == T_UNDEF) return js_mkstr(js, "en-US", 5);
+static ant_value_t intl_default_locale(ant_t *js) {
+  return js_mkstr(js, "en-US", 5);
+}
 
-  ant_value_t locale = js_tostring_val(js, input);
-  if (is_err(locale)) return locale;
-
+static ant_value_t intl_validate_locale_string(ant_t *js, ant_value_t locale) {
   size_t len = 0;
   const char *tag = js_getstr(js, locale, &len);
   if (!intl_is_valid_language_tag(tag, len))
     return js_mkerr_typed(js, JS_ERR_RANGE, "Invalid language tag");
 
   return locale;
+}
+
+static ant_value_t intl_locale_from_list_entry(ant_t *js, ant_value_t input) {
+  if (vtype(input) != T_STR && !is_object_type(input))
+    return js_mkerr_typed(js, JS_ERR_TYPE, "Language ID should be string or object");
+
+  ant_value_t locale = js_tostring_val(js, input);
+  if (is_err(locale)) return locale;
+  return intl_validate_locale_string(js, locale);
+}
+
+static ant_value_t intl_resolve_locale(ant_t *js, ant_value_t input) {
+  if (vtype(input) == T_UNDEF) return intl_default_locale(js);
+  if (vtype(input) == T_NULL)
+    return js_mkerr_typed(js, JS_ERR_TYPE, "Cannot convert undefined or null to object");
+
+  if (vtype(input) == T_STR) return intl_validate_locale_string(js, input);
+
+  if (vtype(input) == T_ARR) {
+    if (js_arr_len(js, input) == 0) return intl_default_locale(js);
+    return intl_locale_from_list_entry(js, js_get(js, input, "0"));
+  }
+
+  if (is_object_type(input)) {
+    ant_value_t length = js_get(js, input, "length");
+    if (vtype(length) == T_UNDEF) return intl_default_locale(js);
+    if (!(js_to_number(js, length) > 0)) return intl_default_locale(js);
+    return intl_locale_from_list_entry(js, js_get(js, input, "0"));
+  }
+
+  return intl_default_locale(js);
 }
 
 static ant_value_t intl_get_option_string(ant_t *js, ant_value_t options, const char *key, const char *fallback) {
@@ -154,6 +183,64 @@ static ant_value_t intl_collator_compare(ant_t *js, ant_value_t *args, int nargs
   if (result < 0) return js_mknum(-1);
   if (result > 0) return js_mknum(1);
   
+  return js_mknum(0);
+}
+
+static inline bool intl_ascii_is_digit_byte(char c) {
+  return c >= '0' && c <= '9';
+}
+
+static ant_value_t intl_collator_compare_numeric(ant_t *js, ant_value_t *args, int nargs) {
+  ant_value_t left = js_tostring_val(js, nargs > 0 ? args[0] : js_mkstr(js, "", 0));
+  if (is_err(left)) return left;
+
+  ant_value_t right = js_tostring_val(js, nargs > 1 ? args[1] : js_mkstr(js, "", 0));
+  if (is_err(right)) return right;
+
+  size_t left_len = 0;
+  size_t right_len = 0;
+  const char *left_str = js_getstr(js, left, &left_len);
+  const char *right_str = js_getstr(js, right, &right_len);
+  if (!left_str) left_str = "";
+  if (!right_str) right_str = "";
+
+  size_t i = 0;
+  size_t j = 0;
+  
+  while (i < left_len && j < right_len) {
+    char lc = left_str[i];
+    char rc = right_str[j];
+
+    if (intl_ascii_is_digit_byte(lc) && intl_ascii_is_digit_byte(rc)) {
+      size_t left_run = i;
+      size_t right_run = j;
+      while (left_run < left_len && left_str[left_run] == '0') left_run++;
+      while (right_run < right_len && right_str[right_run] == '0') right_run++;
+
+      size_t left_end = left_run;
+      size_t right_end = right_run;
+      while (left_end < left_len && intl_ascii_is_digit_byte(left_str[left_end])) left_end++;
+      while (right_end < right_len && intl_ascii_is_digit_byte(right_str[right_end])) right_end++;
+
+      size_t left_digits = left_end - left_run;
+      size_t right_digits = right_end - right_run;
+      if (left_digits != right_digits) return js_mknum(left_digits < right_digits ? -1 : 1);
+
+      int cmp = left_digits > 0 ? memcmp(left_str + left_run, right_str + right_run, left_digits) : 0;
+      if (cmp != 0) return js_mknum(cmp < 0 ? -1 : 1);
+
+      while (i < left_end && intl_ascii_is_digit_byte(left_str[i])) i++;
+      while (j < right_end && intl_ascii_is_digit_byte(right_str[j])) j++;
+      continue;
+    }
+
+    if (lc != rc) return js_mknum((unsigned char)lc < (unsigned char)rc ? -1 : 1);
+    i++;
+    j++;
+  }
+
+  if (i < left_len) return js_mknum(1);
+  if (j < right_len) return js_mknum(-1);
   return js_mknum(0);
 }
 
@@ -386,6 +473,11 @@ static ant_value_t intl_collator_constructor(ant_t *js, ant_value_t *args, int n
 
   ant_value_t obj = intl_create_instance(js, g_intl_collator_proto);
   js_set(js, obj, "locale", locale);
+
+  if (nargs > 1 && vtype(args[1]) == T_OBJ && js_truthy(js, js_get(js, args[1], "numeric"))) {
+    js_set(js, obj, "compare", js_mkfun(intl_collator_compare_numeric));
+    js_set(js, obj, "numeric", js_true);
+  }
   
   return obj;
 }
