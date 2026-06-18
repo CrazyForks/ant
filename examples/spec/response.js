@@ -26,6 +26,12 @@ test('Response init statusText', res1.statusText, 'Created');
 test('Response init header', res1.headers.get('x-test'), 'ok');
 test('Response init text', await res1.text(), 'hello');
 
+const cookieRes = new Response('cookie', {
+  headers: { 'Set-Cookie': 'session=abc123' }
+});
+test('Response keeps set-cookie header', cookieRes.headers.get('set-cookie'), 'session=abc123');
+test('Response getSetCookie returns set-cookie', cookieRes.headers.getSetCookie().join('|'), 'session=abc123');
+
 testThrows('Response invalid status low', () => new Response('', { status: 199 }));
 testThrows('Response invalid status high', () => new Response('', { status: 600 }));
 testThrows('Response invalid statusText newline', () => new Response('', { statusText: '\n' }));

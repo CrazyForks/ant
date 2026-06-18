@@ -703,7 +703,7 @@ static ant_value_t response_apply_body(
 
 static ant_value_t response_init_common(
   ant_t *js, ant_value_t resp_obj, ant_value_t init,
-  ant_value_t body_val, headers_guard_t guard
+  ant_value_t body_val, bool immutable_headers
 ) {
   response_data_t *resp = get_data(resp_obj);
   ant_value_t headers = js_get_slot(resp_obj, SLOT_RESPONSE_HEADERS);
@@ -720,15 +720,14 @@ static ant_value_t response_init_common(
       headers = headers_create_from_init(js, init_headers);
       if (is_err(headers)) return headers;
     }
-    headers_set_guard(headers, guard);
-    headers_apply_guard(headers);
+    headers_set_immutable(headers, immutable_headers);
     js_set_slot_wb(js, resp_obj, SLOT_RESPONSE_HEADERS, headers);
   }
 
   return response_apply_body(js, resp_obj, headers, resp, body_val);
 }
 
-static ant_value_t response_new(headers_guard_t guard) {
+static ant_value_t response_new(bool immutable_headers) {
   ant_t *js = rt->js;
   response_data_t *resp = data_new();
   
@@ -749,9 +748,7 @@ static ant_value_t response_new(headers_guard_t guard) {
     return headers;
   }
 
-  headers_set_guard(headers, guard);
-  headers_apply_guard(headers);
-  
+  headers_set_immutable(headers, immutable_headers);
   js_set_slot_wb(js, obj, SLOT_RESPONSE_HEADERS, headers);
   js_set_slot_wb(js, obj, SLOT_RESPONSE_BODY_STREAM, js_mkundef());
   
@@ -769,13 +766,13 @@ static ant_value_t js_response_ctor(ant_t *js, ant_value_t *args, int nargs) {
     return js_mkerr_typed(js, JS_ERR_TYPE, "Response constructor requires 'new'");
   }
 
-  obj = response_new(HEADERS_GUARD_RESPONSE);
+  obj = response_new(false);
   if (is_err(obj)) return obj;
 
   proto = js_instance_proto_from_new_target(js, g_response_proto);
   if (is_object_type(proto)) js_set_proto_init(obj, proto);
 
-  step = response_init_common(js, obj, init, body, HEADERS_GUARD_RESPONSE);
+  step = response_init_common(js, obj, init, body, false);
   if (is_err(step)) {
     response_clear_and_free(obj, get_data(obj));
     return step;
@@ -785,9 +782,9 @@ static ant_value_t js_response_ctor(ant_t *js, ant_value_t *args, int nargs) {
 }
 
 static ant_value_t response_create_static(
-  ant_t *js, const char *type, int status, const char *status_text, headers_guard_t guard
+  ant_t *js, const char *type, int status, const char *status_text, bool immutable_headers
 ) {
-  ant_value_t obj = response_new(guard);
+  ant_value_t obj = response_new(immutable_headers);
   response_data_t *resp = NULL;
 
   if (is_err(obj)) return obj;
@@ -812,7 +809,7 @@ static ant_value_t response_create_static(
 }
 
 static ant_value_t js_response_error(ant_t *js, ant_value_t *args, int nargs) {
-  ant_value_t obj = response_create_static(js, "error", 0, "", HEADERS_GUARD_IMMUTABLE);
+  ant_value_t obj = response_create_static(js, "error", 0, "", true);
   if (is_err(obj)) return obj;
   return obj;
 }
@@ -849,7 +846,7 @@ static ant_value_t js_response_redirect(ant_t *js, ant_value_t *args, int nargs)
     return js_mkerr(js, "out of memory");
   }
 
-  obj = response_create_static(js, "default", status, "", HEADERS_GUARD_IMMUTABLE);
+  obj = response_create_static(js, "default", status, "", true);
   if (is_err(obj)) {
     free(href);
     url_state_clear(&parsed);
@@ -857,10 +854,9 @@ static ant_value_t js_response_redirect(ant_t *js, ant_value_t *args, int nargs)
   }
 
   headers = js_get_slot(obj, SLOT_RESPONSE_HEADERS);
-  headers_set_guard(headers, HEADERS_GUARD_NONE);
+  headers_set_immutable(headers, false);
   headers_append_if_missing(headers, "location", href);
-  headers_set_guard(headers, HEADERS_GUARD_IMMUTABLE);
-  headers_apply_guard(headers);
+  headers_set_immutable(headers, true);
 
   free(href);
   url_state_clear(&parsed);
@@ -886,10 +882,10 @@ static ant_value_t js_response_json_static(ant_t *js, ant_value_t *args, int nar
     vtype(init) != T_UNDEF &&
     headers_init_has_name(js, js_get(js, init, "headers"), "content-type");
 
-  obj = response_new(HEADERS_GUARD_RESPONSE);
+  obj = response_new(false);
   if (is_err(obj)) return obj;
 
-  step = response_init_common(js, obj, init, stringify, HEADERS_GUARD_RESPONSE);
+  step = response_init_common(js, obj, init, stringify, false);
   if (is_err(step)) {
     response_clear_and_free(obj, get_data(obj));
     return step;
@@ -1063,8 +1059,7 @@ static ant_value_t js_response_clone(ant_t *js, ant_value_t *args, int nargs) {
   }
 
   headers_copy_from(js, new_headers, src_headers);
-  headers_set_guard(new_headers, headers_get_guard(src_headers));
-  headers_apply_guard(new_headers);
+  headers_set_immutable(new_headers, headers_is_immutable(src_headers));
 
   obj = js_mkobj(js);
   js_set_proto_init(obj, g_response_proto);
@@ -1097,9 +1092,9 @@ ant_value_t response_create(
   const uint8_t *body,
   size_t body_len,
   const char *body_type,
-  headers_guard_t guard
+  bool immutable_headers
 ) {
-  ant_value_t obj = response_new(guard);
+  ant_value_t obj = response_new(immutable_headers);
   ant_value_t headers = 0;
   response_data_t *resp = NULL;
 
@@ -1141,8 +1136,7 @@ ant_value_t response_create(
     return headers;
   }
 
-  headers_set_guard(headers, guard);
-  headers_apply_guard(headers);
+  headers_set_immutable(headers, immutable_headers);
   
   ant_value_t current_type = headers_get_value(js, headers, "content-type");
   if (body_type && !is_err(current_type) && vtype(current_type) == T_NULL) {
@@ -1166,7 +1160,7 @@ ant_value_t response_create_fetched(
   ant_value_t body_stream,
   const char *body_type
 ) {
-  ant_value_t obj = response_new(HEADERS_GUARD_IMMUTABLE);
+  ant_value_t obj = response_new(true);
   ant_value_t headers = 0;
   response_data_t *resp = NULL;
   url_state_t parsed = {0};
@@ -1219,8 +1213,7 @@ ant_value_t response_create_fetched(
     return headers;
   }
 
-  headers_set_guard(headers, HEADERS_GUARD_IMMUTABLE);
-  headers_apply_guard(headers);
+  headers_set_immutable(headers, true);
   js_set_slot_wb(js, obj, SLOT_RESPONSE_HEADERS, headers);
   
   return obj;

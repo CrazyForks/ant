@@ -333,6 +333,7 @@ int ant_http_request_start(
   req->req->data = req;
   if (options->chunked_body) tlsuv_http_req_header(req->req, "transfer-encoding", "chunked");
   for (const ant_http_header_t *hdr = options->headers; hdr; hdr = hdr->next) {
+    if (hdr->name && strcasecmp(hdr->name, "host") == 0) continue;
     tlsuv_http_req_header(req->req, hdr->name, hdr->value);
   }
 

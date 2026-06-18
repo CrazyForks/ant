@@ -5,7 +5,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "types.h"
-#include "modules/headers.h"
 #include "modules/url.h"
 
 typedef struct {
@@ -38,7 +37,7 @@ ant_value_t response_create(
   const uint8_t *body,
   size_t body_len,
   const char *body_type,
-  headers_guard_t guard
+  bool immutable_headers
 );
 
 ant_value_t response_create_fetched(

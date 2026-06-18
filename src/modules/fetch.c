@@ -196,7 +196,6 @@ static void fetch_copy_redirect_header(const char *name, const char *value, void
 static ant_value_t fetch_replace_request_headers(fetch_request_t *req, bool drop_body_headers) {
   ant_t *js = req->js;
   
-  request_data_t *request = request_get_data(req->request_obj);
   ant_value_t current = request_get_headers(req->request_obj);
   ant_value_t headers = headers_create_empty(js);
   
@@ -209,15 +208,8 @@ static ant_value_t fetch_replace_request_headers(fetch_request_t *req, bool drop
 
   if (is_err(headers)) return headers;
   headers_for_each(current, fetch_copy_redirect_header, &ctx);
-  if (ctx.failed) return js_mkerr(js, "out of memory");
-
-  headers_set_guard(headers,
-    strcmp(request->mode, "no-cors") == 0
-    ? HEADERS_GUARD_REQUEST_NO_CORS
-    : HEADERS_GUARD_REQUEST
-  );
   
-  headers_apply_guard(headers);
+  if (ctx.failed) return js_mkerr(js, "out of memory");
   js_set_slot_wb(js, req->request_obj, SLOT_REQUEST_HEADERS, headers);
   
   return js_mkundef();

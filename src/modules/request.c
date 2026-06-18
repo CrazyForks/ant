@@ -131,13 +131,6 @@ static ant_value_t request_create_object(ant_t *js, request_data_t *req, ant_val
   js_set_native(obj, req, REQUEST_NATIVE_TAG);
   js_set_finalizer(obj, request_finalize);
 
-  headers_set_guard(hdrs,
-    strcmp(req->mode, "no-cors") == 0
-    ? HEADERS_GUARD_REQUEST_NO_CORS
-    : HEADERS_GUARD_REQUEST
-  );
-
-  headers_apply_guard(hdrs);
   js_set_slot_wb(js, obj, SLOT_REQUEST_HEADERS, hdrs);
   js_set_slot(obj, SLOT_REQUEST_ABORT_REASON, js_mkundef());
   
@@ -945,13 +938,6 @@ static ant_value_t js_request_clone(ant_t *js, ant_value_t *args, int nargs) {
   if (is_err(new_headers)) { data_free(nd); return new_headers; }
   
   headers_copy_from(js, new_headers, src_headers);
-  headers_set_guard(new_headers,
-    strcmp(nd->mode, "no-cors") == 0 
-    ? HEADERS_GUARD_REQUEST_NO_CORS 
-    : HEADERS_GUARD_REQUEST
-  );
-  headers_apply_guard(new_headers);
-
   ant_value_t new_signal = abort_signal_create_dependent(js, src_signal);
   if (is_err(new_signal)) { data_free(nd); return new_signal; }
 
@@ -1334,13 +1320,6 @@ static ant_value_t js_request_ctor(ant_t *js, ant_value_t *args, int nargs) {
     if (is_err(headers)) { request_clear_and_free(obj, req); return headers; }
   }
 
-  headers_set_guard(headers,
-    strcmp(req->mode, "no-cors") == 0
-    ? HEADERS_GUARD_REQUEST_NO_CORS
-    : HEADERS_GUARD_REQUEST
-  );
-  
-  headers_apply_guard(headers);
   js_set_slot_wb(js, obj, SLOT_REQUEST_HEADERS, headers);
 
   if (init_provided) {
@@ -1413,12 +1392,6 @@ ant_value_t request_create_from_input_init(ant_t *js, ant_value_t input, ant_val
     if (is_err(headers)) { request_clear_and_free(obj, req); return headers; }
   }
 
-  headers_set_guard(headers,
-    strcmp(req->mode, "no-cors") == 0 
-    ? HEADERS_GUARD_REQUEST_NO_CORS 
-    : HEADERS_GUARD_REQUEST
-  );
-  headers_apply_guard(headers);
   js_set_slot_wb(js, obj, SLOT_REQUEST_HEADERS, headers);
 
   if (init_provided) {

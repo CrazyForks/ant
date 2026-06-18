@@ -15,22 +15,22 @@ test('Request duplex getter', req0.duplex, 'half');
 
 const hdrReq = new Request('https://example.com/', {
   headers: {
-    'Accept-Charset': 'blocked',
+    'Accept-Charset': 'kept',
     'X-Custom': 'ok',
   },
 });
-test('Request filters forbidden headers', hdrReq.headers.get('accept-charset'), null);
+test('Request keeps server-side forbidden header names', hdrReq.headers.get('accept-charset'), 'kept');
 test('Request keeps allowed headers', hdrReq.headers.get('x-custom'), 'ok');
 
 const noCorsReq = new Request('https://example.com/', {
   mode: 'no-cors',
   headers: {
-    'Content-Type': 'text/plain;charset=UTF-8',
-    'X-Blocked': 'nope',
+    'Content-Type': 'application/json',
+    'X-Blocked': 'kept',
   },
 });
-test('Request no-cors keeps safelisted content-type', noCorsReq.headers.get('content-type'), 'text/plain;charset=UTF-8');
-test('Request no-cors strips non-safelisted header', noCorsReq.headers.get('x-blocked'), null);
+test('Request no-cors keeps non-safelisted content-type', noCorsReq.headers.get('content-type'), 'application/json');
+test('Request no-cors keeps non-safelisted header', noCorsReq.headers.get('x-blocked'), 'kept');
 
 testThrows(
   'Request forbids keepalive with stream body',
