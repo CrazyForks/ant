@@ -66,7 +66,8 @@ typedef enum {
   FS_OP_CLOSE,
   FS_OP_MKDTEMP,
   FS_OP_CHMOD,
-  FS_OP_RENAME
+  FS_OP_RENAME,
+  FS_OP_FSYNC
 } fs_op_type_t;
 
 typedef struct fs_request_s {
@@ -2717,6 +2718,19 @@ static ant_value_t builtin_fs_ftruncateSync(ant_t *js, ant_value_t *args, int na
   return js_mkundef();
 }
 
+static ant_value_t builtin_fs_fsyncSync(ant_t *js, ant_value_t *args, int nargs) {
+  if (nargs < 1) return js_mkerr(js, "fsyncSync() requires an fd argument");
+  if (vtype(args[0]) != T_NUM) return js_mkerr(js, "fsyncSync() fd must be a number");
+
+  int fd = (int)js_getnum(args[0]);
+  uv_fs_t req;
+  int rc = uv_fs_fsync(uv_default_loop(), &req, fd, NULL);
+  uv_fs_req_cleanup(&req);
+
+  if (rc < 0) return fs_mk_uv_error(js, rc, "fsync", NULL, NULL);
+  return js_mkundef();
+}
+
 static ant_value_t builtin_fs_appendFileSync(ant_t *js, ant_value_t *args, int nargs) {
   return fs_write_file_sync_impl(js, args, nargs, "appendFileSync", "ab");
 }
@@ -3778,6 +3792,53 @@ static ant_value_t builtin_fs_readdir(ant_t *js, ant_value_t *args, int nargs) {
   }
   
   return req->promise;
+}
+
+static void on_fsync_complete(uv_fs_t *uv_req) {
+  fs_request_t *req = (fs_request_t *)uv_req->data;
+
+  if (uv_req->result < 0) {
+    ant_value_t err = fs_mk_uv_error(req->js, (int)uv_req->result, "fsync", NULL, NULL);
+    ant_value_t cb_args[1] = { err };
+    fs_call_value(req->js, req->callback_fn, js_mkundef(), cb_args, 1);
+  } else {
+    ant_value_t cb_args[1] = { js_mknull() };
+    fs_call_value(req->js, req->callback_fn, js_mkundef(), cb_args, 1);
+  }
+
+  remove_pending_request(req);
+  free_fs_request(req);
+}
+
+static ant_value_t builtin_fs_fsync(ant_t *js, ant_value_t *args, int nargs) {
+  if (nargs < 1) return js_mkerr(js, "fsync() requires an fd argument");
+  if (vtype(args[0]) != T_NUM) return js_mkerr(js, "fsync() fd must be a number");
+  if (nargs < 2 || !is_callable(args[1]))
+    return js_mkerr_typed(js, JS_ERR_TYPE, "The \"cb\" argument must be a function");
+
+  fs_request_t *req = calloc(1, sizeof(fs_request_t));
+  if (!req) return js_mkerr(js, "Out of memory");
+
+  req->js = js;
+  req->op_type = FS_OP_FSYNC;
+  req->promise = js_mkundef();
+  req->target_buffer = js_mkundef();
+  req->callback_fn = args[1];
+  req->fd = (uv_file)(int)js_getnum(args[0]);
+  req->uv_req.data = req;
+
+  utarray_push_back(pending_requests, &req);
+  int result = uv_fs_fsync(uv_default_loop(), &req->uv_req, req->fd, on_fsync_complete);
+
+  if (result < 0) {
+    ant_value_t err = fs_mk_uv_error(js, result, "fsync", NULL, NULL);
+    ant_value_t cb_args[1] = { err };
+    fs_call_value(js, req->callback_fn, js_mkundef(), cb_args, 1);
+    remove_pending_request(req);
+    free_fs_request(req);
+  }
+
+  return js_mkundef();
 }
 
 static void on_write_fd_complete(uv_fs_t *uv_req) {
@@ -4842,6 +4903,7 @@ ant_value_t fs_library(ant_t *js) {
   js_set(js, lib, "read", js_mkfun(builtin_fs_read_fd));
   js_set(js, lib, "readFileSync", js_mkfun(builtin_fs_readFileSync));
   js_set(js, lib, "readSync", js_mkfun(builtin_fs_readSync));
+  js_set(js, lib, "fsync", js_mkfun(builtin_fs_fsync));
   js_set(js, lib, "stream", js_mkfun(builtin_fs_readBytes));
   js_set(js, lib, "createReadStream", js_mkfun(builtin_fs_createReadStream));
   js_set(js, lib, "createWriteStream", js_mkfun(builtin_fs_createWriteStream));
@@ -4862,6 +4924,7 @@ ant_value_t fs_library(ant_t *js) {
   js_set(js, lib, "statSync", js_mkfun(builtin_fs_statSync));
   js_set(js, lib, "lstatSync", js_mkfun(builtin_fs_lstatSync));
   js_set(js, lib, "fstatSync", js_mkfun(builtin_fs_fstatSync));
+  js_set(js, lib, "fsyncSync", js_mkfun(builtin_fs_fsyncSync));
   js_set(js, lib, "utimesSync", js_mkfun(builtin_fs_utimesSync));
   js_set(js, lib, "futimesSync", js_mkfun(builtin_fs_futimesSync));
   js_set(js, lib, "truncateSync", js_mkfun(builtin_fs_truncateSync));

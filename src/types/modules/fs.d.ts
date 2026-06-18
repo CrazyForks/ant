@@ -130,6 +130,8 @@ declare module 'fs' {
   function rmdirSync(path: string): void;
   function stat(path: string): Promise<Stats>;
   function statSync(path: string): Stats;
+  function fsync(fd: number, callback: (err: Error | null) => void): void;
+  function fsyncSync(fd: number): void;
   function exists(path: string): Promise<boolean>;
   function existsSync(path: string): boolean;
   function access(path: string, mode?: number): Promise<void>;
