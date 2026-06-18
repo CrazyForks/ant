@@ -938,7 +938,7 @@ static ant_offset_t skip_template_literal(const char *buf, ant_offset_t rem, ant
       continue;
     }
 
-  if (expr_depth == 0) {
+    if (expr_depth == 0) {
       if (c == '`') {
         *closed = true;
         return i + 1;
