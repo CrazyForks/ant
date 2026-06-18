@@ -87,8 +87,7 @@ static void headers_iter_finalize(ant_t *js, ant_object_t *obj) {
 }
 
 bool headers_is_immutable(ant_value_t obj) {
-  ant_value_t slot = js_get_slot(obj, SLOT_HEADERS_GUARD);
-  return vtype(slot) == T_BOOL && js_truthy(rt->js, slot);
+  return js_get_slot(obj, SLOT_HEADERS_GUARD) == js_true;
 }
 
 bool headers_is_headers(ant_value_t obj) {
@@ -689,7 +688,6 @@ static ant_value_t js_headers_ctor(ant_t *js, ant_value_t *args, int nargs) {
   js_set_slot(obj, SLOT_BRAND, js_mknum(BRAND_HEADERS));
   js_set_native(obj, l, HEADERS_NATIVE_TAG);
   js_set_finalizer(obj, headers_finalize);
-  js_set_slot(obj, SLOT_HEADERS_GUARD, js_false);
   
   return obj;
 }
@@ -703,7 +701,6 @@ ant_value_t headers_create_empty(ant_t *js) {
   js_set_slot(obj, SLOT_BRAND, js_mknum(BRAND_HEADERS));
   js_set_native(obj, l, HEADERS_NATIVE_TAG);
   js_set_finalizer(obj, headers_finalize);
-  js_set_slot(obj, SLOT_HEADERS_GUARD, js_false);
   
   return obj;
 }
