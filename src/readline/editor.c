@@ -146,10 +146,15 @@ static void line_insert(
   line[*pos] = (char)c;
   (*pos)++;
   (*len)++;
-  preview_update(preview, line, *len);
+
+  bool defer_preview = preview && preview->fn && repl_input_pending();
+  if (defer_preview) preview_clear(preview);
+  else preview_update(preview, line, *len);
+
   refresh_line_with_preview(
     line, *len, *pos, prompt,
-    preview_suffix(preview), preview_text(preview)
+    defer_preview ? NULL : preview_suffix(preview),
+    defer_preview ? NULL : preview_text(preview)
   );
 }
 

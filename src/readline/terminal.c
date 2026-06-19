@@ -1,5 +1,10 @@
 #include "readline_internal.h"
 
+#include <errno.h>
+#ifndef _WIN32
+#include <sys/select.h>
+#endif
+
 volatile sig_atomic_t ctrl_c_pressed = 0;
 
 #ifndef _WIN32
@@ -68,6 +73,8 @@ void repl_enable_raw_mode(void) {
   tcgetattr(STDIN_FILENO, &saved_tio);
   new_tio = saved_tio;
   new_tio.c_lflag &= ~(ICANON | ECHO);
+  new_tio.c_cc[VMIN] = 1;
+  new_tio.c_cc[VTIME] = 0;
   tcsetattr(STDIN_FILENO, TCSANOW, &new_tio);
 #endif
 }
@@ -79,6 +86,10 @@ void repl_term_restore(void) {
 }
 
 #ifdef _WIN32
+bool repl_input_pending(void) {
+  return _kbhit() != 0;
+}
+
 key_event_t repl_read_key(void) {
   if (ctrl_c_pressed > 0) return (key_event_t){ KEY_EOF, 0 };
   int c = _getch();
@@ -107,26 +118,46 @@ key_event_t repl_read_key(void) {
   return (key_event_t){ KEY_NONE, 0 };
 }
 #else
+bool repl_input_pending(void) {
+  for (;;) {
+    fd_set fds;
+    FD_ZERO(&fds);
+    FD_SET(STDIN_FILENO, &fds);
+
+    struct timeval timeout = {0, 0};
+    int ready = select(STDIN_FILENO + 1, &fds, NULL, NULL, &timeout);
+    if (ready < 0 && errno == EINTR && ctrl_c_pressed == 0) continue;
+
+    return ready > 0 && FD_ISSET(STDIN_FILENO, &fds);
+  }
+}
+
+static int repl_read_byte(void) {
+  unsigned char c = 0;
+  ssize_t n;
+  do {
+    n = read(STDIN_FILENO, &c, 1);
+  } while (n < 0 && errno == EINTR && ctrl_c_pressed == 0);
+
+  return (n == 1) ? (int)c : EOF;
+}
+
 key_event_t repl_read_key(void) {
   if (ctrl_c_pressed > 0) return (key_event_t){ KEY_EOF, 0 };
-  int c = getchar();
-  if (c == EOF && !feof(stdin)) {
-    clearerr(stdin);
-    return (key_event_t){ KEY_EOF, 0 };
-  }
+  int c = repl_read_byte();
   if (c == EOF) return (key_event_t){ KEY_EOF, 0 };
 
   if (c == 27) {
-    int seq1 = getchar();
+    int seq1 = repl_read_byte();
     if (seq1 == EOF) return (key_event_t){ KEY_NONE, 0 };
     if (seq1 == 'O') {
-      int seq2 = getchar();
+      int seq2 = repl_read_byte();
       if (seq2 == 'H') return (key_event_t){ KEY_HOME, 0 };
       if (seq2 == 'F') return (key_event_t){ KEY_END, 0 };
       return (key_event_t){ KEY_NONE, 0 };
     }
     if (seq1 != '[') return (key_event_t){ KEY_NONE, 0 };
-    int seq2 = getchar();
+    int seq2 = repl_read_byte();
     if (seq2 == EOF) return (key_event_t){ KEY_NONE, 0 };
     switch (seq2) {
       case 'A': return (key_event_t){ KEY_UP, 0 };
@@ -137,7 +168,7 @@ key_event_t repl_read_key(void) {
       case 'F': return (key_event_t){ KEY_END, 0 };
       default: {
         if (seq2 >= '0' && seq2 <= '9') {
-          int seq3 = getchar();
+          int seq3 = repl_read_byte();
           if (seq3 == '~') {
             if (seq2 == '1' || seq2 == '7') return (key_event_t){ KEY_HOME, 0 };
             if (seq2 == '4' || seq2 == '8') return (key_event_t){ KEY_END, 0 };

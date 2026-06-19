@@ -44,6 +44,8 @@ typedef struct {
 } key_event_t;
 
 int repl_terminal_cols(void);
+bool repl_input_pending(void);
+
 key_event_t repl_read_key(void);
 extern volatile sig_atomic_t ctrl_c_pressed;
 
