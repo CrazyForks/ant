@@ -432,7 +432,7 @@ static bool inspector_ident_char(char c, bool first) {
   return c == '_' || c == '$' || isalpha(uc) || (!first && isdigit(uc));
 }
 
-static bool inspector_eval_safe_member_expr(ant_t *js, const char *expr, size_t expr_len, ant_value_t *out) {
+bool inspector_eval_safe_member_expr(ant_t *js, const char *expr, size_t expr_len, ant_value_t *out) {
   if (!js || !expr || !out) return false;
   while (expr_len > 0 && isspace((unsigned char)*expr)) {
     expr++;

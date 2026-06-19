@@ -20,6 +20,7 @@
 #include "modules/io.h"
 #include "highlight.h"
 #include "highlight/regex.h"
+#include "inspector.h"
 
 typedef enum {
   CMD_OK,
@@ -39,34 +40,11 @@ typedef struct {
 } repl_command_t;
 
 typedef struct {
-  char *name;
-  size_t len;
-} repl_decl_name_t;
-
-typedef struct {
-  repl_decl_name_t *items;
-  size_t count;
-  size_t cap;
-} repl_decl_registry_t;
-
-typedef struct {
   const char **names;
   uint32_t *lens;
   size_t count;
   size_t cap;
 } repl_decl_pending_t;
-
-typedef struct {
-  char *expr;
-  char *preview;
-  size_t expr_len;
-} repl_preview_entry_t;
-
-typedef struct {
-  repl_preview_entry_t *items;
-  size_t count;
-  size_t cap;
-} repl_preview_snapshot_t;
 
 static repl_decl_registry_t *g_repl_decl_registry = NULL;
 static void repl_read_wake_cb(uv_async_t *handle) { (void)handle; }
@@ -81,310 +59,20 @@ typedef struct {
   repl_preview_snapshot_t *preview_snapshot;
   ant_readline_result_t status;
   char *line;
+  pthread_cond_t preview_cond;
+  char preview_request_line[REPL_PREVIEW_EXPR_MAX];
+  char preview_response_suffix[REPL_PREVIEW_TEXT_MAX];
+  char preview_response_text[REPL_PREVIEW_TEXT_MAX];
+  size_t preview_request_len;
   bool done;
   bool async_initialized;
   bool preview_enabled;
+  bool preview_cond_initialized;
+  bool preview_request_pending;
+  bool preview_response_ready;
 } repl_read_job_t;
 
-static bool repl_preview_ident_char(char c, bool first) {
-  unsigned char uc = (unsigned char)c;
-  return c == '_' || c == '$' || isalpha(uc) || (!first && isdigit(uc));
-}
-
-static void repl_preview_copy_line(
-  char *out,
-  size_t out_len,
-  const char *src,
-  size_t src_len
-) {
-  if (!out || out_len == 0) return;
-  out[0] = '\0';
-  if (!src) return;
-
-  size_t n = 0;
-  bool clipped = false;
-  // TODO: reduce nesting
-  for (size_t i = 0; i < src_len && src[i]; i++) {
-    if (src[i] == '\n' || src[i] == '\r') {
-      if (n > 0 && out[n - 1] != ' ') {
-        if (n + 1 >= out_len) {
-          clipped = true;
-          break;
-        }
-        out[n++] = ' ';
-      }
-      continue;
-    }
-    if (n + 1 >= out_len) {
-      clipped = true;
-      break;
-    }
-    out[n++] = src[i];
-  }
-
-  if (clipped && out_len > 5) {
-    size_t max_n = out_len - 5;
-    if (n > max_n) n = max_n;
-    memcpy(out + n, " ...", 4);
-    n += 4;
-  }
-  out[n] = '\0';
-}
-
-static bool repl_preview_format_value(
-  ant_t *js,
-  ant_value_t value,
-  char *out,
-  size_t out_len
-) {
-  if (!js || !out || out_len == 0) return false;
-  out[0] = '\0';
-
-  if (vtype(value) == T_STR) {
-    char *str = js_getstr(js, value, NULL);
-    if (!str) return false;
-    if (out_len > 2) {
-      out[0] = '\'';
-      repl_preview_copy_line(out + 1, out_len - 2, str, strlen(str));
-      size_t n = strlen(out);
-      if (n + 1 < out_len) {
-        out[n++] = '\'';
-        out[n] = '\0';
-      }
-    }
-    return out[0] != '\0';
-  }
-
-  char cbuf[512];
-  js_cstr_t cstr = js_to_cstr(js, value, cbuf, sizeof(cbuf));
-  repl_preview_copy_line(out, out_len, cstr.ptr, strlen(cstr.ptr));
-  if (cstr.needs_free) free((void *)cstr.ptr);
-  return out[0] != '\0';
-}
-
-static bool repl_preview_append(
-  char *out,
-  size_t out_len,
-  size_t *n,
-  const char *src
-) {
-  if (!out || !n || out_len == 0 || !src) return false;
-  size_t src_len = strlen(src);
-  if (*n + src_len >= out_len) {
-    size_t avail = (*n < out_len) ? out_len - *n - 1 : 0;
-    if (avail > 0) memcpy(out + *n, src, avail);
-    *n += avail;
-    out[*n] = '\0';
-    return false;
-  }
-  memcpy(out + *n, src, src_len);
-  *n += src_len;
-  out[*n] = '\0';
-  return true;
-}
-
-static bool repl_preview_append_bytes(
-  char *out,
-  size_t out_len,
-  size_t *n,
-  const char *src,
-  size_t src_len
-) {
-  if (!out || !n || out_len == 0 || !src) return false;
-  if (*n + src_len >= out_len) {
-    size_t avail = (*n < out_len) ? out_len - *n - 1 : 0;
-    if (avail > 0) memcpy(out + *n, src, avail);
-    *n += avail;
-    out[*n] = '\0';
-    return false;
-  }
-  memcpy(out + *n, src, src_len);
-  *n += src_len;
-  out[*n] = '\0';
-  return true;
-}
-
-static bool repl_preview_format_global(
-  ant_t *js,
-  ant_value_t global,
-  char *out,
-  size_t out_len
-) {
-  if (!js || !out || out_len == 0) return false;
-  size_t n = 0;
-  out[0] = '\0';
-
-  if (!repl_preview_append(out, out_len, &n, "Object [global] { ")) return false;
-
-  bool first = true;
-  bool clipped = false;
-  ant_iter_t iter = js_prop_iter_begin(js, global);
-  const char *key = NULL;
-  size_t key_len = 0;
-  ant_value_t value = js_mkundef();
-
-  while (js_prop_iter_next(&iter, &key, &key_len, &value)) {
-    if (!key || key_len == 0) continue;
-
-    char value_preview[160];
-    if (value == global) {
-      strncpy(value_preview, "[Circular]", sizeof(value_preview) - 1);
-      value_preview[sizeof(value_preview) - 1] = '\0';
-    } else if (!repl_preview_format_value(js, value, value_preview, sizeof(value_preview))) {
-      continue;
-    }
-
-    if (!first && !repl_preview_append(out, out_len, &n, ", ")) {
-      clipped = true;
-      break;
-    }
-    first = false;
-    if (
-      !repl_preview_append_bytes(out, out_len, &n, key, key_len) ||
-      !repl_preview_append(out, out_len, &n, ": ") ||
-      !repl_preview_append(out, out_len, &n, value_preview)
-    ) {
-      clipped = true;
-      break;
-    }
-  }
-
-  js_prop_iter_end(&iter);
-
-  if (clipped) {
-    if (out_len > 5) {
-      size_t max_n = out_len - 5;
-      if (n > max_n) n = max_n;
-      memcpy(out + n, " ...", 4);
-      n += 4;
-      out[n] = '\0';
-    }
-  } else repl_preview_append(out, out_len, &n, " }");
-
-  return out[0] != '\0';
-}
-
-static void repl_preview_snapshot_free(repl_preview_snapshot_t *snapshot) {
-  if (!snapshot) return;
-  for (size_t i = 0; i < snapshot->count; i++) {
-    free(snapshot->items[i].expr);
-    free(snapshot->items[i].preview);
-  }
-  free(snapshot->items);
-  snapshot->items = NULL;
-  snapshot->count = 0;
-  snapshot->cap = 0;
-}
-
-static bool repl_preview_snapshot_contains(
-  const repl_preview_snapshot_t *snapshot,
-  const char *expr,
-  size_t expr_len
-) {
-  if (!snapshot || !expr) return false;
-  for (size_t i = 0; i < snapshot->count; i++)
-    if (
-      snapshot->items[i].expr_len == expr_len &&
-      memcmp(snapshot->items[i].expr, expr, expr_len) == 0
-    ) return true;
-  return false;
-}
-
-static bool repl_preview_expr_is_ident(const char *expr, size_t expr_len) {
-  if (!expr || expr_len == 0 || !repl_preview_ident_char(expr[0], true)) return false;
-  for (size_t i = 1; i < expr_len; i++)
-    if (!repl_preview_ident_char(expr[i], false)) return false;
-  return true;
-}
-
-static bool repl_preview_snapshot_add(
-  repl_preview_snapshot_t *snapshot,
-  const char *expr,
-  size_t expr_len,
-  const char *preview
-) {
-  if (!snapshot || !expr || expr_len == 0 || !preview || preview[0] == '\0')
-    return true;
-  if (repl_preview_snapshot_contains(snapshot, expr, expr_len)) return true;
-
-  if (snapshot->count >= snapshot->cap) {
-    size_t new_cap = snapshot->cap ? snapshot->cap * 2 : 64;
-    repl_preview_entry_t *items = realloc(snapshot->items, new_cap * sizeof(*items));
-    if (!items) return false;
-    snapshot->items = items;
-    snapshot->cap = new_cap;
-  }
-
-  char *expr_copy = malloc(expr_len + 1);
-  if (!expr_copy) return false;
-  memcpy(expr_copy, expr, expr_len);
-  expr_copy[expr_len] = '\0';
-
-  char *preview_copy = strdup(preview);
-  if (!preview_copy) {
-    free(expr_copy);
-    return false;
-  }
-
-  snapshot->items[snapshot->count++] = (repl_preview_entry_t){
-    .expr = expr_copy,
-    .preview = preview_copy,
-    .expr_len = expr_len,
-  };
-  return true;
-}
-
-static bool repl_preview_snapshot_add_value(
-  ant_t *js,
-  repl_preview_snapshot_t *snapshot,
-  const char *expr,
-  size_t expr_len,
-  ant_value_t value
-) {
-  char preview[REPL_PREVIEW_TEXT_MAX];
-  if (!repl_preview_format_value(js, value, preview, sizeof(preview))) return true;
-  return repl_preview_snapshot_add(snapshot, expr, expr_len, preview);
-}
-
-static bool repl_preview_snapshot_build(
-  ant_t *js,
-  const repl_decl_registry_t *decls,
-  repl_preview_snapshot_t *snapshot
-) {
-  if (!js || !snapshot) return false;
-
-  ant_value_t global = js_glob(js);
-  char global_preview[REPL_PREVIEW_TEXT_MAX];
-  if (!repl_preview_format_global(js, global, global_preview, sizeof(global_preview)))
-    return false;
-
-  if (decls) for (size_t i = 0; i < decls->count; i++) {
-    const repl_decl_name_t *decl = &decls->items[i];
-    if (!decl->name || decl->len == 0) continue;
-    ant_value_t value = js_get(js, global, decl->name);
-    if (!repl_preview_snapshot_add_value(js, snapshot, decl->name, decl->len, value)) return false;
-  }
-
-  if (!repl_preview_snapshot_add(snapshot, "this", 4, global_preview)) return false;
-  if (!repl_preview_snapshot_add(snapshot, "global", 6, global_preview)) return false;
-  if (!repl_preview_snapshot_add(snapshot, "globalThis", 10, global_preview)) return false;
-
-  ant_iter_t iter = js_prop_iter_begin(js, global);
-  const char *key = NULL;
-  size_t key_len = 0;
-  ant_value_t value = js_mkundef();
-  while (js_prop_iter_next(&iter, &key, &key_len, &value)) {
-    if (!repl_preview_expr_is_ident(key, key_len)) continue;
-    if (!repl_preview_snapshot_add_value(js, snapshot, key, key_len, value)) {
-      js_prop_iter_end(&iter);
-      return false;
-    }
-  }
-  js_prop_iter_end(&iter);
-  return true;
-}
-
-static bool repl_snapshot_preview_cb(
+static bool repl_read_preview_cb(
   void *ctx,
   const char *line,
   size_t len,
@@ -393,66 +81,93 @@ static bool repl_snapshot_preview_cb(
   char *preview_out,
   size_t preview_len
 ) {
-  repl_preview_snapshot_t *snapshot = (repl_preview_snapshot_t *)ctx;
+  repl_read_job_t *job = (repl_read_job_t *)ctx;
   if (
-    !snapshot || !line ||
+    !job || !line ||
     !suffix_out || suffix_len == 0 ||
     !preview_out || preview_len == 0
   ) return false;
   suffix_out[0] = '\0';
   preview_out[0] = '\0';
+  if (!job->preview_enabled || !job->preview_cond_initialized) return false;
+  if (len >= REPL_PREVIEW_EXPR_MAX) len = REPL_PREVIEW_EXPR_MAX - 1;
 
-  while (len > 0 && isspace((unsigned char)*line)) {
-    line++;
-    len--;
-  }
-  while (len > 0 && isspace((unsigned char)line[len - 1])) len--;
-  if (len == 0 || line[0] == '.') return false;
-
-  repl_preview_entry_t *prefix_match = NULL;
-  size_t prefix_match_count = 0;
-  size_t common_len = 0;
-  
-  for (size_t i = 0; i < snapshot->count; i++) {
-    repl_preview_entry_t *entry = &snapshot->items[i];
-    if (entry->expr_len == len && memcmp(entry->expr, line, len) == 0) {
-      strncpy(preview_out, entry->preview, preview_len - 1);
-      preview_out[preview_len - 1] = '\0';
-      return preview_out[0] != '\0';
-    }
-    if (len < 3) continue;
-    if (entry->expr_len > len && memcmp(entry->expr, line, len) == 0) {
-      if (!prefix_match) {
-        prefix_match = entry;
-        common_len = entry->expr_len;
-      } else {
-        size_t max_common =
-          common_len < entry->expr_len ? common_len : entry->expr_len;
-        size_t j = len;
-        while (j < max_common && prefix_match->expr[j] == entry->expr[j]) j++;
-        common_len = j;
-      }
-      prefix_match_count++;
-    }
+  pthread_mutex_lock(&job->mutex);
+  if (!job->async_initialized || job->done) {
+    pthread_mutex_unlock(&job->mutex);
+    return false;
   }
 
-  if (prefix_match) {
-    size_t completed_len =
-      prefix_match_count == 1 ? prefix_match->expr_len : common_len;
-    if (completed_len <= len) return false;
-    size_t suffix_bytes = completed_len - len;
-    if (suffix_bytes >= suffix_len) suffix_bytes = suffix_len - 1;
-    memcpy(suffix_out, prefix_match->expr + len, suffix_bytes);
-    suffix_out[suffix_bytes] = '\0';
-
-    if (prefix_match_count == 1 || completed_len == prefix_match->expr_len) {
-      strncpy(preview_out, prefix_match->preview, preview_len - 1);
-      preview_out[preview_len - 1] = '\0';
-    }
-    return suffix_out[0] != '\0' || preview_out[0] != '\0';
+  while (job->preview_request_pending && !job->done)
+    pthread_cond_wait(&job->preview_cond, &job->mutex);
+  if (job->done) {
+    pthread_mutex_unlock(&job->mutex);
+    return false;
   }
 
-  return false;
+  memcpy(job->preview_request_line, line, len);
+  job->preview_request_line[len] = '\0';
+  job->preview_request_len = len;
+  job->preview_response_suffix[0] = '\0';
+  job->preview_response_text[0] = '\0';
+  job->preview_response_ready = false;
+  job->preview_request_pending = true;
+  if (uv_async_send(&job->async) != 0) {
+    job->preview_request_pending = false;
+    pthread_cond_broadcast(&job->preview_cond);
+    pthread_mutex_unlock(&job->mutex);
+    return false;
+  }
+
+  while (
+    job->preview_request_pending &&
+    !job->preview_response_ready &&
+    !job->done
+  ) pthread_cond_wait(&job->preview_cond, &job->mutex);
+
+  if (job->preview_response_ready) {
+    strncpy(suffix_out, job->preview_response_suffix, suffix_len - 1);
+    suffix_out[suffix_len - 1] = '\0';
+    strncpy(preview_out, job->preview_response_text, preview_len - 1);
+    preview_out[preview_len - 1] = '\0';
+  }
+  pthread_mutex_unlock(&job->mutex);
+  return suffix_out[0] != '\0' || preview_out[0] != '\0';
+}
+
+static void repl_read_job_handle_preview(ant_t *js, repl_read_job_t *job) {
+  if (!js || !job || !job->preview_cond_initialized) return;
+
+  for (;;) {
+    char line[REPL_PREVIEW_EXPR_MAX];
+    size_t len = 0;
+
+    pthread_mutex_lock(&job->mutex);
+    if (!job->preview_request_pending || job->preview_response_ready) {
+      pthread_mutex_unlock(&job->mutex);
+      return;
+    }
+    len = job->preview_request_len;
+    memcpy(line, job->preview_request_line, len + 1);
+    pthread_mutex_unlock(&job->mutex);
+
+    char suffix[REPL_PREVIEW_TEXT_MAX];
+    char preview[REPL_PREVIEW_TEXT_MAX];
+    repl_preview_compute(
+      js, job->preview_snapshot, line, len,
+      suffix, sizeof(suffix), preview, sizeof(preview)
+    );
+
+    pthread_mutex_lock(&job->mutex);
+    strncpy(job->preview_response_suffix, suffix, sizeof(job->preview_response_suffix) - 1);
+    job->preview_response_suffix[sizeof(job->preview_response_suffix) - 1] = '\0';
+    strncpy(job->preview_response_text, preview, sizeof(job->preview_response_text) - 1);
+    job->preview_response_text[sizeof(job->preview_response_text) - 1] = '\0';
+    job->preview_response_ready = true;
+    job->preview_request_pending = false;
+    pthread_cond_broadcast(&job->preview_cond);
+    pthread_mutex_unlock(&job->mutex);
+  }
 }
 
 static void repl_read_async_close_cb(uv_handle_t *handle) {
@@ -474,8 +189,8 @@ static void *repl_read_thread_main(void *data) {
   ant_readline_result_t status = ant_readline_with_preview(
     job->history, job->prompt,
     job->prefix_state,
-    job->preview_enabled ? repl_snapshot_preview_cb : NULL,
-    job->preview_snapshot,
+    job->preview_enabled ? repl_read_preview_cb : NULL,
+    job,
     &line
   );
 
@@ -483,6 +198,8 @@ static void *repl_read_thread_main(void *data) {
   job->status = status;
   job->line = line;
   job->done = true;
+  if (job->preview_cond_initialized)
+    pthread_cond_broadcast(&job->preview_cond);
   pthread_mutex_unlock(&job->mutex);
 
   if (job->async_initialized) uv_async_send(&job->async);
@@ -512,9 +229,13 @@ static ant_readline_result_t repl_readline_async(
     .preview_snapshot = NULL,
     .status = ANT_READLINE_EOF,
     .line = NULL,
+    .preview_request_len = 0,
     .done = false,
     .async_initialized = false,
     .preview_enabled = true,
+    .preview_cond_initialized = false,
+    .preview_request_pending = false,
+    .preview_response_ready = false,
   };
   repl_preview_snapshot_t preview_snapshot = {0};
 
@@ -535,7 +256,15 @@ static ant_readline_result_t repl_readline_async(
     return ant_readline(history, prompt, prefix_state, out_line);
   }
 
+  if (pthread_cond_init(&job.preview_cond, NULL) != 0) {
+    pthread_mutex_destroy(&job.mutex);
+    repl_preview_snapshot_free(&preview_snapshot);
+    return ant_readline(history, prompt, prefix_state, out_line);
+  }
+  job.preview_cond_initialized = true;
+
   if (uv_async_init(uv_default_loop(), &job.async, repl_read_wake_cb) != 0) {
+    pthread_cond_destroy(&job.preview_cond);
     pthread_mutex_destroy(&job.mutex);
     repl_preview_snapshot_free(&preview_snapshot);
     return ant_readline(history, prompt, prefix_state, out_line);
@@ -556,15 +285,19 @@ static ant_readline_result_t repl_readline_async(
     if (job.async_initialized)
       uv_close((uv_handle_t *)&job.async, repl_read_async_close_cb);
     while (job.async_initialized) uv_run(uv_default_loop(), UV_RUN_ONCE);
+    pthread_cond_destroy(&job.preview_cond);
     pthread_mutex_destroy(&job.mutex);
     repl_preview_snapshot_free(&preview_snapshot);
     return ant_readline(history, prompt, prefix_state, out_line);
   }
 
   while (!repl_read_job_is_done(&job)) {
+    repl_read_job_handle_preview(js, &job);
     js_reactor_pump_repl_nowait(js);
     uv_run(uv_default_loop(), UV_RUN_ONCE);
+    repl_read_job_handle_preview(js, &job);
   }
+  repl_read_job_handle_preview(js, &job);
 
   pthread_join(thread, NULL);
 #ifndef _WIN32
@@ -579,6 +312,7 @@ static ant_readline_result_t repl_readline_async(
   ant_readline_result_t status = job.status;
   char *line = job.line;
   pthread_mutex_unlock(&job.mutex);
+  pthread_cond_destroy(&job.preview_cond);
   pthread_mutex_destroy(&job.mutex);
   repl_preview_snapshot_free(&preview_snapshot);
 

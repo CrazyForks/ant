@@ -130,6 +130,7 @@ void inspector_clear_console_events(void);
 void inspector_replay_console_events(inspector_client_t *client);
 void inspector_clear_exception_state(ant_t *js);
 void inspector_send_eval_result(inspector_client_t *client, int id, ant_value_t result);
+bool inspector_eval_safe_member_expr(ant_t *js, const char *expr, size_t expr_len, ant_value_t *out);
 
 bool inspector_is_url_like(const char *path);
 char *inspector_make_script_url(const char *path);
