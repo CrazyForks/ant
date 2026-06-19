@@ -341,33 +341,6 @@ static bool repl_preview_snapshot_add_value(
   size_t expr_len,
   ant_value_t value
 ) {
-  switch (vtype(value)) {
-    case T_OBJ:
-    case T_ARR:
-    case T_PROMISE:
-    case T_GENERATOR:
-    case T_MAP:
-    case T_SET:
-    case T_WEAKMAP:
-    case T_WEAKSET:
-    case T_TYPEDARRAY:
-      return true;
-    default:
-      break;
-  }
-
-  char preview[REPL_PREVIEW_TEXT_MAX];
-  if (!repl_preview_format_value(js, value, preview, sizeof(preview))) return true;
-  return repl_preview_snapshot_add(snapshot, expr, expr_len, preview);
-}
-
-static bool repl_preview_snapshot_add_decl_value(
-  ant_t *js,
-  repl_preview_snapshot_t *snapshot,
-  const char *expr,
-  size_t expr_len,
-  ant_value_t value
-) {
   char preview[REPL_PREVIEW_TEXT_MAX];
   if (!repl_preview_format_value(js, value, preview, sizeof(preview))) return true;
   return repl_preview_snapshot_add(snapshot, expr, expr_len, preview);
@@ -389,11 +362,7 @@ static bool repl_preview_snapshot_build(
     const repl_decl_name_t *decl = &decls->items[i];
     if (!decl->name || decl->len == 0) continue;
     ant_value_t value = js_get(js, global, decl->name);
-    if (
-      !repl_preview_snapshot_add_decl_value(
-        js, snapshot, decl->name, decl->len, value
-      )
-    ) return false;
+    if (!repl_preview_snapshot_add_value(js, snapshot, decl->name, decl->len, value)) return false;
   }
 
   if (!repl_preview_snapshot_add(snapshot, "this", 4, global_preview)) return false;
@@ -441,6 +410,9 @@ static bool repl_snapshot_preview_cb(
   if (len == 0 || line[0] == '.') return false;
 
   repl_preview_entry_t *prefix_match = NULL;
+  size_t prefix_match_count = 0;
+  size_t common_len = 0;
+  
   for (size_t i = 0; i < snapshot->count; i++) {
     repl_preview_entry_t *entry = &snapshot->items[i];
     if (entry->expr_len == len && memcmp(entry->expr, line, len) == 0) {
@@ -450,18 +422,33 @@ static bool repl_snapshot_preview_cb(
     }
     if (len < 3) continue;
     if (entry->expr_len > len && memcmp(entry->expr, line, len) == 0) {
-      if (prefix_match) return false;
-      prefix_match = entry;
+      if (!prefix_match) {
+        prefix_match = entry;
+        common_len = entry->expr_len;
+      } else {
+        size_t max_common =
+          common_len < entry->expr_len ? common_len : entry->expr_len;
+        size_t j = len;
+        while (j < max_common && prefix_match->expr[j] == entry->expr[j]) j++;
+        common_len = j;
+      }
+      prefix_match_count++;
     }
   }
 
   if (prefix_match) {
-    size_t suffix_bytes = prefix_match->expr_len - len;
+    size_t completed_len =
+      prefix_match_count == 1 ? prefix_match->expr_len : common_len;
+    if (completed_len <= len) return false;
+    size_t suffix_bytes = completed_len - len;
     if (suffix_bytes >= suffix_len) suffix_bytes = suffix_len - 1;
     memcpy(suffix_out, prefix_match->expr + len, suffix_bytes);
     suffix_out[suffix_bytes] = '\0';
-    strncpy(preview_out, prefix_match->preview, preview_len - 1);
-    preview_out[preview_len - 1] = '\0';
+
+    if (prefix_match_count == 1 || completed_len == prefix_match->expr_len) {
+      strncpy(preview_out, prefix_match->preview, preview_len - 1);
+      preview_out[preview_len - 1] = '\0';
+    }
     return suffix_out[0] != '\0' || preview_out[0] != '\0';
   }
 
