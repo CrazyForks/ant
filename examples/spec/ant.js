@@ -4,7 +4,7 @@ console.log('Ant Global Tests\n');
 
 test('Ant exists', typeof Ant, 'object');
 test('version is string', typeof Ant.version, 'string');
-test('version format', /^\d+\.\d+\.\d+/.test(Ant.version), true);
+test('version format', /^\d+\.\d+\.\w+\.\d+/.test(Ant.version), true);
 test('target is string', typeof Ant.target, 'string');
 test('target not empty', Ant.target.length > 0, true);
 test('revision is string', typeof Ant.revision, 'string');

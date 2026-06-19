@@ -18129,7 +18129,7 @@ sv_func_t *js_compile_parsed_bytecode(
 ) {
   sv_compile_mode_t mode = (sv_compile_mode_t)mode_value;
 
-  if (mode != SV_COMPILE_MODULE && (program->flags & FN_MODULE_SYNTAX)) {
+  if (mode != SV_COMPILE_MODULE && mode != SV_COMPILE_REPL && (program->flags & FN_MODULE_SYNTAX)) {
     js_mkerr_typed(js, JS_ERR_SYNTAX, "Cannot use import/export syntax outside a module");
     return NULL;
   }
