@@ -21,7 +21,6 @@ typedef struct {
 
 typedef struct {
   char *expr;
-  char *preview;
   size_t expr_len;
 } repl_preview_entry_t;
 

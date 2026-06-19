@@ -10,7 +10,6 @@
 #include "modules/symbol.h"
 #include "silver/engine.h"
 
-#include <ctype.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -427,59 +426,6 @@ bool inspector_append_call_location(ant_t *js, sbuf_t *b) {
   return ok;
 }
 
-static bool inspector_ident_char(char c, bool first) {
-  unsigned char uc = (unsigned char)c;
-  return c == '_' || c == '$' || isalpha(uc) || (!first && isdigit(uc));
-}
-
-bool inspector_eval_safe_member_expr(ant_t *js, const char *expr, size_t expr_len, ant_value_t *out) {
-  if (!js || !expr || !out) return false;
-  while (expr_len > 0 && isspace((unsigned char)*expr)) {
-    expr++;
-    expr_len--;
-  }
-  while (expr_len > 0 && isspace((unsigned char)expr[expr_len - 1])) expr_len--;
-  while (expr_len > 0 && expr[expr_len - 1] == '.') expr_len--;
-  if (expr_len == 0) return false;
-
-  ant_value_t cur = js_glob(js);
-  size_t pos = 0;
-  bool first_part = true;
-  while (pos < expr_len) {
-    if (!inspector_ident_char(expr[pos], true)) return false;
-    size_t start = pos++;
-    while (pos < expr_len && inspector_ident_char(expr[pos], false)) pos++;
-    size_t len = pos - start;
-    if (len == 0 || len >= 128) return false;
-
-    char key[128];
-    memcpy(key, expr + start, len);
-    key[len] = '\0';
-
-    if (first_part && (strcmp(key, "globalThis") == 0 || strcmp(key, "global") == 0 || strcmp(key, "this") == 0)) {
-      cur = js_glob(js);
-    } else {
-      if (first_part) cur = js_get(js, js_glob(js), key);
-      else cur = is_object_type(cur) || vtype(cur) == T_CFUNC ? js_get(js, cur, key) : js_mkundef();
-    }
-
-    first_part = false;
-    if (pos == expr_len) {
-      *out = cur;
-      return true;
-    }
-    if (expr[pos] != '.') return false;
-    pos++;
-    if (pos == expr_len) {
-      *out = cur;
-      return true;
-    }
-  }
-
-  *out = cur;
-  return true;
-}
-
 static void inspector_send_side_effect_blocked(inspector_client_t *client, int id) {
   inspector_send_response_obj(
     client,
@@ -655,7 +601,7 @@ void inspector_eval(inspector_client_t *client, int id, yyjson_val *params) {
 
   if (inspector_param_bool(params, "throwOnSideEffect")) {
     ant_value_t safe_result = js_mkundef();
-    if (inspector_eval_safe_member_expr(client->js, expr, expr_len, &safe_result)) {
+    if (inspector_eval_safe_expr(client->js, expr, expr_len, &safe_result)) {
       inspector_send_eval_result(client, id, safe_result);
     } else {
       inspector_send_side_effect_blocked(client, id);
