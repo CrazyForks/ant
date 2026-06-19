@@ -496,11 +496,17 @@ ant_value_t js_maybe_set_function_name_from_key(
   const char *prefix, size_t prefix_len
 );
 
+sv_func_t *js_compile_parsed_bytecode(
+  ant_t *js, struct sv_ast *program,
+  const char *buf, size_t len, int mode
+);
+
 bool is_proxy(ant_value_t obj);
 bool is_array_value(ant_value_t value);
 bool strict_eq_values(ant_t *js, ant_value_t l, ant_value_t r);
 bool js_deep_equal(ant_t *js, ant_value_t a, ant_value_t b, bool strict);
 
+ant_value_t js_execute_compiled_bytecode(ant_t *js, sv_func_t *func);
 ant_value_t js_proxy_apply(ant_t *js, ant_value_t proxy, ant_value_t this_arg, ant_value_t *args, int argc);
 ant_value_t js_proxy_construct(ant_t *js, ant_value_t proxy, ant_value_t *args, int argc, ant_value_t new_target);
 ant_value_t sv_call_native(ant_t *js, ant_value_t func, ant_value_t this_val, ant_value_t *args, int nargs);
@@ -524,11 +530,6 @@ ant_value_t builtin_array_includes(ant_t *js, ant_value_t *args, int nargs);
 
 void js_module_eval_ctx_push(ant_t *js, ant_module_t *ctx);
 void js_module_eval_ctx_pop(ant_t *js, ant_module_t *ctx);
-
-ant_value_t js_eval_parsed_bytecode(
-  ant_t *js, struct sv_ast *program,
-  const char *buf, size_t len, int mode
-);
 
 bool lookup_prop_meta(
   ant_t *js, ant_value_t cur_obj,

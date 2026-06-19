@@ -1121,13 +1121,17 @@ static ant_value_t esm_eval_ambiguous_js_source(
     *format = MODULE_EVAL_FORMAT_ESM;
     if (js->module) js->module->format = *format;
     
-    ant_value_t result = js_eval_parsed_bytecode(
+    sv_func_t *func = js_compile_parsed_bytecode(
       js, program, js_code, 
       js_len, SV_COMPILE_MODULE
-    );
+    ); parse_arena_rewind(parse_mark);
     
-    parse_arena_rewind(parse_mark);
-    return result;
+    if (!func) {
+      if (js->thrown_exists) return mkval(T_ERR, 0);
+      return js_mkerr_typed(js, JS_ERR_INTERNAL | JS_ERR_NO_STACK, "Unexpected compile error");
+    }
+
+    return js_execute_compiled_bytecode(js, func);
   }
 
   parse_arena_rewind(parse_mark);

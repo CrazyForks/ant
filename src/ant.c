@@ -18123,14 +18123,15 @@ bool js_chkargs(ant_value_t *args, int nargs, const char *spec) {
   return ok;
 }
 
-ant_value_t js_eval_parsed_bytecode(
+sv_func_t *js_compile_parsed_bytecode(
   ant_t *js, sv_ast_t *program,
   const char *buf, size_t len, int mode_value
 ) {
   sv_compile_mode_t mode = (sv_compile_mode_t)mode_value;
 
   if (mode != SV_COMPILE_MODULE && (program->flags & FN_MODULE_SYNTAX)) {
-    return js_mkerr_typed(js, JS_ERR_SYNTAX, "Cannot use import/export syntax outside a module");
+    js_mkerr_typed(js, JS_ERR_SYNTAX, "Cannot use import/export syntax outside a module");
+    return NULL;
   }
 
   if (mode == SV_COMPILE_MODULE) {
@@ -18140,11 +18141,15 @@ ant_value_t js_eval_parsed_bytecode(
 
   sv_func_t *func = sv_compile(js, program, mode, buf, (ant_offset_t)len);
   if (!func) {
-    if (js->thrown_exists) return mkval(T_ERR, 0);
-    return js_mkerr_typed(js, JS_ERR_INTERNAL | JS_ERR_NO_STACK, "Unexpected compile error");
+    if (!js->thrown_exists) js_mkerr_typed(js, JS_ERR_INTERNAL | JS_ERR_NO_STACK, "Unexpected compile error");
+    return NULL;
   }
-  
-  js_clear_error_site(js);   
+
+  return func;
+}
+
+ant_value_t js_execute_compiled_bytecode(ant_t *js, sv_func_t *func) {
+  js_clear_error_site(js);
   ant_value_t result;
   // TODO: this-newtarget-frame-migration
   ant_value_t saved_this = js->this_val;
@@ -18172,10 +18177,15 @@ static inline ant_value_t js_eval_bytecode_mode(
     return js_mkerr_typed(js, JS_ERR_INTERNAL | JS_ERR_NO_STACK, "Unexpected parse error");
   }
 
-  ant_value_t result = js_eval_parsed_bytecode(js, program, buf, len, mode);
+  sv_func_t *func = js_compile_parsed_bytecode(js, program, buf, len, mode);
   parse_arena_rewind(parse_mark);
-  
-  return result;
+
+  if (!func) {
+    if (js->thrown_exists) return mkval(T_ERR, 0);
+    return js_mkerr_typed(js, JS_ERR_INTERNAL | JS_ERR_NO_STACK, "Unexpected compile error");
+  }
+
+  return js_execute_compiled_bytecode(js, func);
 }
 
 ant_value_t js_eval_bytecode(ant_t *js, const char *buf, size_t len) {
