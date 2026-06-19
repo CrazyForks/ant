@@ -893,7 +893,14 @@ static int cmd_trust(const char **pkgs, int count, bool all) {
     printf("Running lifecycle scripts for %s%u%s package%s...\n",
       C_GREEN, to_run_count, C_RESET,
       to_run_count == 1 ? "" : "s");
-    pkg_run_postinstall(ctx, "node_modules", to_run, to_run_count);
+    
+    pkg_error_t run_err = pkg_run_postinstall(ctx, "node_modules", to_run, to_run_count);
+    if (run_err != PKG_OK) {
+      print_pkg_error(ctx);
+      free((void *)to_run);
+      pkg_free(ctx);
+      return EXIT_FAILURE;
+    }
     
     struct timespec end_time;
     clock_gettime(CLOCK_MONOTONIC, &end_time);

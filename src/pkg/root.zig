@@ -673,7 +673,7 @@ export fn pkg_install(
   var pkg_json = json.PackageJson.parse(arena_alloc, std.mem.span(package_json_path)) catch return .ok;
   defer pkg_json.deinit(arena_alloc);
   if (pkg_json.trusted_dependencies.count() > 0) {
-    runTrustedPostinstall(c, &pkg_json.trusted_dependencies, std.mem.span(node_modules_path), arena_alloc);
+    if (!runTrustedPostinstall(c, &pkg_json.trusted_dependencies, std.mem.span(node_modules_path), arena_alloc)) return .io_error;
   }
 
   return .ok;
@@ -784,28 +784,48 @@ fn discoverPackageScript(ctx: *PkgContext, nm_path: []const u8, pkg_name: []cons
   var pkg_dir = parent_dir.openDir(dir_name, .{}) catch return;
   defer pkg_dir.close();
 
-  pkg_dir.access(".postinstall", .{}) catch |err| {
-    if (err != error.FileNotFound) return;
-    const pkg_json = pkg_dir.openFile("package.json", .{}) catch return;
-    defer pkg_json.close();
+  const pkg_json = pkg_dir.openFile("package.json", .{}) catch return;
+  defer pkg_json.close();
 
-    const content = pkg_json.readToEndAlloc(ctx.allocator, 1024 * 1024) catch return;
-    defer ctx.allocator.free(content);
+  const content = pkg_json.readToEndAlloc(ctx.allocator, 1024 * 1024) catch return;
+  defer ctx.allocator.free(content);
 
-    var doc = json.JsonDoc.parse(content) catch return;
-    defer doc.deinit();
+  var doc = json.JsonDoc.parse(content) catch return;
+  defer doc.deinit();
 
-    const root = doc.root();
-    if (root.getObject("scripts")) |scripts| {
-      const script = scripts.getString("postinstall") orelse
-        scripts.getString("install") orelse return;
+  const root = doc.root();
+  if (root.getObject("scripts")) |scripts| {
+    const install_script = scripts.getString("install");
+    const postinstall_script = scripts.getString("postinstall");
+    if (install_script == null and postinstall_script == null) return;
 
-      if (std.mem.eql(u8, pkg_name, "esbuild")) return;
-      ctx.addLifecycleScript(pkg_name, script) catch return;
+    if (std.mem.eql(u8, pkg_name, "esbuild")) return;
+
+    var commands = std.ArrayListUnmanaged(LifecycleCommand){};
+    defer freeLifecycleCommands(ctx.allocator, &commands);
+    if (install_script) |script| {
+      appendLifecycleCommand(ctx.allocator, &commands, "install", script) catch return;
     }
-    return;
-  };
-  _ = nm_path;
+    if (postinstall_script) |script| {
+      appendLifecycleCommand(ctx.allocator, &commands, "postinstall", script) catch return;
+    }
+
+    const marker_path = std.fmt.allocPrint(ctx.allocator, "{s}/{s}/.postinstall", .{ nm_path, pkg_name }) catch return;
+    defer ctx.allocator.free(marker_path);
+    if (lifecycleMarkerMatches(ctx.allocator, marker_path, commands.items)) return;
+
+    if (install_script) |install| {
+      if (postinstall_script) |postinstall| {
+        const combined = std.fmt.allocPrint(ctx.allocator, "{s} && {s}", .{ install, postinstall }) catch return;
+        defer ctx.allocator.free(combined);
+        ctx.addLifecycleScript(pkg_name, combined) catch return;
+        return;
+      }
+      ctx.addLifecycleScript(pkg_name, install) catch return;
+      return;
+    }
+    ctx.addLifecycleScript(pkg_name, postinstall_script.?) catch return;
+  }
 }
 
 export fn pkg_get_lifecycle_script_count(ctx: ?*const PkgContext) u32 {
@@ -835,7 +855,7 @@ export fn pkg_run_postinstall(
     trusted.put(std.mem.span(package_names[i]), {}) catch continue;
   }
 
-  runTrustedPostinstall(c, &trusted, std.mem.span(node_modules_path), arena_alloc);
+  if (!runTrustedPostinstall(c, &trusted, std.mem.span(node_modules_path), arena_alloc)) return .io_error;
   return .ok;
 }
 
@@ -1084,6 +1104,85 @@ const InterleavedContext = struct {
     debug.log("  queued tarball: {s}@{s}", .{ pkg.name.slice(), version_str });
   }
 };
+
+fn installToolPackageNoLifecycle(
+  c: *PkgContext,
+  allocator: std.mem.Allocator,
+  package_json_path: []const u8,
+  lockfile_path: []const u8,
+  node_modules_path: []const u8,
+) !void {
+  const http = c.http orelse return error.NetworkError;
+  const db = c.cache_db orelse return error.CacheError;
+  http.resetMetaClients();
+
+  var interleaved = InterleavedContext.init(c.allocator, allocator, db, http, c);
+  defer interleaved.deinit();
+
+  var res = resolver.Resolver.init(
+    allocator,
+    c.allocator,
+    &c.string_pool,
+    http,
+    db,
+    if (c.options.registry_url) |url| std.mem.span(url) else "https://registry.npmjs.org",
+    &c.metadata_cache,
+  );
+  defer res.deinit();
+
+  res.setOnPackageResolved(InterleavedContext.onPackageResolved, &interleaved);
+  try res.resolveFromPackageJson(package_json_path);
+
+  if (interleaved.tarballs_queued > 0) try http.run();
+
+  var pkg_linker = linker.Linker.init(c.allocator);
+  defer pkg_linker.deinit();
+  try pkg_linker.setNodeModulesPath(node_modules_path);
+
+  for (interleaved.extract_contexts.items) |ectx| {
+    defer ectx.ext.deinit();
+    if (ectx.has_error) continue;
+
+    const stats = ectx.ext.stats();
+    db.insert(&.{
+      .integrity = ectx.integrity,
+      .path = ectx.cache_path,
+      .unpacked_size = stats.bytes,
+      .file_count = stats.files,
+      .cached_at = std.time.timestamp(),
+    }, ectx.pkg_name, ectx.version_str) catch continue;
+
+    pkg_linker.linkPackage(.{
+      .cache_path = ectx.cache_path,
+      .node_modules_path = node_modules_path,
+      .name = ectx.pkg_name,
+      .parent_path = ectx.parent_path,
+      .file_count = stats.files,
+      .has_bin = ectx.has_bin,
+    }) catch continue;
+  }
+
+  var resolved_iter = res.resolved.valueIterator();
+  while (resolved_iter.next()) |pkg_ptr| {
+    const pkg = pkg_ptr.*;
+    if (db.lookup(&pkg.integrity)) |cache_entry| {
+      var entry = cache_entry;
+      defer entry.deinit();
+      const pkg_cache_path = allocator.dupe(u8, entry.path) catch continue;
+      pkg_linker.linkPackage(.{
+        .cache_path = pkg_cache_path,
+        .node_modules_path = node_modules_path,
+        .name = pkg.name.slice(),
+        .parent_path = pkg.parent_path,
+        .file_count = entry.file_count,
+        .has_bin = pkg.has_bin,
+      }) catch continue;
+    }
+  }
+
+  res.writeLockfile(lockfile_path) catch {};
+  db.sync();
+}
 
 export fn pkg_resolve_and_install(
   ctx: ?*PkgContext,
@@ -1405,7 +1504,7 @@ export fn pkg_resolve_and_install(
   debug.log("total: {d} packages in {d}ms", .{ res.resolved.count(), c.last_install_result.elapsed_ms });
 
   if (pkg_json.trusted_dependencies.count() > 0) {
-    runTrustedPostinstall(c, &pkg_json.trusted_dependencies, std.mem.span(node_modules_path), arena_alloc);
+    if (!runTrustedPostinstall(c, &pkg_json.trusted_dependencies, std.mem.span(node_modules_path), arena_alloc)) return .io_error;
   }
 
   return .ok;
@@ -1414,41 +1513,306 @@ export fn pkg_resolve_and_install(
 const PostinstallJob = struct {
   pkg_name: []const u8,
   pkg_dir: []const u8,
-  script: []const u8,
-  child: ?std.process.Child = null,
-  exit_code: ?u8 = null,
-  stderr: ?[]const u8 = null,
+  commands: std.ArrayListUnmanaged(LifecycleCommand),
   failed: bool = false,
 };
+
+const LifecycleCommand = struct {
+  name: []const u8,
+  script: []const u8,
+};
+
+fn appendLifecycleCommand(
+  allocator: std.mem.Allocator,
+  commands: *std.ArrayListUnmanaged(LifecycleCommand),
+  name: []const u8,
+  script: []const u8,
+) !void {
+  try commands.append(allocator, .{
+    .name = name,
+    .script = try allocator.dupe(u8, script),
+  });
+}
+
+fn freeLifecycleCommands(allocator: std.mem.Allocator, commands: *std.ArrayListUnmanaged(LifecycleCommand)) void {
+  for (commands.items) |cmd| allocator.free(cmd.script);
+  commands.deinit(allocator);
+}
+
+fn lifecycleMarkerContent(allocator: std.mem.Allocator, commands: []const LifecycleCommand) ![]u8 {
+  var content = std.ArrayListUnmanaged(u8){};
+  errdefer content.deinit(allocator);
+  try content.appendSlice(allocator, "ant lifecycle v1\n");
+  for (commands) |cmd| {
+    try content.appendSlice(allocator, cmd.name);
+    try content.append(allocator, '\n');
+  }
+  return content.toOwnedSlice(allocator);
+}
+
+fn lifecycleMarkerMatches(allocator: std.mem.Allocator, marker_path: []const u8, commands: []const LifecycleCommand) bool {
+  const existing = std.fs.cwd().readFileAlloc(allocator, marker_path, 64 * 1024) catch return false;
+  defer allocator.free(existing);
+
+  const expected = lifecycleMarkerContent(allocator, commands) catch return false;
+  defer allocator.free(expected);
+
+  return std.mem.eql(u8, existing, expected);
+}
+
+fn writeLifecycleMarker(allocator: std.mem.Allocator, marker_path: []const u8, commands: []const LifecycleCommand) void {
+  const content = lifecycleMarkerContent(allocator, commands) catch return;
+  defer allocator.free(content);
+
+  const file = std.fs.cwd().createFile(marker_path, .{}) catch return;
+  defer file.close();
+  file.writeAll(content) catch {};
+}
+
+fn pathDelimiter() u8 {
+  return if (builtin.os.tag == .windows) ';' else ':';
+}
+
+fn findExecutableInPath(allocator: std.mem.Allocator, path_env: []const u8, name: []const u8) !?[]u8 {
+  var path_iter = std.mem.splitScalar(u8, path_env, pathDelimiter());
+  while (path_iter.next()) |dir| {
+    if (dir.len == 0) continue;
+    const candidate = try std.fs.path.join(allocator, &.{ dir, name });
+    std.fs.cwd().access(candidate, .{}) catch {
+      allocator.free(candidate);
+      continue;
+    };
+    return candidate;
+  }
+  return null;
+}
+
+fn findNpmNodeGypInPrefix(allocator: std.mem.Allocator, prefix: []const u8) !?[]u8 {
+  const candidate = try std.fs.path.join(allocator, &.{
+    prefix,
+    "lib",
+    "node_modules",
+    "npm",
+    "node_modules",
+    "node-gyp",
+    "bin",
+    "node-gyp.js",
+  });
+  std.fs.cwd().access(candidate, .{}) catch {
+    allocator.free(candidate);
+    return null;
+  };
+  return candidate;
+}
+
+fn findNpmNodeGypInNpmRoot(allocator: std.mem.Allocator, npm_root: []const u8) !?[]u8 {
+  const candidate = try std.fs.path.join(allocator, &.{
+    npm_root,
+    "node_modules",
+    "node-gyp",
+    "bin",
+    "node-gyp.js",
+  });
+  std.fs.cwd().access(candidate, .{}) catch {
+    allocator.free(candidate);
+    return null;
+  };
+  return candidate;
+}
+
+fn findNpmNodeGypNearExecutable(allocator: std.mem.Allocator, executable_path: []const u8) !?[]u8 {
+  if (std.fs.path.dirname(executable_path)) |bin_dir| {
+    if (std.fs.path.dirname(bin_dir)) |prefix| {
+      if (try findNpmNodeGypInPrefix(allocator, prefix)) |node_gyp| return node_gyp;
+    }
+
+    if (std.fs.path.dirname(bin_dir)) |maybe_npm_root| {
+      if (std.mem.eql(u8, std.fs.path.basename(bin_dir), "bin")) {
+        if (try findNpmNodeGypInNpmRoot(allocator, maybe_npm_root)) |node_gyp| return node_gyp;
+      }
+    }
+  }
+
+  const real_path = std.fs.cwd().realpathAlloc(allocator, executable_path) catch return null;
+  defer allocator.free(real_path);
+  if (!std.mem.eql(u8, real_path, executable_path)) {
+    if (try findNpmNodeGypNearExecutable(allocator, real_path)) |node_gyp| return node_gyp;
+  }
+
+  return null;
+}
+
+fn findNpmNodeGyp(allocator: std.mem.Allocator, env_map: *std.process.EnvMap) !?[]u8 {
+  const path_env = env_map.get("PATH") orelse return null;
+
+  const node_name = if (builtin.os.tag == .windows) "node.exe" else "node";
+  if (try findExecutableInPath(allocator, path_env, node_name)) |node_path| {
+    defer allocator.free(node_path);
+    if (try findNpmNodeGypNearExecutable(allocator, node_path)) |node_gyp| return node_gyp;
+  }
+
+  const npm_name = if (builtin.os.tag == .windows) "npm.cmd" else "npm";
+  if (try findExecutableInPath(allocator, path_env, npm_name)) |npm_path| {
+    defer allocator.free(npm_path);
+    if (try findNpmNodeGypNearExecutable(allocator, npm_path)) |node_gyp| return node_gyp;
+  }
+
+  return null;
+}
+
+fn appendShellSingleQuoted(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), text: []const u8) !void {
+  try out.append(allocator, '\'');
+  for (text) |ch| {
+    if (ch == '\'') {
+      try out.appendSlice(allocator, "'\\''");
+    } else {
+      try out.append(allocator, ch);
+    }
+  }
+  try out.append(allocator, '\'');
+}
+
+fn ensureLifecycleNodeGypShim(ctx: *PkgContext, allocator: std.mem.Allocator, env_map: *std.process.EnvMap) !?[]u8 {
+  const node_gyp_path = (try findNpmNodeGyp(allocator, env_map)) orelse return null;
+  defer allocator.free(node_gyp_path);
+
+  const bin_dir = try std.fs.path.join(allocator, &.{ ctx.cache_dir, "tools", "node-gyp", "npm-bundled", "bin" });
+  errdefer allocator.free(bin_dir);
+  try std.fs.cwd().makePath(bin_dir);
+
+  const shim_name = if (builtin.os.tag == .windows) "node-gyp.cmd" else "node-gyp";
+  const shim_path = try std.fs.path.join(allocator, &.{ bin_dir, shim_name });
+  defer allocator.free(shim_path);
+
+  var content = std.ArrayListUnmanaged(u8){};
+  defer content.deinit(allocator);
+  if (builtin.os.tag == .windows) {
+    try content.appendSlice(allocator, "@echo off\r\nnode \"");
+    try content.appendSlice(allocator, node_gyp_path);
+    try content.appendSlice(allocator, "\" %*\r\n");
+  } else {
+    try content.appendSlice(allocator, "#!/bin/sh\nexec node ");
+    try appendShellSingleQuoted(allocator, &content, node_gyp_path);
+    try content.appendSlice(allocator, " \"$@\"\n");
+  }
+
+  const file = if (builtin.os.tag == .windows)
+    try std.fs.cwd().createFile(shim_path, .{})
+  else
+    try std.fs.cwd().createFile(shim_path, .{ .mode = 0o755 });
+  defer file.close();
+  try file.writeAll(content.items);
+
+  debug.log("prepared lifecycle node-gyp shim: {s}", .{node_gyp_path});
+  return bin_dir;
+}
+
+const ant_managed_node_gyp_version = "12.2.0";
+
+fn ensureAntManagedNodeGypBin(ctx: *PkgContext, allocator: std.mem.Allocator) !?[]u8 {
+  const tool_root = try std.fs.path.join(allocator, &.{
+    ctx.cache_dir,
+    "tools",
+    "node-gyp",
+    ant_managed_node_gyp_version,
+  });
+  defer allocator.free(tool_root);
+
+  const node_modules_path = try std.fs.path.join(allocator, &.{ tool_root, "node_modules" });
+  defer allocator.free(node_modules_path);
+
+  const bin_dir = try std.fs.path.join(allocator, &.{ node_modules_path, ".bin" });
+  errdefer allocator.free(bin_dir);
+
+  const bin_name = if (builtin.os.tag == .windows) "node-gyp.cmd" else "node-gyp";
+  const bin_path = try std.fs.path.join(allocator, &.{ bin_dir, bin_name });
+  defer allocator.free(bin_path);
+
+  if (std.fs.cwd().access(bin_path, .{})) |_| {
+    return bin_dir;
+  } else |_| {}
+
+  try std.fs.cwd().makePath(tool_root);
+  const package_json_path = try std.fs.path.join(allocator, &.{ tool_root, "package.json" });
+  defer allocator.free(package_json_path);
+  const lockfile_path = try std.fs.path.join(allocator, &.{ tool_root, "ant.lockb" });
+  defer allocator.free(lockfile_path);
+
+  const package_json = try std.fmt.allocPrint(
+    allocator,
+    \\{{"dependencies":{{"node-gyp":"{s}"}}}}
+  , .{ant_managed_node_gyp_version});
+  defer allocator.free(package_json);
+
+  {
+    const file = try std.fs.cwd().createFile(package_json_path, .{});
+    defer file.close();
+    try file.writeAll(package_json);
+  }
+
+  installToolPackageNoLifecycle(ctx, allocator, package_json_path, lockfile_path, node_modules_path) catch |err| {
+    debug.log("failed to prepare Ant-managed node-gyp: {}", .{err});
+    allocator.free(bin_dir);
+    return null;
+  };
+
+  std.fs.cwd().access(bin_path, .{}) catch {
+    debug.log("Ant-managed node-gyp did not create {s}", .{bin_path});
+    allocator.free(bin_dir);
+    return null;
+  };
+
+  debug.log("prepared Ant-managed node-gyp {s}", .{ant_managed_node_gyp_version});
+  return bin_dir;
+}
 
 fn runTrustedPostinstall(
   ctx: *PkgContext,
   trusted: *std.StringHashMap(void),
   node_modules_path: []const u8,
   allocator: std.mem.Allocator,
-) void {
-  var env_map = std.process.getEnvMap(allocator) catch return;
+) bool {
+  var env_map = std.process.getEnvMap(allocator) catch {
+    ctx.setError("Failed to prepare lifecycle environment");
+    return false;
+  };
   defer env_map.deinit();
 
   const cwd = std.fs.cwd();
-  const abs_nm_path = cwd.realpathAlloc(allocator, node_modules_path) catch return;
+  const abs_nm_path = cwd.realpathAlloc(allocator, node_modules_path) catch {
+    ctx.setError("Failed to resolve node_modules for lifecycle scripts");
+    return false;
+  };
   defer allocator.free(abs_nm_path);
 
-  const bin_path = std.fmt.allocPrint(allocator, "{s}/.bin", .{abs_nm_path}) catch return;
+  const bin_path = std.fmt.allocPrint(allocator, "{s}/.bin", .{abs_nm_path}) catch return false;
   defer allocator.free(bin_path);
 
   const current_path = env_map.get("PATH") orelse "";
-  const new_path = if (builtin.os.tag == .windows)
-    std.fmt.allocPrint(allocator, "{s};{s}", .{ bin_path, current_path }) catch return
+  const npm_node_gyp_bin = ensureLifecycleNodeGypShim(ctx, allocator, &env_map) catch null;
+  defer if (npm_node_gyp_bin) |path| allocator.free(path);
+  const ant_node_gyp_bin = if (npm_node_gyp_bin == null)
+    ensureAntManagedNodeGypBin(ctx, allocator) catch null
   else
-    std.fmt.allocPrint(allocator, "{s}:{s}", .{ bin_path, current_path }) catch return;
+    null;
+  defer if (ant_node_gyp_bin) |path| allocator.free(path);
+
+  const new_path = if (npm_node_gyp_bin) |npm_bin|
+    std.fmt.allocPrint(allocator, "{s}{c}{s}{c}{s}", .{ bin_path, pathDelimiter(), npm_bin, pathDelimiter(), current_path }) catch return false
+  else if (ant_node_gyp_bin) |ant_bin|
+    std.fmt.allocPrint(allocator, "{s}{c}{s}{c}{s}", .{ bin_path, pathDelimiter(), ant_bin, pathDelimiter(), current_path }) catch return false
+  else
+    std.fmt.allocPrint(allocator, "{s}{c}{s}", .{ bin_path, pathDelimiter(), current_path }) catch return false;
   defer allocator.free(new_path);
 
-  env_map.put("PATH", new_path) catch return;
+  env_map.put("PATH", new_path) catch return false;
 
   var jobs = std.ArrayListUnmanaged(PostinstallJob){};
   defer {
-    for (jobs.items) |*job| if (job.stderr) |s| allocator.free(s);
+    for (jobs.items) |*job| {
+      allocator.free(job.pkg_dir);
+      freeLifecycleCommands(allocator, &job.commands);
+    }
     jobs.deinit(allocator);
   }
 
@@ -1473,11 +1837,21 @@ fn runTrustedPostinstall(
     const root = doc.root();
 
     if (root.getObject("scripts")) |scripts| {
-      const script = scripts.getString("postinstall") orelse
-        scripts.getString("install") orelse continue;
+      var commands = std.ArrayListUnmanaged(LifecycleCommand){};
+      if (scripts.getString("install")) |script| {
+        appendLifecycleCommand(allocator, &commands, "install", script) catch {};
+      }
+      if (scripts.getString("postinstall")) |script| {
+        appendLifecycleCommand(allocator, &commands, "postinstall", script) catch {};
+      }
+      if (commands.items.len == 0) {
+        commands.deinit(allocator);
+        continue;
+      }
 
       if (std.mem.eql(u8, pkg_name, "esbuild")) {
         debug.log("ignoring esbuild lifecycle scripts", .{});
+        freeLifecycleCommands(allocator, &commands);
         continue;
       }
 
@@ -1487,49 +1861,49 @@ fn runTrustedPostinstall(
 
       const marker_path = std.fmt.allocPrint(allocator, "{s}/.postinstall", .{pkg_dir}) catch continue;
       defer allocator.free(marker_path);
-      if (std.fs.cwd().access(marker_path, .{})) |_| {
+      if (lifecycleMarkerMatches(allocator, marker_path, commands.items)) {
         debug.log("postinstall already done: {s}", .{pkg_name});
         allocator.free(pkg_dir);
+        freeLifecycleCommands(allocator, &commands);
         continue;
-      } else |_| {}
+      }
 
       jobs.append(allocator, .{
         .pkg_name = pkg_name,
         .pkg_dir = pkg_dir,
-        .script = allocator.dupe(u8, script) catch continue,
+        .commands = commands,
       }) catch continue;
     }
   }
 
-  if (jobs.items.len == 0) return;
-  for (jobs.items) |job| debug.log("starting postinstall: {s}", .{job.pkg_name});
+  if (jobs.items.len == 0) return true;
+  for (jobs.items) |job| debug.log("starting lifecycle scripts: {s}", .{job.pkg_name});
 
+  var scripts_run: u32 = 0;
+  var failed_count: u32 = 0;
   for (jobs.items, 0..) |*job, i| {
     const msg = std.fmt.allocPrintSentinel(allocator, "{s}", .{job.pkg_name}, 0) catch continue;
     ctx.reportProgress(.postinstall, @intCast(i), @intCast(jobs.items.len), msg);
-    debug.log("running postinstall: {s}", .{job.pkg_name});
+    for (job.commands.items) |cmd| {
+      debug.log("running {s}: {s}", .{ cmd.name, job.pkg_name });
 
-    const shell_argv: []const []const u8 = if (builtin.os.tag == .windows)
-      &[_][]const u8{ "cmd", "/c", job.script }
-    else
-      &[_][]const u8{ "sh", "-c", job.script };
+      const shell_argv: []const []const u8 = if (builtin.os.tag == .windows)
+        &[_][]const u8{ "cmd", "/c", cmd.script }
+      else
+        &[_][]const u8{ "sh", "-c", cmd.script };
 
-    var child = std.process.Child.init(shell_argv, allocator);
-    child.cwd = job.pkg_dir;
-    child.env_map = &env_map;
-    child.stderr_behavior = .Pipe;
-    child.stdout_behavior = .Pipe;
+      var child = std.process.Child.init(shell_argv, allocator);
+      child.cwd = job.pkg_dir;
+      child.env_map = &env_map;
+      child.stderr_behavior = .Pipe;
+      child.stdout_behavior = .Pipe;
 
-    child.spawn() catch {
-      job.failed = true;
-      continue;
-    };
-    job.child = child;
-  }
+      child.spawn() catch {
+        if (ctx.last_error == null) ctx.setErrorFmt("Lifecycle script '{s}' failed for {s}: failed to spawn", .{ cmd.name, job.pkg_name });
+        job.failed = true;
+        break;
+      };
 
-  var scripts_run: u32 = 0;
-  for (jobs.items) |*job| {
-    if (job.child) |*child| {
       var stdout_buf: std.ArrayList(u8) = .empty;
       var stderr_buf: std.ArrayList(u8) = .empty;
 
@@ -1538,8 +1912,9 @@ fn runTrustedPostinstall(
       const term = child.wait() catch {
         stdout_buf.deinit(allocator);
         stderr_buf.deinit(allocator);
+        if (ctx.last_error == null) ctx.setErrorFmt("Lifecycle script '{s}' failed for {s}: wait failed", .{ cmd.name, job.pkg_name });
         job.failed = true;
-        continue;
+        break;
       };
 
       if (stdout_buf.items.len > 0) {
@@ -1552,39 +1927,49 @@ fn runTrustedPostinstall(
       switch (term) {
         .Exited => |code| {
           if (code != 0) {
-            job.exit_code = code;
-            job.stderr = if (stderr_buf.items.len > 0) stderr_buf.toOwnedSlice(allocator) catch null else null;
-            debug.log("  postinstall failed for {s}: exit code {d}", .{ job.pkg_name, code });
-            if (job.stderr) |s| {
-              if (s.len > 0) debug.log("  stderr: {s}", .{s});
+            debug.log("  {s} failed for {s}: exit code {d}", .{ cmd.name, job.pkg_name, code });
+            if (stderr_buf.items.len > 0) debug.log("  stderr: {s}", .{stderr_buf.items});
+            if (ctx.last_error == null) {
+              if (stderr_buf.items.len > 0)
+                ctx.setErrorFmt("Lifecycle script '{s}' failed for {s}: {s}", .{ cmd.name, job.pkg_name, stderr_buf.items })
+              else
+                ctx.setErrorFmt("Lifecycle script '{s}' failed for {s}: exit code {d}", .{ cmd.name, job.pkg_name, code });
             }
+            stderr_buf.deinit(allocator);
+            job.failed = true;
+            break;
           } else {
             stderr_buf.deinit(allocator);
-            scripts_run += 1;
-            const marker_path = std.fmt.allocPrint(allocator, "{s}/.postinstall", .{job.pkg_dir}) catch continue;
-            defer allocator.free(marker_path);
-            if (std.fs.cwd().createFile(marker_path, .{})) |f| f.close() else |_| {}
           }
         },
         .Signal => |sig| {
           job.failed = true;
-          debug.log("  postinstall killed by signal {d}: {s}", .{ sig, job.pkg_name });
+          if (ctx.last_error == null) ctx.setErrorFmt("Lifecycle script '{s}' killed by signal {d}: {s}", .{ cmd.name, sig, job.pkg_name });
+          debug.log("  {s} killed by signal {d}: {s}", .{ cmd.name, sig, job.pkg_name });
           stderr_buf.deinit(allocator);
+          break;
         },
         else => {
           job.failed = true;
+          if (ctx.last_error == null) ctx.setErrorFmt("Lifecycle script '{s}' failed for {s}", .{ cmd.name, job.pkg_name });
           stderr_buf.deinit(allocator);
+          break;
         },
       }
     }
-  }
 
-  for (jobs.items) |job| {
-    allocator.free(job.pkg_dir);
-    allocator.free(job.script);
+    if (job.failed) {
+      failed_count += 1;
+    } else {
+      const marker_path = std.fmt.allocPrint(allocator, "{s}/.postinstall", .{job.pkg_dir}) catch continue;
+      defer allocator.free(marker_path);
+      writeLifecycleMarker(allocator, marker_path, job.commands.items);
+      scripts_run += @intCast(job.commands.items.len);
+    }
   }
 
   if (scripts_run > 0) debug.log("ran {d} postinstall scripts", .{scripts_run});
+  return failed_count == 0;
 }
 
 export fn pkg_add(
@@ -2945,7 +3330,7 @@ export fn pkg_exec_temp(
   while (resolved_iter2.next()) |pkg_ptr| {
     trusted.put(pkg_ptr.*.name.slice(), {}) catch continue;
   }
-  runTrustedPostinstall(c, &trusted, temp_nm_dir, arena_alloc);
+  if (!runTrustedPostinstall(c, &trusted, temp_nm_dir, arena_alloc)) return .io_error;
 
   const selected_bin = selectPackageBinName(c, arena_alloc, temp_nm_dir, pkg_name);
   if (selected_bin.err != .ok) return selected_bin.err;
