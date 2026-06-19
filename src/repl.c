@@ -361,13 +361,41 @@ static bool repl_preview_snapshot_add_value(
   return repl_preview_snapshot_add(snapshot, expr, expr_len, preview);
 }
 
-static bool repl_preview_snapshot_build(ant_t *js, repl_preview_snapshot_t *snapshot) {
+static bool repl_preview_snapshot_add_decl_value(
+  ant_t *js,
+  repl_preview_snapshot_t *snapshot,
+  const char *expr,
+  size_t expr_len,
+  ant_value_t value
+) {
+  char preview[REPL_PREVIEW_TEXT_MAX];
+  if (!repl_preview_format_value(js, value, preview, sizeof(preview))) return true;
+  return repl_preview_snapshot_add(snapshot, expr, expr_len, preview);
+}
+
+static bool repl_preview_snapshot_build(
+  ant_t *js,
+  const repl_decl_registry_t *decls,
+  repl_preview_snapshot_t *snapshot
+) {
   if (!js || !snapshot) return false;
 
   ant_value_t global = js_glob(js);
   char global_preview[REPL_PREVIEW_TEXT_MAX];
   if (!repl_preview_format_global(js, global, global_preview, sizeof(global_preview)))
     return false;
+
+  if (decls) for (size_t i = 0; i < decls->count; i++) {
+    const repl_decl_name_t *decl = &decls->items[i];
+    if (!decl->name || decl->len == 0) continue;
+    ant_value_t value = js_get(js, global, decl->name);
+    if (
+      !repl_preview_snapshot_add_decl_value(
+        js, snapshot, decl->name, decl->len, value
+      )
+    ) return false;
+  }
+
   if (!repl_preview_snapshot_add(snapshot, "this", 4, global_preview)) return false;
   if (!repl_preview_snapshot_add(snapshot, "global", 6, global_preview)) return false;
   if (!repl_preview_snapshot_add(snapshot, "globalThis", 10, global_preview)) return false;
@@ -484,6 +512,7 @@ static bool repl_read_job_is_done(repl_read_job_t *job) {
 
 static ant_readline_result_t repl_readline_async(
   ant_t *js,
+  const repl_decl_registry_t *decl_registry,
   ant_history_t *history,
   const char *prompt,
   highlight_state prefix_state,
@@ -510,7 +539,7 @@ static ant_readline_result_t repl_readline_async(
 #endif
 
   if (out_line) *out_line = NULL;
-  if (repl_preview_snapshot_build(js, &preview_snapshot))
+  if (repl_preview_snapshot_build(js, decl_registry, &preview_snapshot))
     job.preview_snapshot = &preview_snapshot;
   else job.preview_enabled = false;
 
@@ -1147,7 +1176,7 @@ void ant_repl_run() {
 
     char *line = NULL;
     ant_readline_result_t readline_status =
-      repl_readline_async(js, &history, prompt, prefix_state, &line);
+      repl_readline_async(js, &decl_registry, &history, prompt, prefix_state, &line);
 
     if (readline_status == ANT_READLINE_INTERRUPT) {
       if (multiline_buf) {
