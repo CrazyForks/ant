@@ -777,6 +777,17 @@ static int cmd_add_global(const char *const *package_specs, int count) {
   pkg_cli_config_t config = pkg_config_load();
   normalized_specs_t normalized;
   if (!normalize_package_specs(package_specs, count, config.default_registry, &normalized)) return EXIT_FAILURE;
+
+  pkg_source_t add_source = normalized.source;
+  bool used_parallel_fallback = false;
+  bool parallel_checked = false;
+  if (should_parallel_fallback(&normalized, config)) {
+    parallel_checked = choose_parallel_fallback_source(&normalized, count, &add_source, &used_parallel_fallback);
+    if (used_parallel_fallback && pkg_verbose) {
+      fprintf(stderr, "%sWarning:%s package was not found on ants.land; using npm because install.missingPackageFallback=npm\n",
+        C_YELLOW, C_RESET);
+    }
+  }
   
   char resolve_msg[64];
   snprintf(resolve_msg, sizeof(resolve_msg), "🔍 Resolving [%d/%d]", count, count);
@@ -785,7 +796,7 @@ static int cmd_add_global(const char *const *package_specs, int count) {
   if (!pkg_verbose) progress_start(&progress, resolve_msg);
   
   pkg_options_t opts = pkg_options_make(
-    normalized.source,
+    add_source,
     pkg_verbose ? NULL : progress_callback,
     pkg_verbose ? NULL : &progress
   );
@@ -801,11 +812,46 @@ static int cmd_add_global(const char *const *package_specs, int count) {
   if (!pkg_verbose) progress_stop(&progress);
   
   if (err != PKG_OK) {
-    if (normalized.source == PKG_SOURCE_LAND && err == PKG_RESOLVE_ERROR) print_land_not_found_hint(package_specs[0]);
-    else print_pkg_error(ctx);
-    pkg_free(ctx);
-    free_normalized_specs(normalized);
-    return EXIT_FAILURE;
+    if (!parallel_checked && add_source == PKG_SOURCE_LAND && !normalized.explicit_source && err == PKG_RESOLVE_ERROR && config.missing_fallback == PKG_FALLBACK_NPM) {
+      pkg_free(ctx);
+      if (pkg_verbose) {
+        fprintf(stderr, "\n%sWarning:%s package was not found on ants.land; retrying from npm because install.missingPackageFallback=npm\n",
+          C_YELLOW, C_RESET);
+      }
+
+      progress_t retry_progress;
+      if (!pkg_verbose) progress_start(&retry_progress, resolve_msg);
+      pkg_options_t retry_opts = pkg_options_make(
+        PKG_SOURCE_NPM,
+        pkg_verbose ? NULL : progress_callback,
+        pkg_verbose ? NULL : &retry_progress
+      );
+      ctx = pkg_init(&retry_opts);
+      if (!ctx) {
+        if (!pkg_verbose) progress_stop(&retry_progress);
+        free_normalized_specs(normalized);
+        fprintf(stderr, "Error: Failed to initialize package manager\n");
+        return EXIT_FAILURE;
+      }
+      err = pkg_add_global_many(ctx, normalized.specs, (uint32_t)count);
+      if (!pkg_verbose) progress_stop(&retry_progress);
+      if (err != PKG_OK) {
+        print_pkg_error(ctx);
+        pkg_free(ctx);
+        free_normalized_specs(normalized);
+        return EXIT_FAILURE;
+      }
+    } else if (add_source == PKG_SOURCE_LAND && err == PKG_RESOLVE_ERROR) {
+      print_land_not_found_hint(package_specs[0]);
+      pkg_free(ctx);
+      free_normalized_specs(normalized);
+      return EXIT_FAILURE;
+    } else {
+      print_pkg_error(ctx);
+      pkg_free(ctx);
+      free_normalized_specs(normalized);
+      return EXIT_FAILURE;
+    }
   }
 
   pkg_install_result_t result;
@@ -979,13 +1025,15 @@ static int cmd_update(void) {
     progress_start(&progress, "🔍 Resolving [1/1]");
   }
   
-  pkg_options_t opts = { 
-    .progress_callback = pkg_verbose ? NULL : progress_callback,
-    .user_data = pkg_verbose ? NULL : &progress,
-    .verbose = pkg_verbose 
-  };
+  pkg_cli_config_t config = pkg_config_load();
+  pkg_options_t opts = pkg_options_make(
+    config.default_registry,
+    pkg_verbose ? NULL : progress_callback,
+    pkg_verbose ? NULL : &progress
+  );
   pkg_context_t *ctx = pkg_init(&opts);
   if (!ctx) {
+    if (!pkg_verbose) progress_stop(&progress);
     fprintf(stderr, "Error: Failed to initialize package manager\n");
     return EXIT_FAILURE;
   }
@@ -1064,11 +1112,27 @@ static int cmd_update(void) {
 static int cmd_update_many(const char *const *package_specs, int count) {
   print_install_header("update");
 
+  pkg_cli_config_t config = pkg_config_load();
+  normalized_specs_t normalized;
+  if (!normalize_package_specs(package_specs, count, config.default_registry, &normalized)) return EXIT_FAILURE;
+
+  pkg_source_t update_source = normalized.source;
+  bool used_parallel_fallback = false;
+  bool parallel_checked = false;
+  if (should_parallel_fallback(&normalized, config)) {
+    parallel_checked = choose_parallel_fallback_source(&normalized, count, &update_source, &used_parallel_fallback);
+    if (used_parallel_fallback && pkg_verbose) {
+      fprintf(stderr, "%sWarning:%s package was not found on ants.land; using npm because install.missingPackageFallback=npm\n",
+        C_YELLOW, C_RESET);
+    }
+  }
+
   const char **deps_specs = NULL;
   const char **dev_specs = NULL;
   int deps_count = 0;
   int dev_count = 0;
-  if (classify_update_specs(package_specs, count, &deps_specs, &deps_count, &dev_specs, &dev_count) != EXIT_SUCCESS) {
+  if (classify_update_specs(normalized.specs, count, &deps_specs, &deps_count, &dev_specs, &dev_count) != EXIT_SUCCESS) {
+    free_normalized_specs(normalized);
     return EXIT_FAILURE;
   }
 
@@ -1080,9 +1144,8 @@ static int cmd_update_many(const char *const *package_specs, int count) {
     progress_start(&progress, resolve_msg);
   }
   
-  pkg_cli_config_t config = pkg_config_load();
   pkg_options_t opts = pkg_options_make(
-    config.default_registry,
+    update_source,
     pkg_verbose ? NULL : progress_callback,
     pkg_verbose ? NULL : &progress
   );
@@ -1091,24 +1154,84 @@ static int cmd_update_many(const char *const *package_specs, int count) {
     free((void *)deps_specs);
     free((void *)dev_specs);
     if (!pkg_verbose) progress_stop(&progress);
+    free_normalized_specs(normalized);
     fprintf(stderr, "Error: Failed to initialize package manager\n");
     return EXIT_FAILURE;
   }
 
   pkg_error_t err = PKG_OK;
+  bool retry_safe = true;
   if (deps_count > 0) {
     err = pkg_add_many(ctx, "package.json", deps_specs, (uint32_t)deps_count, false);
   }
   if (err == PKG_OK && dev_count > 0) {
+    if (deps_count > 0) retry_safe = false;
     err = pkg_add_many(ctx, "package.json", dev_specs, (uint32_t)dev_count, true);
   }
-  free((void *)deps_specs);
-  free((void *)dev_specs);
 
   if (err != PKG_OK) {
     if (!pkg_verbose) progress_stop(&progress);
-    print_pkg_error(ctx);
+    if (retry_safe && !parallel_checked && update_source == PKG_SOURCE_LAND && !normalized.explicit_source && err == PKG_RESOLVE_ERROR && config.missing_fallback == PKG_FALLBACK_NPM) {
+      pkg_free(ctx);
+      if (pkg_verbose) {
+        fprintf(stderr, "\n%sWarning:%s package was not found on ants.land; retrying from npm because install.missingPackageFallback=npm\n",
+          C_YELLOW, C_RESET);
+      }
+
+      progress_t retry_progress;
+      if (!pkg_verbose) progress_start(&retry_progress, resolve_msg);
+      pkg_options_t retry_opts = pkg_options_make(
+        PKG_SOURCE_NPM,
+        pkg_verbose ? NULL : progress_callback,
+        pkg_verbose ? NULL : &retry_progress
+      );
+      ctx = pkg_init(&retry_opts);
+      if (!ctx) {
+        if (!pkg_verbose) progress_stop(&retry_progress);
+        free((void *)deps_specs);
+        free((void *)dev_specs);
+        free_normalized_specs(normalized);
+        fprintf(stderr, "Error: Failed to initialize package manager\n");
+        return EXIT_FAILURE;
+      }
+
+      err = PKG_OK;
+      if (deps_count > 0) {
+        err = pkg_add_many(ctx, "package.json", deps_specs, (uint32_t)deps_count, false);
+      }
+      if (err == PKG_OK && dev_count > 0) {
+        err = pkg_add_many(ctx, "package.json", dev_specs, (uint32_t)dev_count, true);
+      }
+      if (err == PKG_OK) {
+        err = pkg_resolve_and_install(ctx, "package.json", "ant.lockb", "node_modules");
+      }
+      if (!pkg_verbose) progress_stop(&retry_progress);
+      if (err != PKG_OK) {
+        print_pkg_error(ctx);
+        pkg_free(ctx);
+        free((void *)deps_specs);
+        free((void *)dev_specs);
+        free_normalized_specs(normalized);
+        return EXIT_FAILURE;
+      }
+      free((void *)deps_specs);
+      free((void *)dev_specs);
+      free_normalized_specs(normalized);
+      pkg_install_result_t result;
+      if (pkg_get_install_result(ctx, &result) == PKG_OK) {
+        print_add_summary(ctx, &result, true);
+      }
+
+      pkg_free(ctx);
+      return EXIT_SUCCESS;
+    }
+
+    if (update_source == PKG_SOURCE_LAND && err == PKG_RESOLVE_ERROR) print_land_not_found_hint(package_specs[0]);
+    else print_pkg_error(ctx);
     pkg_free(ctx);
+    free((void *)deps_specs);
+    free((void *)dev_specs);
+    free_normalized_specs(normalized);
     return EXIT_FAILURE;
   }
 
@@ -1117,6 +1240,9 @@ static int cmd_update_many(const char *const *package_specs, int count) {
     if (!pkg_verbose) progress_stop(&progress);
     print_pkg_error(ctx);
     pkg_free(ctx);
+    free((void *)deps_specs);
+    free((void *)dev_specs);
+    free_normalized_specs(normalized);
     return EXIT_FAILURE;
   }
   
@@ -1128,6 +1254,9 @@ static int cmd_update_many(const char *const *package_specs, int count) {
   }
 
   pkg_free(ctx);
+  free((void *)deps_specs);
+  free((void *)dev_specs);
+  free_normalized_specs(normalized);
   return EXIT_SUCCESS;
 }
 
