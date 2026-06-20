@@ -4,6 +4,7 @@
 
 #include "base64.h"
 #include "modules/http.h"
+#include "modules/io.h"
 
 #include <argtable3.h>
 #include <dirent.h>
@@ -451,8 +452,8 @@ int pkg_cmd_login(int argc, char **argv) {
   }
 
   printf("To authorize this device, visit:\n");
-  printf("  %s\n\n", verify_url);
-  printf("Opening your browser; waiting for approval.\n");
+  printf("  %s%s%s\n\n", C_CYAN, verify_url, C_RESET);
+  printf("%sOpening your browser... waiting for approval.%s\n", C_DIM, C_RESET);
   open_browser(verify_url);
 
   char poll_body[512];
@@ -482,7 +483,8 @@ int pkg_cmd_login(int argc, char **argv) {
         fprintf(stderr, "Error: failed to save token to ~/.npmrc\n");
         exitcode = EXIT_FAILURE;
       } else {
-        printf("Logged in%s%s%s. Token saved to ~/.npmrc\n", email ? " as " : "", email ? email : "", email ? "" : "");
+        if (email) printf("%sLogged in%s as %s. Token saved to ~/.npmrc\n", C_GREEN, C_RESET, email);
+        else printf("%sLogged in%s. Token saved to ~/.npmrc\n", C_GREEN, C_RESET);
       }
       yyjson_doc_free(poll_doc);
       free(poll_resp);
@@ -873,7 +875,7 @@ static void print_publish_help(void) {
   printf("Usage: ant publish [--land|--npm] [--registry <url>] [--dry-run]\n\n");
   printf("Publish the current package with Ant's native registry client.\n\n");
   printf("Options:\n");
-  printf("  --land              Publish to ants.land (default).\n");
+  printf("  --land              Publish to the ants.land registry (default).\n");
   printf("  --npm               Publish to npm.\n");
   printf("  --registry <url>    Publish to a custom npm-compatible registry.\n");
   printf("  --dry-run           Build the publish payload without uploading.\n");

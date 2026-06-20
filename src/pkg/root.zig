@@ -46,6 +46,23 @@ fn currentEnvMap(allocator: std.mem.Allocator) !std.process.Environ.Map {
   return environ.createMap(allocator);
 }
 
+fn scriptShell() []const u8 {
+  if (builtin.os.tag == .windows) return "cmd";
+  if (std.c.getenv("ANT_SCRIPT_SHELL")) |shell| {
+    const value = std.mem.span(shell);
+    if (value.len > 0) return value;
+  }
+  return "/bin/sh";
+}
+
+fn writeProcessOutput(file: std.Io.File, bytes: []const u8) void {
+  if (bytes.len == 0) return;
+  var buffer: [4096]u8 = undefined;
+  var writer = file.writer(io, &buffer);
+  writer.interface.writeAll(bytes) catch return;
+  writer.interface.flush() catch {};
+}
+
 fn getLegacyAntDirIfExists(allocator: std.mem.Allocator) !?[]const u8 {
   const home = try getHomeDir(allocator);
   defer allocator.free(home);
@@ -1890,18 +1907,19 @@ fn runTrustedPostinstall(
       debug.log("running {s}: {s}", .{ cmd.name, job.pkg_name });
 
       const shell_argv: []const []const u8 = if (builtin.os.tag == .windows)
-        &[_][]const u8{ "cmd", "/c", cmd.script }
+        &[_][]const u8{ scriptShell(), "/c", cmd.script }
       else
-        &[_][]const u8{ "sh", "-c", cmd.script };
+        &[_][]const u8{ scriptShell(), "-c", cmd.script };
 
       const result = std.process.run(allocator, io, .{
         .argv = shell_argv,
         .cwd = .{ .path = job.pkg_dir },
         .environ_map = &env_map,
+        .expand_arg0 = .expand,
         .stdout_limit = .limited(1024 * 1024),
         .stderr_limit = .limited(1024 * 1024),
-      }) catch {
-        if (ctx.last_error == null) ctx.setErrorFmt("Lifecycle script '{s}' failed for {s}: failed to spawn", .{ cmd.name, job.pkg_name });
+      }) catch |err| {
+        if (ctx.last_error == null) ctx.setErrorFmt("Lifecycle script '{s}' failed for {s}: failed to spawn: {}", .{ cmd.name, job.pkg_name, err });
         job.failed = true;
         break;
       };
@@ -2549,16 +2567,23 @@ fn runScriptCommand(
   defer allocator.free(script_z);
 
   const shell_argv: []const []const u8 = if (builtin.os.tag == .windows)
-    &[_][]const u8{ "cmd", "/c", script_z }
-  else &[_][]const u8{ "sh", "-c", script_z };
+    &[_][]const u8{ scriptShell(), "/c", script_z }
+  else &[_][]const u8{ scriptShell(), "-c", script_z };
 
-  var child = try std.process.spawn(io, .{
+  const run = try std.process.run(allocator, io, .{
     .argv = shell_argv,
     .environ_map = env_map,
+    .expand_arg0 = .expand,
+    .stdout_limit = .limited(1024 * 1024),
+    .stderr_limit = .limited(1024 * 1024),
   });
-  const term = try child.wait(io);
+  defer allocator.free(run.stdout);
+  defer allocator.free(run.stderr);
 
-  return switch (term) {
+  writeProcessOutput(.stdout(), run.stdout);
+  writeProcessOutput(.stderr(), run.stderr);
+
+  return switch (run.term) {
     .exited => |code| .{ .exit_code = code, .signal = 0 },
     .signal => |sig| .{ .exit_code = -1, .signal = @intCast(@intFromEnum(sig)) },
     else => .{ .exit_code = -1, .signal = 0 },

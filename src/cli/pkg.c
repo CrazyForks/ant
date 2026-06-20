@@ -234,6 +234,77 @@ static bool normalize_package_specs(const char *const *in, int count, pkg_source
   return true;
 }
 
+static int ensure_npmrc_scope_registry(const char *scope) {
+  if (!scope || !scope[0]) return 0;
+
+  char line[512];
+  snprintf(line, sizeof(line), "@%s:registry=https://%s", scope, ANT_LAND_REGISTRY);
+
+  FILE *f = fopen(".npmrc", "r");
+  char *content = NULL;
+  size_t len = 0;
+  if (f) {
+    if (fseek(f, 0, SEEK_END) == 0) {
+      long n = ftell(f);
+      if (n >= 0 && fseek(f, 0, SEEK_SET) == 0) {
+        content = try_oom((size_t)n + 1);
+        if (!content) {
+          fclose(f);
+          return -1;
+        }
+        len = fread(content, 1, (size_t)n, f);
+        content[len] = '\0';
+      }
+    }
+    fclose(f);
+  }
+
+  bool exists = false;
+  if (content) {
+    const char *p = content;
+    size_t line_len = strlen(line);
+    while (*p) {
+      const char *nl = strchr(p, '\n');
+      size_t cur_len = nl ? (size_t)(nl - p) : strlen(p);
+      while (cur_len > 0 && (p[cur_len - 1] == '\r' || p[cur_len - 1] == ' ' || p[cur_len - 1] == '\t')) cur_len--;
+      if (cur_len == line_len && strncmp(p, line, line_len) == 0) {
+        exists = true;
+        break;
+      }
+      p = nl ? nl + 1 : p + cur_len;
+    }
+  }
+  if (exists) {
+    free(content);
+    return 0;
+  }
+
+  f = fopen(".npmrc", "a");
+  if (!f) {
+    free(content);
+    return -1;
+  }
+  if (len > 0 && content && content[len - 1] != '\n') fputc('\n', f);
+  fprintf(f, "%s\n", line);
+  int rc = ferror(f) ? -1 : 0;
+  fclose(f);
+  free(content);
+  return rc;
+}
+
+static int ensure_land_scope_registries(const char *const *package_specs, int count) {
+  for (int i = 0; i < count; i++) {
+    char pkg_name[512];
+    if (package_name_from_spec(package_specs[i], pkg_name, sizeof(pkg_name)) != 0) continue;
+    if (pkg_name[0] != '@') continue;
+    char *slash = strchr(pkg_name, '/');
+    if (!slash || slash == pkg_name + 1) continue;
+    *slash = '\0';
+    if (ensure_npmrc_scope_registry(pkg_name + 1) != 0) return -1;
+  }
+  return 0;
+}
+
 static void progress_callback(void *user_data, pkg_phase_t phase, uint32_t current, uint32_t total, const char *message) {
   progress_t *progress = (progress_t *)user_data;
   if (!progress || !message || !message[0]) return;
@@ -989,6 +1060,10 @@ static int cmd_add(const char *const *package_specs, int count, bool dev) {
     pkg_free(ctx);
     free_normalized_specs(normalized);
     return EXIT_FAILURE;
+  }
+
+  if (normalized.source == PKG_SOURCE_LAND && ensure_land_scope_registries(normalized.specs, count) != 0) {
+    fprintf(stderr, "\n%sWarning:%s failed to update .npmrc with ants.land scope registry mappings\n", C_YELLOW, C_RESET);
   }
 
   err = pkg_resolve_and_install(ctx, "package.json", "ant.lockb", "node_modules");

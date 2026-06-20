@@ -6,7 +6,6 @@
     "start": "ant src/index.ts"
   },
   "dependencies": {
-    "@ant/hono": "^0.0.2",
     "hono": "^4.12.9"
   }
 }
