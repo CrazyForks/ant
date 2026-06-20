@@ -21,6 +21,7 @@
 #include "runtime.h"
 #include "snapshot.h"
 #include "inspector.h"
+#include "esm/commonjs.h"
 #include "esm/loader.h"
 #include "esm/library.h"
 #include "esm/remote.h"
@@ -373,7 +374,10 @@ static void eval_code(
   if (module_type) {
     ant_value_t ns = js_mkobj(js);
     result = is_err(ns) ? ns : js_esm_eval_module_source(js, tag, script, len, ns);
-  } else result = js_eval_bytecode_eval(js, script, len);
+  } else {
+    ant_value_t ns = js_mkobj(js);
+    result = is_err(ns) ? ns : esm_load_commonjs_module(js, tag, script, len, ns);
+  }
   
   js_run_event_loop(js);
   
