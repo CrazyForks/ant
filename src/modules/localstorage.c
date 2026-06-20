@@ -292,7 +292,7 @@ void init_localstorage_module() {
   js_set(js, storage_obj, "setFile", js_mkfun(js_localstorage_setFile));
   
   ant_value_t length_getter = js_mkfun(js_localstorage_length);
-  js_set_getter_desc(js, storage_obj, "length", 6, length_getter, JS_DESC_E);
+  js_set_getter_desc(js, storage_obj, "length", 6, length_getter, 0);
   
   js_set_sym(js, storage_obj, get_toStringTag_sym(), js_mkstr(js, "Storage", 7));
   js_set(js, glob, "localStorage", storage_obj);

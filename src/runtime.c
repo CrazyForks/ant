@@ -290,7 +290,7 @@ struct ant_runtime *ant_runtime_init(ant_t *js, int argc, char **argv, struct ar
   js_set_descriptor(js, global, "window", 6, JS_DESC_W | JS_DESC_C);
 
   js_set(js, global, "global", global);
-  js_set_descriptor(js, global, "global", 6, JS_DESC_W | JS_DESC_C);
+  js_set_descriptor(js, global, "global", 6, JS_DESC_W | JS_DESC_E | JS_DESC_C);
 
   js_set(js, global, "globalThis", global);
   js_set_descriptor(js, global, "globalThis", 10, JS_DESC_W | JS_DESC_C);

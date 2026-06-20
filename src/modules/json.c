@@ -135,6 +135,7 @@ typedef struct {
   ant_value_t replacer_arr;
   ant_value_t error;
   ant_value_t holder;
+  ant_value_t cycle_start;
   
   gc_temp_root_scope_t temp_roots;
   gc_temp_root_handle_t error_handle;
@@ -144,6 +145,7 @@ typedef struct {
   int stack_cap;
   int replacer_arr_len;
   int has_cycle;
+  char cycle_key[128];
 } json_cycle_ctx;
 
 static inline bool json_has_abort(json_cycle_ctx *ctx) {
@@ -197,10 +199,28 @@ oom:
   return NULL;
 }
 
-static int json_cycle_check(json_cycle_ctx *ctx, ant_value_t val) {
-  for (int i = 0; i < ctx->stack_size; i++)
-    if (ctx->stack[i] == val) { ctx->has_cycle = 1; return 1; }
+static int json_cycle_check(json_cycle_ctx *ctx, ant_value_t val, const char *key) {
+  for (int i = 0; i < ctx->stack_size; i++) if (ctx->stack[i] == val) {
+    ctx->has_cycle = 1;
+    ctx->cycle_start = val;
+    snprintf(ctx->cycle_key, sizeof(ctx->cycle_key), "%s", key ? key : "");
+    return 1;
+  }
   return 0;
+}
+
+static ant_value_t json_cycle_error(ant_t *js, const json_cycle_ctx *ctx) {
+  const char *ctor = ctx->cycle_start == js->global ? "global" : "Object";
+  char message[384];
+  snprintf(
+    message, sizeof(message),
+    "Converting circular structure to JSON\n"
+    "    --> starting at object with constructor '%s'\n"
+    "    --- property '%s' closes the circle",
+    ctor,
+    ctx->cycle_key
+  );
+  return js_mkerr_typed(js, JS_ERR_TYPE, "%s", message);
 }
 
 static void json_cycle_push(json_cycle_ctx *ctx, ant_value_t val) {
@@ -404,7 +424,10 @@ static yyjson_mut_val *json_object_to_yyjson(
   return obj;
 }
 
-static yyjson_mut_val *ant_value_to_yyjson_impl(ant_t *js, yyjson_mut_doc *doc, ant_value_t val, json_cycle_ctx *ctx, int in_array) {
+static yyjson_mut_val *ant_value_to_yyjson_impl(
+  ant_t *js, yyjson_mut_doc *doc, const char *key,
+  ant_value_t val, json_cycle_ctx *ctx, int in_array
+) {
   int type = vtype(val);
   yyjson_mut_val *result = NULL;
   
@@ -436,7 +459,7 @@ static yyjson_mut_val *ant_value_to_yyjson_impl(ant_t *js, yyjson_mut_doc *doc, 
     default: return yyjson_mut_null(doc);
   }
   
-  if (json_cycle_check(ctx, val)) return NULL;
+  if (json_cycle_check(ctx, val, key)) return NULL;
   json_cycle_push(ctx, val);
 
   result = is_array_value(val)
@@ -457,7 +480,7 @@ static yyjson_mut_val *ant_value_to_yyjson_with_key(
   val = json_apply_replacer(js, key, val, ctx);
   if (json_has_abort(ctx)) return NULL;
 
-  return ant_value_to_yyjson_impl(js, doc, val, ctx, in_array);
+  return ant_value_to_yyjson_impl(js, doc, key, val, ctx, in_array);
 }
 
 static yyjson_mut_val *ant_value_to_yyjson(ant_t *js, yyjson_mut_doc *doc, ant_value_t val, json_cycle_ctx *ctx) {
@@ -706,7 +729,7 @@ ant_value_t js_json_stringify(ant_t *js, ant_value_t *args, int nargs) {
   }
 
   if (ctx.has_cycle) {
-    result = js_mkerr_typed(js, JS_ERR_TYPE, "Converting circular structure to JSON");
+    result = json_cycle_error(js, &ctx);
     goto cleanup;
   }
   
