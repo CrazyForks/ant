@@ -115,7 +115,8 @@ declare module 'fs' {
   function writeSync(fd: number, data: string | ArrayBufferView, offset?: number, length?: number, position?: number | null): number;
   function writev(fd: number, buffers: ArrayBufferView[], position?: number): Promise<number>;
   function writevSync(fd: number, buffers: ArrayBufferView[], position?: number): number;
-  function appendFileSync(path: string, data: string): void;
+  function appendFile(path: string, data: string | ArrayBufferView): Promise<void>;
+  function appendFileSync(path: string, data: string | ArrayBufferView): void;
   function copyFileSync(src: string, dest: string): void;
   function renameSync(oldPath: string, newPath: string): void;
   function rm(path: string, options?: { recursive?: boolean; force?: boolean }): Promise<void>;
@@ -252,6 +253,7 @@ declare module 'fs/promises' {
   function open(path: string, flags?: string, mode?: number): Promise<FileHandle>;
   function close(fd: number): Promise<void>;
   function writeFile(path: string, data: string | ArrayBufferView): Promise<void>;
+  function appendFile(path: string, data: string | ArrayBufferView): Promise<void>;
   function write(fd: number, data: string | ArrayBufferView, offset?: number, length?: number, position?: number | null): Promise<number>;
   function writev(fd: number, buffers: ArrayBufferView[], position?: number): Promise<number>;
   function rm(path: string, options?: { recursive?: boolean; force?: boolean }): Promise<void>;

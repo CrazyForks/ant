@@ -95,6 +95,36 @@ typedef struct fs_request_s {
   int with_file_types;
 } fs_request_t;
 
+typedef struct {
+  const char *data;
+  size_t len;
+} fs_write_data_t;
+
+static ant_value_t fs_get_write_data_arg(
+  ant_t *js,
+  ant_value_t value,
+  const char *fn_name,
+  fs_write_data_t *out
+) {
+  out->data = NULL;
+  out->len = 0;
+
+  if (vtype(value) == T_STR) {
+    out->data = js_getstr(js, value, &out->len);
+    if (!out->data) return js_mkerr(js, "Failed to get string");
+    return js_mkundef();
+  }
+
+  TypedArrayData *ta_data = buffer_get_typedarray_data(value);
+  if (!ta_data || !ta_data->buffer || !ta_data->buffer->data)
+    return js_mkerr(js, "%s() data must be a Buffer, TypedArray, DataView, or string", fn_name);
+
+  out->data = (const char *)(ta_data->buffer->data + ta_data->byte_offset);
+  out->len = ta_data->byte_length;
+  
+  return js_mkundef();
+}
+
 typedef enum {
   FS_WATCH_MODE_EVENT = 0,
   FS_WATCH_MODE_STAT
@@ -2221,12 +2251,14 @@ static ant_value_t fs_write_file_sync_impl(
 ) {
   if (nargs < 2) return js_mkerr(js, "%s() requires path and data arguments", fn_name);
   if (vtype(args[0]) != T_STR) return js_mkerr(js, "%s() path must be a string", fn_name);
-  if (vtype(args[1]) != T_STR) return js_mkerr(js, "%s() data must be a string", fn_name);
 
-  size_t path_len, data_len;
+  size_t path_len;
   char *path = js_getstr(js, args[0], &path_len);
-  char *data = js_getstr(js, args[1], &data_len);
-  if (!path || !data) return js_mkerr(js, "Failed to get arguments");
+  if (!path) return js_mkerr(js, "Failed to get arguments");
+
+  fs_write_data_t write_data;
+  ant_value_t data_result = fs_get_write_data_arg(js, args[1], fn_name, &write_data);
+  if (is_err(data_result)) return data_result;
 
   char *path_cstr = strndup(path, path_len);
   if (!path_cstr) return js_mkerr(js, "Out of memory");
@@ -2238,11 +2270,11 @@ static ant_value_t fs_write_file_sync_impl(
     return err;
   }
 
-  size_t bytes_written = fwrite(data, 1, data_len, file);
+  size_t bytes_written = fwrite(write_data.data, 1, write_data.len, file);
   fclose(file);
   free(path_cstr);
 
-  if (bytes_written != data_len) {
+  if (bytes_written != write_data.len) {
     return js_mkerr(js, "Failed to write entire file");
   }
 
@@ -2745,16 +2777,15 @@ static ant_value_t builtin_fs_appendFile(ant_t *js, ant_value_t *args, int nargs
 
 static ant_value_t builtin_fs_writeFile(ant_t *js, ant_value_t *args, int nargs) {
   if (nargs < 2) return js_mkerr(js, "writeFile() requires path and data arguments");
-  
   if (vtype(args[0]) != T_STR) return js_mkerr(js, "writeFile() path must be a string");
-  if (vtype(args[1]) != T_STR) return js_mkerr(js, "writeFile() data must be a string");
   
-  size_t path_len, data_len;
+  size_t path_len;
   char *path = js_getstr(js, args[0], &path_len);
-  char *data = js_getstr(js, args[1], &data_len);
+  if (!path) return js_mkerr(js, "Failed to get arguments");
   
-  if (!path || !data) return js_mkerr(js, "Failed to get arguments");
-  
+  fs_write_data_t write_data;
+  ant_value_t data_result = fs_get_write_data_arg(js, args[1], "writeFile", &write_data);
+  if (is_err(data_result)) return data_result;
   
   fs_request_t *req = calloc(1, sizeof(fs_request_t));
   if (!req) return js_mkerr(js, "Out of memory");
@@ -2763,15 +2794,15 @@ static ant_value_t builtin_fs_writeFile(ant_t *js, ant_value_t *args, int nargs)
   req->op_type = FS_OP_WRITE;
   req->promise = js_mkpromise(js);
   req->path = strndup(path, path_len);
-  req->data = malloc(data_len);
+  req->data = malloc(write_data.len > 0 ? write_data.len : 1);
   if (!req->data) {
     free(req->path);
     free(req);
     return js_mkerr(js, "Out of memory");
   }
   
-  memcpy(req->data, data, data_len);
-  req->data_len = data_len;
+  if (write_data.len > 0) memcpy(req->data, write_data.data, write_data.len);
+  req->data_len = write_data.len;
   req->uv_req.data = req;
   
   utarray_push_back(pending_requests, &req);
