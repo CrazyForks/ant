@@ -3209,6 +3209,10 @@ ant_value_t mkprop(ant_t *js, ant_value_t obj, ant_value_t k, ant_value_t v, uin
     v = js_expose_cfunc_for_key(js, v, interned, (size_t)klen);
     if (is_err(v)) return v;
 
+    // Reassigning a constructor's `.prototype` redirects primitive method
+    // lookups; invalidate the property IC so cached primitive holders refill.
+    if (interned == js->intern.prototype) ant_ic_epoch_bump();
+
     int32_t found = ant_shape_lookup_interned(ptr->shape, interned);
     if (found >= 0) {
       slot = (uint32_t)found;
@@ -4625,6 +4629,12 @@ switch (type) {
   case T_SYMBOL:    return get_ctor_proto(js, "Symbol", 6);
   default:          return js_mknull();
 }}
+
+// Exported for the property IC (lives in a different translation unit and so
+// cannot reach the static get_prototype_for_type directly).
+ant_value_t js_primitive_prototype(ant_t *js, uint8_t type) {
+  return get_prototype_for_type(js, type);
+}
 
 ant_offset_t lkp_proto(ant_t *js, ant_value_t obj, const char *key, size_t len) {
   uint8_t t = vtype(obj);
@@ -17972,8 +17982,27 @@ static bool js_try_get(ant_t *js, ant_value_t obj, const char *key, ant_value_t 
     }
     
     if (t == T_STR && js_try_get_string_index(js, obj, key, key_len, out)) return true;
+
+    // Resolve methods / data properties directly off the shared prototype chain
+    // instead of allocating a throwaway wrapper object on every access (a
+    // primitive has no own non-index/length properties, so any other key must
+    // come from the type prototype). Accessors need the primitive value as
+    // their `this`, so those — and genuine misses — fall back to the boxing
+    // path below, preserving the original behavior exactly.
+    ant_value_t prim_proto = get_prototype_for_type(js, t);
+    if (is_object_type(prim_proto)) {
+      ant_offset_t poff = lkp_proto(js, prim_proto, key, key_len);
+      if (poff != 0) {
+        const ant_shape_prop_t *prim_meta = prop_shape_meta(js, poff);
+        if (!(prim_meta && (prim_meta->has_getter || prim_meta->has_setter))) {
+          *out = propref_load(js, poff);
+          return true;
+        }
+      }
+    }
+
     ant_value_t boxed = mkobj(js, 0);
-    
+
     js_set_slot(js_as_obj(boxed), SLOT_PRIMITIVE, obj);
     obj = boxed; t = T_OBJ;
   }

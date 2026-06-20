@@ -402,6 +402,40 @@ static inline bool sv_try_string_index_get(ant_t *js, ant_value_t obj, ant_value
   return true;
 }
 
+// Primitive (string/number/boolean) receivers have no own non-index/length
+// properties, so every method/data lookup resolves on the shared type
+// prototype. Cache that on the per-site IC keyed by the primitive type, so the
+// hot path skips interning + prototype resolution + the proto-chain shape walk.
+// The discriminator is stashed in guard.receiver_proto as mkval(<prim type>, 0)
+// — object fills store ptr->proto there (object/null tags, never STR/NUM/BOOL),
+// so the two never alias. Reassignment of a constructor's .prototype bumps the
+// IC epoch (see the put paths), so the cached holder can't go stale.
+static inline bool sv_ic_try_get_hit_prim(
+  sv_ic_entry_t *ic,
+  uint8_t prim_type,
+  sv_atom_t *a,
+  ant_value_t *out
+) {
+  if (!ic) return false;
+  if (ic->epoch != ant_ic_epoch_counter) return false;
+
+  ant_value_t marker = ic->guard.receiver_proto;
+  if (vdata(marker) != 0 || vtype(marker) != prim_type) return false;
+
+  ant_object_t *holder = ic->cached_holder;
+  if (!holder || holder->flags.is_exotic || !holder->shape) return false;
+  if (holder->shape != ic->cached_shape) return false;
+  if (ic->cached_index >= holder->prop_count) return false;
+
+  const ant_shape_prop_t *prop = ant_shape_prop_at(holder->shape, ic->cached_index);
+  if (!prop) return false;
+  if (prop->type != ANT_SHAPE_KEY_STRING || prop->key.interned != a->str) return false;
+  if (prop->has_getter || prop->has_setter) return false;
+
+  *out = ant_object_prop_get_unchecked(holder, ic->cached_index);
+  return true;
+}
+
 static inline ant_value_t sv_prop_get_field_ic(
   ant_t *js,
   ant_value_t obj,
@@ -418,6 +452,38 @@ static inline ant_value_t sv_prop_get_field_ic(
       sv_ic_try_get_hit(ic, ptr, a, &hit)) {
     sv_gf_ic_note_success(ic);
     return hit;
+  }
+
+  if (!ptr && track_ic) {
+    uint8_t pt = vtype(obj);
+    if (pt == T_STR || pt == T_NUM || pt == T_BOOL) {
+      // string index keys (e.g. "0") are not prototype props — let the slow
+      // path handle those; everything else lives on the type prototype. A
+      // leading digit is a cheap, sufficient gate (no prototype member name
+      // starts with a digit).
+      if (!(pt == T_STR && a->len > 0 && a->str[0] >= '0' && a->str[0] <= '9')) {
+        if (sv_ic_try_get_hit_prim(ic, pt, a, &hit)) {
+          sv_gf_ic_note_success(ic);
+          return hit;
+        }
+        ant_value_t proto = js_primitive_prototype(js, pt);
+        if (is_object_type(proto)) {
+          ant_object_t *holder = NULL;
+          uint32_t prop_idx = 0;
+          ant_value_t out = js_mkundef();
+          if (sv_ic_probe_get_chain(proto, a->str, &holder, &prop_idx, &out)) {
+            ic->cached_holder = holder;
+            ic->cached_shape = holder->shape;
+            ic->cached_index = prop_idx;
+            ic->cached_is_own = false;
+            ic->guard.receiver_proto = mkval(pt, 0);
+            ic->epoch = ant_ic_epoch_counter;
+            sv_gf_ic_note_success(ic);
+            return out;
+          }
+        }
+      }
+    }
   }
 
   if (ic && ptr && !ptr->flags.is_exotic && track_ic) {
@@ -492,6 +558,10 @@ static inline bool sv_try_put_field_fast(
 
   ant_object_prop_set_unchecked(ptr, prop_idx, val);
   gc_write_barrier(js, ptr, val);
+  // Overwriting a constructor's `.prototype` in place changes which object
+  // primitive method lookups resolve against without changing any shape, so it
+  // would not otherwise invalidate the primitive property IC. Bump the epoch.
+  if (a->str == js->intern.prototype) ant_ic_epoch_bump();
   if (out_index) *out_index = prop_idx;
   return true;
 }

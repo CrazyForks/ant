@@ -774,10 +774,22 @@ static inline ant_value_t sv_vm_call(
   if (sv_check_c_stack_overflow(js))
     return js_mkerr_typed(js, JS_ERR_RANGE | JS_ERR_NO_STACK, "Maximum call stack size exceeded");
 
-  sv_call_mode_t mode = is_construct_call 
-    ? SV_CALL_MODE_CONSTRUCT 
+  sv_call_mode_t mode = is_construct_call
+    ? SV_CALL_MODE_CONSTRUCT
     : SV_CALL_MODE_NORMAL;
-  
+
+  // Fast path for plain native functions: by far the most common dynamic call
+  // (string/array/Math builtins, callbacks). Skips the whole call-plan struct
+  // build + prepare/execute dispatch, which exists only for closures, bound
+  // functions, proxies and constructors. A bare T_CFUNC is none of those.
+  if (!is_construct_call && vtype(func) == T_CFUNC) {
+    ant_value_t native_this = sv_call_normalize_this(js, this_val, mode);
+    if (out_this) *out_this = native_this;
+    ant_value_t native_res = sv_call_native(js, func, native_this, args, argc);
+    sv_vm_maybe_checkpoint_microtasks(js);
+    return native_res;
+  }
+
   sv_call_plan_t plan;
   ant_value_t err = sv_prepare_call(
     vm, js, func, this_val, args, argc,
