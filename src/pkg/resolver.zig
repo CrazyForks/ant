@@ -1133,6 +1133,7 @@ pub const Resolver = struct {
 
         const pkg = self.resolveSingleWithOptimal(item.name, item.constraint, item.depth, item.direct, item.parent_name, &optimal_versions) catch |err| {
           debug.log("  failed to resolve {s}: {}", .{ item.name, err });
+          if (item.direct) return err;
           continue;
         };
 
