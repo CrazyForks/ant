@@ -45,7 +45,16 @@ if [ -z "$LLVM_PROFDATA" ]; then
   exit 1
 fi
 
-EXTRA_FLAGS="-mcpu=native -Qunused-arguments -fvisibility=hidden -fvisibility-inlines-hidden -fno-math-errno -fno-trapping-math -fno-stack-protector"
+case "$(uname -m)" in
+  x86_64|i386|i686)
+    CPU_TUNE_FLAG="-march=native"
+    ;;
+  *)
+    CPU_TUNE_FLAG="-mcpu=native"
+    ;;
+esac
+
+EXTRA_FLAGS="$CPU_TUNE_FLAG -Qunused-arguments -fvisibility=hidden -fvisibility-inlines-hidden -fno-math-errno -fno-trapping-math -fno-stack-protector"
 
 SKIP_TRAIN=0
 for arg in "$@"; do

@@ -21,7 +21,8 @@
 let
   zigPkg = if zig_0_16 != null then zig_0_16 else zig;
 
-  cpuTuneFlag = "-mcpu=native";
+  cpuTuneFlag =
+    if stdenv.hostPlatform.isx86 then "-march=native" else "-mcpu=native";
   antVersion = import ./version.nix { inherit lib gitRev; };
   antVendor = callPackage ./vendor.nix { inherit gitRev; };
 

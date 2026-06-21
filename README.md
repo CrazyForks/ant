@@ -7,10 +7,10 @@ Built to carry more than it weighs while delivering near-V8 speeds.
 
 ```bash
 $ ls -lh ant
--rwxr-xr-x⠀9.1M⠀ant*
+-rwxr-xr-x⠀8.3M⠀ant*
 
 # built with -Os
--rwxr-xr-x⠀5.9M⠀ant*
+-rwxr-xr-x⠀4.9M⠀ant*
 ```
 
 ## Table of contents
@@ -28,7 +28,7 @@ $ ls -lh ant
 
 |                     | Ant        | Node    | Bun    | Deno   |
 | ------------------- | ---------- | ------- | ------ | ------ |
-| Binary size         | **~9 MB**  | ~120 MB | ~60 MB | ~90 MB |
+| Binary size         | **~8 MB**  | ~120 MB | ~60 MB | ~90 MB |
 | Cold start          | **~5 ms**  | ~31 ms  | ~13 ms | ~25 ms |
 | Engine              | Ant Silver | V8      | JSC    | V8     |
 | JIT                 | ✓          | ✓       | ✓      | ✓      |
@@ -69,24 +69,24 @@ hyperfine --warmup 10 --runs 100 \
   'deno run --allow-read --allow-env examples/npm/hono/bench-coldstart.js'
 ```
 
-| Runtime | Mean       | Min     | Max      | Relative     |
-| ------- | ---------- | ------- | -------- | ------------ |
-| **Ant** | **5.4 ms** | 5.0 ms  | 7.1 ms   | **1.00**     |
-| Bun     | 12.8 ms    | 11.6 ms | 16.4 ms  | 2.37× slower |
-| Deno    | 24.8 ms    | 22.2 ms | 29.4 ms  | 4.59× slower |
-| Node    | 31.1 ms    | 27.1 ms | 151.7 ms | 5.76× slower |
+| Runtime | Mean       | Min     | Max     | Relative     |
+| ------- | ---------- | ------- | ------- | ------------ |
+| **Ant** | **5.5 ms** | 4.9 ms  | 6.1 ms  | **1.00**     |
+| Bun     | 10.6 ms    | 9.5 ms  | 13.8 ms | 1.93× slower |
+| Deno    | 24.8 ms    | 22.2 ms | 29.4 ms | 4.51× slower |
+| Node    | 28.7 ms    | 27.1 ms | 31.2 ms | 5.22× slower |
 
 <details>
 <summary>Environment</summary>
 
 | Detail   | Value                             |
 | -------- | --------------------------------- |
-| Hardware | Apple M4 Pro, 24 GB RAM, 14 cores |
-| OS       | macOS 15.7.5 (arm64)              |
-| Ant      | 0.11.0                            |
-| Node     | 25.9.0                            |
-| Bun      | 1.3.13                            |
-| Deno     | 2.7.12                            |
+| Hardware | Apple M5 Pro, 64 GB RAM, 18 cores |
+| OS       | macOS 26.5.1 (arm64)              |
+| Ant      | 12.1.15dd25d.1                    |
+| Node     | 26.2.0                            |
+| Bun      | 1.3.14                            |
+| Deno     | 2.8.3                             |
 
 </details>
 
