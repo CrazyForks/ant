@@ -12,6 +12,8 @@
 *.dll
 
 /build
+/pgo/raw
+
 /traces
 /result
 /result-*

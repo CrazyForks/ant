@@ -1,0 +1,120 @@
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [ "${ANT_PGO_IN_NIX_SHELL:-0}" != "1" ]; then
+  if ! command -v nix >/dev/null 2>&1; then
+    echo "error: nix is required to enter the project devShell" >&2
+    exit 1
+  fi
+  echo "==> Entering 'nix develop' for the project toolchain"
+  exec env ANT_PGO_IN_NIX_SHELL=1 nix develop "$ROOT" -c "$0" "$@"
+fi
+
+unset NIX_ENFORCE_NO_NATIVE
+PGO_DIR="$ROOT/pgo"
+RAW_DIR="$PGO_DIR/raw"
+GEN_BUILD="$ROOT/build-pgo-gen"
+FINAL_BUILD="$ROOT/build"
+
+case "$(uname -s)" in
+  Darwin) KERNEL=darwin ;;
+  Linux)  KERNEL=linux ;;
+  *) echo "error: unsupported OS $(uname -s)" >&2; exit 1 ;;
+esac
+case "$(uname -m)" in
+  arm64|aarch64) CPU=aarch64 ;;
+  x86_64|amd64)  CPU=x86_64 ;;
+  *) echo "error: unsupported arch $(uname -m)" >&2; exit 1 ;;
+esac
+PROFDATA="$PGO_DIR/ant-$KERNEL-$CPU.profdata"
+
+LLVM_PROFDATA=""
+for cand in \
+  "$(command -v llvm-profdata 2>/dev/null || true)" \
+  /Library/Developer/CommandLineTools/usr/bin/llvm-profdata \
+  /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/llvm-profdata
+do
+  if [ -n "$cand" ] && [ -x "$cand" ]; then
+    LLVM_PROFDATA="$cand"
+    break
+  fi
+done
+if [ -z "$LLVM_PROFDATA" ]; then
+  echo "error: llvm-profdata not found (install Xcode CLT or add llvm to PATH)" >&2
+  exit 1
+fi
+
+EXTRA_FLAGS="-mcpu=native -Qunused-arguments -fvisibility=hidden -fvisibility-inlines-hidden -fno-math-errno -fno-trapping-math -fno-stack-protector"
+
+SKIP_TRAIN=0
+for arg in "$@"; do
+  case "$arg" in
+    --skip-train) SKIP_TRAIN=1 ;;
+    *) echo "unknown arg: $arg" >&2; exit 2 ;;
+  esac
+done
+
+if [ "$SKIP_TRAIN" -eq 0 ]; then
+  echo "==> [1/3] Configuring instrumented build at $GEN_BUILD"
+  rm -rf "$GEN_BUILD" "$RAW_DIR"
+  mkdir -p "$RAW_DIR"
+  (cd "$ROOT" && meson subprojects download >/dev/null 2>&1 || true)
+  GEN_C_ARGS="$EXTRA_FLAGS -fprofile-generate=$RAW_DIR"
+  meson setup "$GEN_BUILD" \
+    --buildtype=release \
+    -Db_lto=false \
+    -Dstrip=false \
+    "-Dc_args=$GEN_C_ARGS" \
+    "-Dcpp_args=$GEN_C_ARGS" \
+    "-Dc_link_args=-fprofile-generate=$RAW_DIR" \
+    "-Dcpp_link_args=-fprofile-generate=$RAW_DIR"
+  meson compile -C "$GEN_BUILD"
+
+  echo "==> [2/3] Training (writes profraw to $RAW_DIR)"
+  export LLVM_PROFILE_FILE="$RAW_DIR/profile-%p-%m.profraw"
+
+  if [ -f "$ROOT/examples/spec/run.js" ]; then
+    echo "    - spec suite"
+    "$GEN_BUILD/ant" "$ROOT/examples/spec/run.js" --all >/dev/null 2>&1 || true
+  fi
+
+  echo "    - bench files in tests/"
+  while IFS= read -r -d '' bench; do
+    echo "      $(basename "$bench")"
+    timeout 15s "$GEN_BUILD/ant" "$bench" >/dev/null 2>&1 || true
+  done < <(find "$ROOT/tests" -maxdepth 2 -type f \( -name 'bench_*.js' -o -name 'bench_*.cjs' -o -name 'bench_*.mjs' \) -print0)
+
+  echo "==> Merging profiles -> $PROFDATA"
+  shopt -s nullglob
+  raw=( "$RAW_DIR"/*.profraw )
+  if [ ${#raw[@]} -eq 0 ]; then
+    echo "error: no .profraw files were produced; training crashed or wrote nothing" >&2
+    exit 1
+  fi
+  "$LLVM_PROFDATA" merge -output="$PROFDATA" "${raw[@]}"
+  echo "    $(ls -lh "$PROFDATA" | awk '{print $5}') of profile data"
+else
+  if [ ! -f "$PROFDATA" ]; then
+    echo "error: --skip-train but $PROFDATA does not exist" >&2
+    exit 1
+  fi
+  echo "==> Reusing existing profile $PROFDATA"
+fi
+
+echo "==> [3/3] Final PGO build at $FINAL_BUILD"
+rm -rf "$FINAL_BUILD"
+USE_FLAGS="$EXTRA_FLAGS -fprofile-use=$PROFDATA -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date"
+meson setup "$FINAL_BUILD" \
+  --buildtype=release \
+  -Db_lto=true \
+  -Db_lto_mode=default \
+  "-Dc_args=$USE_FLAGS" \
+  "-Dcpp_args=$USE_FLAGS" \
+  "-Dc_link_args=-fprofile-use=$PROFDATA" \
+  "-Dcpp_link_args=-fprofile-use=$PROFDATA"
+meson compile -C "$FINAL_BUILD"
+
+echo
+echo "PGO build complete."
+echo "  binary:  $FINAL_BUILD/ant"
+echo "  profile: $PROFDATA"

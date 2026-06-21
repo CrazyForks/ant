@@ -99,6 +99,7 @@ and are fetched automatically:
 - libuv 1.52.0
 - llhttp 9.3.1
 - LMDB (OpenLDAP LMDB 0.9.33)
+- mimalloc 3.3.2 (default runtime allocator)
 - minicoro `HEAD`
 - MIR `HEAD`
 - nghttp2 1.68.0
@@ -417,11 +418,12 @@ To verify:
 
 Configure options are set via `meson setup` or `meson configure`:
 
-| Option              | Type    | Default | Description                             |
-| ------------------- | ------- | ------- | --------------------------------------- |
-| `static_link`       | boolean | `false` | Statically link the final binary        |
-| `build_timestamp`   | string  | (auto)  | Embedded build timestamp metadata       |
-| `deps_prefix_cmake` | string  | (empty) | Prefix path for cmake dependency lookup |
+| Option              | Type    | Default    | Description                                           |
+| ------------------- | ------- | ---------- | ----------------------------------------------------- |
+| `allocator`         | combo   | `mimalloc` | Runtime malloc implementation (`mimalloc`, `system`)  |
+| `static_link`       | boolean | `false`    | Statically link the final binary                      |
+| `build_timestamp`   | string  | (auto)     | Embedded build timestamp metadata                     |
+| `deps_prefix_cmake` | string  | (empty)    | Prefix path for cmake dependency lookup               |
 
 Standard Meson built-in options used by Ant:
 
@@ -439,4 +441,5 @@ Example:
 
 ```bash
 meson setup build -Dstatic_link=true --prefer-static
+meson setup build-system -Dallocator=system
 ```

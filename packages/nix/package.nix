@@ -42,6 +42,10 @@ let
     "-mllvm" "-enable-machine-outliner=never"
   ];
   optArgs = lib.concatStringsSep " " extraOptFlags;
+
+  pgoFileName = "ant-${stdenv.hostPlatform.parsed.kernel.name}-${stdenv.hostPlatform.parsed.cpu.name}.profdata";
+  pgoProfile = ../pgo + "/${pgoFileName}";
+  pgoEnabled = builtins.pathExists pgoProfile;
 in
 
 llvmPackages_21.stdenv.mkDerivation (finalAttrs: {
@@ -83,6 +87,18 @@ llvmPackages_21.stdenv.mkDerivation (finalAttrs: {
     mkdir -p "$ZIG_GLOBAL_CACHE_DIR" "$ZIG_LOCAL_CACHE_DIR"
 
     ln -sfn ${toolsNodeModules}/node_modules src/tools/node_modules
+  '' + lib.optionalString pgoEnabled ''
+
+    PROFDATA="$PWD/pgo/${pgoFileName}"
+    echo "==> PGO enabled, using $PROFDATA"
+    PGO_C_ARGS="-fprofile-use=$PROFDATA -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date"
+    
+    mesonFlagsArray+=(
+      "-Dc_args=$PGO_C_ARGS"
+      "-Dcpp_args=$PGO_C_ARGS"
+      "-Dc_link_args=-fprofile-use=$PROFDATA"
+      "-Dcpp_link_args=-fprofile-use=$PROFDATA"
+    )
   '';
 
   installPhase = ''

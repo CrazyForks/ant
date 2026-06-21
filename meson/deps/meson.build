@@ -226,15 +226,33 @@ brotli_include_path = subprojects_src / deps_info['google-brotli']['dir'] / deps
 pkg_zig_dir = src_root / 'src' / 'pkg'
 pkg_build_dir = meson.current_build_dir()
 
-ant_deps = [
+allocator_deps = []
+if get_option('allocator') == 'mimalloc'
+  mimalloc_dep = subproject('mimalloc', default_options: [
+    'warning_level=0',
+    'default_library=static',
+  ]).get_variable('mimalloc_dep')
+  allocator_deps = [mimalloc_dep]
+  add_project_arguments('-DANT_ALLOCATOR_MIMALLOC', language: 'c')
+endif
+
+ant_core_deps = [
   libffi_dep, crprintf_dep, argtable3_dep,
   llhttp, pcre2_dep, libuv_dep, base64_dep,
   yyjson_dep, minicoro_dep, uuidv7_dep, tlsuv_dep,
-  uriparser_dep, utf8proc_dep, ssl_dep, crypto_dep,
-  zlib_dep, brotli_common_dep, brotli_dec_dep,
-  brotli_enc_dep, uthash_dep, lmdb_dep, wamr_dep,
+]
+
+ant_format_deps = [
+  uriparser_dep, utf8proc_dep,
+  zlib_dep, brotli_common_dep, brotli_dec_dep, brotli_enc_dep,
+]
+
+ant_runtime_deps = [
+  ssl_dep, crypto_dep, uthash_dep, lmdb_dep, wamr_dep,
   double_conversion_dep, wirecall, skim_dep,
-] + win_deps
+]
+
+ant_deps = allocator_deps + ant_core_deps + ant_format_deps + ant_runtime_deps + win_deps
 
 if get_option('jit')
   mir_dep = subproject('mir').get_variable('mir_dep')

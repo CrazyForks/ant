@@ -180,6 +180,13 @@ executable(
 )
 
 executable(
+  'bench-allocator',
+  files('tests/bench-allocator.c'),
+  dependencies: [dependency('threads')] + allocator_deps,
+  build_by_default: false
+)
+
+executable(
   'test-http-protocols',
   files('tests/test_http_protocols.c'),
   dependencies: libant_dep,
