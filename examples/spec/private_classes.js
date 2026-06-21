@@ -125,4 +125,27 @@ class Dog extends Animal {
 }
 test('inherited private fields', new Dog('Rex', 'Labrador').describe(), 'Rex (Labrador)');
 
+class Cursor {
+  constructor(value) {
+    this.value = value;
+  }
+}
+
+class NewPrivateCallee {
+  #ctor = Cursor;
+  #options = { cursor: Cursor };
+
+  direct(value) {
+    return new this.#ctor(value).value;
+  }
+
+  member(value) {
+    return new this.#options.cursor(value).value;
+  }
+}
+
+const newPrivateCallee = new NewPrivateCallee();
+test('new private field constructor callee', newPrivateCallee.direct(4), 4);
+test('new private member chain constructor callee', newPrivateCallee.member(5), 5);
+
 summary();

@@ -311,6 +311,41 @@ static inline sv_ast_t *parse_dot_property_name(P) {
   return name;
 }
 
+static sv_ast_t *parse_member_suffix(P, sv_ast_t *left, uint8_t la) {
+  if (la == TOK_DOT) {
+    CONSUME();
+    NEXT();
+    sv_ast_t *mem = mk(N_MEMBER);
+    mem->left = left;
+    if (TOK == TOK_HASH) {
+      CONSUME();
+      NEXT();
+      if (!is_private_ident_like_tok(TOK)) {
+        SV_MKERR_TYPED(JS, JS_ERR_SYNTAX, "private field name expected");
+        return mk(N_EMPTY);
+      }
+      mem->right = mk_private_ident_from_tok(p);
+      CONSUME();
+    } else {
+      mem->right = parse_dot_property_name(p);
+      if (!mem->right) return mk(N_EMPTY);
+    }
+    return mem;
+  }
+
+  if (la == TOK_LBRACKET) {
+    CONSUME();
+    sv_ast_t *mem = mk(N_MEMBER);
+    mem->left = left;
+    mem->right = parse_expr(p);
+    mem->flags = 1;
+    expect(p, TOK_RBRACKET);
+    return mem;
+  }
+
+  return NULL;
+}
+
 static sv_ast_t *parse_arrow_body(P) {
   if (NEXT() == TOK_LBRACE) return parse_block(p, true);
   return parse_assign(p);
@@ -711,23 +746,9 @@ static sv_ast_t *parse_primary(P) {
     
     for (;;) {
       uint8_t la = NEXT();
-      if (la == TOK_DOT) {
-        CONSUME();
-        NEXT();
-        sv_ast_t *mem = mk(N_MEMBER);
-        mem->left = callee;
-        mem->right = parse_dot_property_name(p);
-        if (!mem->right) return mk(N_EMPTY);
-        callee = mem;
-      } else if (la == TOK_LBRACKET) {
-        CONSUME();
-        sv_ast_t *mem = mk(N_MEMBER);
-        mem->left = callee;
-        mem->right = parse_expr(p);
-        mem->flags = 1;
-        expect(p, TOK_RBRACKET);
-        callee = mem;
-      } else break;
+      if (la == TOK_DOT || la == TOK_LBRACKET) callee = parse_member_suffix(p, callee, la);
+      else break;
+      if (callee && callee->type == N_EMPTY) return callee;
     }
     n->left = callee;
 
@@ -1115,33 +1136,9 @@ static sv_ast_t *parse_call(P) {
       }
       expect(p, TOK_RPAREN);
       n = call;
-    } else if (la == TOK_DOT) {
-      CONSUME();
-      NEXT();
-      sv_ast_t *mem = mk(N_MEMBER);
-      mem->left = n;
-      if (TOK == TOK_HASH) {
-        CONSUME();
-        NEXT();
-        if (!is_private_ident_like_tok(TOK)) {
-          SV_MKERR_TYPED(JS, JS_ERR_SYNTAX, "private field name expected");
-          return mk(N_EMPTY);
-        }
-        mem->right = mk_private_ident_from_tok(p);
-        CONSUME();
-      } else {
-        mem->right = parse_dot_property_name(p);
-        if (!mem->right) return mk(N_EMPTY);
-      }
-      n = mem;
-    } else if (la == TOK_LBRACKET) {
-      CONSUME();
-      sv_ast_t *mem = mk(N_MEMBER);
-      mem->left = n;
-      mem->right = parse_expr(p);
-      mem->flags = 1;
-      expect(p, TOK_RBRACKET);
-      n = mem;
+    } else if (la == TOK_DOT || la == TOK_LBRACKET) {
+      n = parse_member_suffix(p, n, la);
+      if (n && n->type == N_EMPTY) return n;
     } else if (la == TOK_OPTIONAL_CHAIN) {
       CONSUME();
       sv_ast_t *opt = mk(N_OPTIONAL);
