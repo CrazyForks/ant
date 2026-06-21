@@ -223,6 +223,10 @@ static inline bool is_private_ident_like_tok(uint8_t tok) {
   return tok >= TOK_IDENTIFIER && tok < TOK_IDENT_LIKE_END;
 }
 
+static inline bool is_leading_dot_number_token(P) {
+  return TOK == TOK_NUMBER && TLEN > 0 && TOFF < CLEN && CODE[TOFF] == '.';
+}
+
 static inline bool sv_strict_forbidden_binding_ident(const char *s, uint32_t len) {
   return is_eval_or_arguments_name(s, len) || is_strict_reserved_name(s, len);
 }
@@ -1186,6 +1190,10 @@ static sv_ast_t *parse_call(P) {
 static sv_ast_t *parse_postfix(P) {
   sv_ast_t *n = parse_call(p);
   uint8_t la = NEXT();
+  if (is_leading_dot_number_token(p) && !HAD_NEWLINE) {
+    sv_parse_unexpected_token(p);
+    return mk(N_EMPTY);
+  }
   if ((la == TOK_POSTINC || la == TOK_POSTDEC) && !HAD_NEWLINE) {
     if (sv_is_strict_restricted_assign_target(p, n)) {
       SV_MKERR_TYPED(

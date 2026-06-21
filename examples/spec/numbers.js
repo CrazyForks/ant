@@ -80,6 +80,9 @@ testEvalSyntaxError('dot exponent without digits syntax error', '1.e');
 testEvalSyntaxError('integer literal dot identifier syntax error', '27.toString()');
 testEvalSyntaxError('integer literal dot property syntax error', '27.a');
 testEvalSyntaxError('leading-dot literal identifier syntax error', '.5foo');
+testEvalSyntaxError('string before leading-dot literal syntax error', "'xy'.3");
+testEvalSyntaxError('object before leading-dot literal syntax error', "({}).3");
+testEvalSyntaxError('identifier before leading-dot literal syntax error', "let x = 1; x.3");
 
 testApprox('addition', 0.1 + 0.2, 0.3, 1e-10);
 test('multiplication', 6 * 7, 42);
