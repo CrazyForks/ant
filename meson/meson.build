@@ -35,6 +35,46 @@ if host_machine.system() == 'linux'
   add_project_link_arguments('-no-pie', language: ['c', 'cpp'])
 endif
 
+pgo = get_option('pgo')
+pgo_file = 'ant-' + host_machine.system() + '-' + host_machine.cpu_family() + '.profdata'
+pgo_profile = src_root / 'meson' / 'pgo' / 'profiles' / pgo_file
+pgo_profile_exists = fs.is_file(pgo_profile)
+pgo_c_id = meson.get_compiler('c').get_id()
+pgo_cpp_id = meson.get_compiler('cpp').get_id()
+pgo_compiler_supported = (
+  (pgo_c_id == 'clang' or pgo_c_id == 'appleclang' or pgo_c_id == 'apple-clang') and
+  (pgo_cpp_id == 'clang' or pgo_cpp_id == 'appleclang' or pgo_cpp_id == 'apple-clang')
+)
+pgo_auto_compatible = get_option('buildtype') == 'release' and get_option('b_sanitize') == 'none'
+pgo_use = false
+
+if pgo.enabled()
+  if not pgo_profile_exists
+    error('PGO profile requested but not found: ' + pgo_profile)
+  endif
+  if not pgo_compiler_supported
+    error('PGO profile requested but requires Clang/Apple Clang, found c=' + pgo_c_id + ', cpp=' + pgo_cpp_id)
+  endif
+  pgo_use = true
+elif pgo.auto() and pgo_profile_exists and pgo_compiler_supported and pgo_auto_compatible
+  pgo_use = true
+endif
+
+if pgo_use
+  pgo_compile_args = [
+    '-fprofile-use=' + pgo_profile,
+    '-Wno-profile-instr-unprofiled',
+    '-Wno-profile-instr-out-of-date',
+  ]
+  add_project_arguments(pgo_compile_args, language: ['c', 'cpp'])
+  add_project_link_arguments('-fprofile-use=' + pgo_profile, language: ['c', 'cpp'])
+  message('  pgo: enabled (' + pgo_profile + ')')
+elif pgo_profile_exists
+  message('  pgo: profile found but not used (' + pgo_profile + ')')
+else
+  message('  pgo: no profile for ' + host_machine.system() + '-' + host_machine.cpu_family())
+endif
+
 subdir('deps')
 subdir('version')
 

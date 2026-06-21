@@ -1,6 +1,6 @@
 [wrap-git]
 url = https://github.com/LiosK/uuidv7-h.git
-revision = head
+revision = 9ae44fec0eb2843d5230caac484b0388c93b836b
 patch_directory = uuidv7
 depth = 1
 

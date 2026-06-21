@@ -350,6 +350,26 @@ export CC_LD="$(which lld)"       # Linux
 > `b_lto_threads=8`). Disable it with `-Db_lto=false` for faster iteration
 > during development.
 
+#### Profile-guided optimization
+
+Release builds automatically use LLVM PGO data when a matching profile exists
+at `meson/pgo/profiles/ant-<system>-<cpu>.profdata` and the C/C++ compiler is
+Clang-compatible. For example, macOS ARM64 uses
+`meson/pgo/profiles/ant-darwin-aarch64.profdata`.
+
+To regenerate the profile and produce a final PGO build:
+
+```bash
+./meson/pgo/build.sh
+```
+
+PGO can also be controlled explicitly with Meson:
+
+```bash
+meson setup build -Dpgo=enabled   # require a matching profile
+meson setup build -Dpgo=disabled  # ignore checked-in profiles
+```
+
 #### Troubleshooting Unix and macOS builds
 
 Stale builds can sometimes result in errors. Clean the build directory and
@@ -422,6 +442,7 @@ Configure options are set via `meson setup` or `meson configure`:
 | ------------------- | ------- | ---------- | ----------------------------------------------------- |
 | `allocator`         | combo   | `mimalloc` | Runtime malloc implementation (`mimalloc`, `system`)  |
 | `static_link`       | boolean | `false`    | Statically link the final binary                      |
+| `pgo`               | feature | `auto`     | Use matching `meson/pgo/profiles/*.profdata` profiles |
 | `build_timestamp`   | string  | (auto)     | Embedded build timestamp metadata                     |
 | `deps_prefix_cmake` | string  | (empty)    | Prefix path for cmake dependency lookup               |
 

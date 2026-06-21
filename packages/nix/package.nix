@@ -44,7 +44,7 @@ let
   optArgs = lib.concatStringsSep " " extraOptFlags;
 
   pgoFileName = "ant-${stdenv.hostPlatform.parsed.kernel.name}-${stdenv.hostPlatform.parsed.cpu.name}.profdata";
-  pgoProfile = ../pgo + "/${pgoFileName}";
+  pgoProfile = ../../meson/pgo/profiles + "/${pgoFileName}";
   pgoEnabled = builtins.pathExists pgoProfile;
 in
 
@@ -76,7 +76,7 @@ llvmPackages_21.stdenv.mkDerivation (finalAttrs: {
   mesonFlags = [
     "-Dbuild_git_hash=${gitRev}"
     "-Db_lto_mode=default"
-  ];
+  ] ++ lib.optional pgoEnabled "-Dpgo=enabled";
 
   NIX_ENFORCE_NO_NATIVE = false;
   env.NIX_CFLAGS_COMPILE = optArgs;
@@ -88,17 +88,7 @@ llvmPackages_21.stdenv.mkDerivation (finalAttrs: {
 
     ln -sfn ${toolsNodeModules}/node_modules src/tools/node_modules
   '' + lib.optionalString pgoEnabled ''
-
-    PROFDATA="$PWD/pgo/${pgoFileName}"
-    echo "==> PGO enabled, using $PROFDATA"
-    PGO_C_ARGS="-fprofile-use=$PROFDATA -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date"
-    
-    mesonFlagsArray+=(
-      "-Dc_args=$PGO_C_ARGS"
-      "-Dcpp_args=$PGO_C_ARGS"
-      "-Dc_link_args=-fprofile-use=$PROFDATA"
-      "-Dcpp_link_args=-fprofile-use=$PROFDATA"
-    )
+    echo "==> PGO profile available: meson/pgo/profiles/${pgoFileName}"
   '';
 
   installPhase = ''

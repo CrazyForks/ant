@@ -1,5 +1,5 @@
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 if [ "${ANT_PGO_IN_NIX_SHELL:-0}" != "1" ]; then
   if ! command -v nix >/dev/null 2>&1; then
@@ -11,7 +11,8 @@ if [ "${ANT_PGO_IN_NIX_SHELL:-0}" != "1" ]; then
 fi
 
 unset NIX_ENFORCE_NO_NATIVE
-PGO_DIR="$ROOT/pgo"
+PGO_DIR="$ROOT/meson/pgo"
+PROFILE_DIR="$PGO_DIR/profiles"
 RAW_DIR="$PGO_DIR/raw"
 GEN_BUILD="$ROOT/build-pgo-gen"
 FINAL_BUILD="$ROOT/build"
@@ -26,7 +27,7 @@ case "$(uname -m)" in
   x86_64|amd64)  CPU=x86_64 ;;
   *) echo "error: unsupported arch $(uname -m)" >&2; exit 1 ;;
 esac
-PROFDATA="$PGO_DIR/ant-$KERNEL-$CPU.profdata"
+PROFDATA="$PROFILE_DIR/ant-$KERNEL-$CPU.profdata"
 
 LLVM_PROFDATA=""
 for cand in \
@@ -57,7 +58,7 @@ done
 if [ "$SKIP_TRAIN" -eq 0 ]; then
   echo "==> [1/3] Configuring instrumented build at $GEN_BUILD"
   rm -rf "$GEN_BUILD" "$RAW_DIR"
-  mkdir -p "$RAW_DIR"
+  mkdir -p "$RAW_DIR" "$PROFILE_DIR"
   (cd "$ROOT" && meson subprojects download >/dev/null 2>&1 || true)
   GEN_C_ARGS="$EXTRA_FLAGS -fprofile-generate=$RAW_DIR"
   meson setup "$GEN_BUILD" \
@@ -94,6 +95,7 @@ if [ "$SKIP_TRAIN" -eq 0 ]; then
   "$LLVM_PROFDATA" merge -output="$PROFDATA" "${raw[@]}"
   echo "    $(ls -lh "$PROFDATA" | awk '{print $5}') of profile data"
 else
+  mkdir -p "$PROFILE_DIR"
   if [ ! -f "$PROFDATA" ]; then
     echo "error: --skip-train but $PROFDATA does not exist" >&2
     exit 1
