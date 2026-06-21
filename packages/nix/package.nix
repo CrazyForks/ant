@@ -16,6 +16,7 @@
 , darwin ? null
 , callPackage
 , gitRev ? "unknown"
+, enablePgo ? false
 }:
 
 let
@@ -46,7 +47,12 @@ let
 
   pgoFileName = "ant-${stdenv.hostPlatform.parsed.kernel.name}-${stdenv.hostPlatform.parsed.cpu.name}.profdata";
   pgoProfile = ../../meson/pgo/profiles + "/${pgoFileName}";
-  pgoEnabled = builtins.pathExists pgoProfile;
+  pgoProfileExists = builtins.pathExists pgoProfile;
+  pgoFlags =
+    if enablePgo then
+      if pgoProfileExists then [ "-Dpgo=enabled" ]
+      else throw "enablePgo requested but missing PGO profile: meson/pgo/profiles/${pgoFileName}"
+    else [ "-Dpgo=disabled" ];
 in
 
 llvmPackages_21.stdenv.mkDerivation (finalAttrs: {
@@ -78,7 +84,7 @@ llvmPackages_21.stdenv.mkDerivation (finalAttrs: {
     "-Dbuild_git_hash=${gitRev}"
     "-Db_lto_mode=default"
     "-Dembed_example=disabled"
-  ] ++ lib.optional pgoEnabled "-Dpgo=enabled";
+  ] ++ pgoFlags;
 
   NIX_ENFORCE_NO_NATIVE = false;
   env.NIX_CFLAGS_COMPILE = optArgs;
@@ -89,7 +95,7 @@ llvmPackages_21.stdenv.mkDerivation (finalAttrs: {
     mkdir -p "$ZIG_GLOBAL_CACHE_DIR" "$ZIG_LOCAL_CACHE_DIR"
 
     ln -sfn ${toolsNodeModules}/node_modules src/tools/node_modules
-  '' + lib.optionalString pgoEnabled ''
+  '' + lib.optionalString enablePgo ''
     echo "==> PGO profile available: meson/pgo/profiles/${pgoFileName}"
   '';
 
