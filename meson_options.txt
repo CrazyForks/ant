@@ -8,4 +8,3 @@ option('pgo', type: 'feature', value: 'auto', description: 'use meson/pgo/profil
 option('build_timestamp', type: 'string', value: '', description: 'build timestamp (defaults to current time if empty)')
 option('build_git_hash', type: 'string', value: '', description: 'git hash for version metadata (defaults to git rev-parse if empty)')
 option('deps_prefix_cmake', type: 'string', value: '', description: 'prefix path for finding dependencies in cmake subprojects')
-option('codesign', type: 'boolean', value: true, description: 'ad-hoc codesign the binary with entitlements after build (macOS only)')
