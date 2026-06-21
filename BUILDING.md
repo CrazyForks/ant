@@ -363,6 +363,16 @@ To regenerate the profile and produce a final PGO build:
 ./meson/pgo/build.sh
 ```
 
+The script enters the project Nix devShell by default so profile generation and
+the final optimized build use the same pinned toolchain. To deliberately use
+the current shell toolchain instead:
+
+```bash
+./meson/pgo/build.sh --force-no-nix
+```
+
+Use the same toolchain to consume any profile generated this way.
+
 PGO can also be controlled explicitly with Meson:
 
 ```bash
