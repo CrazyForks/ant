@@ -108,6 +108,10 @@ pub const Linker = struct {
   bin_dir: ?std.Io.Dir,
   node_modules_path: []const u8,
   cross_device: std.atomic.Value(bool),
+  linux_seen_exdev: std.atomic.Value(bool),
+  linux_ficlone_failed: std.atomic.Value(bool),
+  linux_copy_file_range_failed: std.atomic.Value(bool),
+  linux_sendfile_failed: std.atomic.Value(bool),
 
   pub fn init(allocator: std.mem.Allocator) Linker {
     return .{
@@ -117,6 +121,10 @@ pub const Linker = struct {
       .bin_dir = null,
       .node_modules_path = "",
       .cross_device = std.atomic.Value(bool).init(false),
+      .linux_seen_exdev = std.atomic.Value(bool).init(false),
+      .linux_ficlone_failed = std.atomic.Value(bool).init(false),
+      .linux_copy_file_range_failed = std.atomic.Value(bool).init(false),
+      .linux_sendfile_failed = std.atomic.Value(bool).init(false),
     };
   }
 
@@ -780,8 +788,6 @@ pub const Linker = struct {
   }
 
   fn copyFile(self: *Linker, source_dir: std.Io.Dir, dest_dir: std.Io.Dir, name: []const u8) !void {
-    _ = self;
-
     var source = source_dir.openFile(io, name, .{}) catch return error.IoError;
     defer source.close(io);
 
@@ -790,15 +796,123 @@ pub const Linker = struct {
       if (comptime builtin.os.tag != .windows) .{ .permissions = stat.permissions } else .{}
     ) catch return error.IoError; defer dest.close(io);
 
-	    var buf: [64 * 1024]u8 = undefined;
-	    while (true) {
-	      const bytes_read = source.readStreaming(io, &.{&buf}) catch |err| switch (err) {
-	        error.EndOfStream => break,
-	        else => return error.IoError,
-	      };
-	      dest.writeStreamingAll(io, buf[0..bytes_read]) catch return error.IoError;
-	    }
-	  }
+    const bytes_copied = if (comptime builtin.os.tag == .linux)
+      try self.copyFileLinux(source.handle, dest.handle)
+    else
+      try copyFileBuffered(source, dest);
+
+    _ = self.stats.bytes_copied.fetchAdd(bytes_copied, .release);
+  }
+
+  fn copyFileLinux(self: *Linker, source_fd: std.posix.fd_t, dest_fd: std.posix.fd_t) !u64 {
+    if (self.tryLinuxFiclone(source_fd, dest_fd)) return 0;
+
+    var total: u64 = 0;
+    while (self.tryLinuxCopyFileRange(source_fd, dest_fd)) |copied| {
+      if (copied == 0) return total;
+      total += copied;
+    }
+
+    while (self.tryLinuxSendfile(source_fd, dest_fd)) |copied| {
+      if (copied == 0) return total;
+      total += copied;
+    }
+
+    return total + try copyFileBufferedFd(source_fd, dest_fd);
+  }
+
+  fn tryLinuxFiclone(self: *Linker, source_fd: std.posix.fd_t, dest_fd: std.posix.fd_t) bool {
+    if (self.linux_seen_exdev.load(.acquire) or self.linux_ficlone_failed.load(.acquire)) return false;
+
+    const linux = std.os.linux;
+    const FICLONE = linux.IOCTL.IOW(0x94, 9, c_int);
+    while (true) {
+      const rc = linux.ioctl(dest_fd, FICLONE, @as(usize, @bitCast(@as(isize, source_fd))));
+      const err = linux.errno(rc);
+      if (err == .SUCCESS) return true;
+      if (err == .INTR) continue;
+      if (err == .XDEV) {
+        self.linux_seen_exdev.store(true, .release);
+      } else {
+        self.linux_ficlone_failed.store(true, .release);
+      }
+      return false;
+    }
+  }
+
+  fn tryLinuxCopyFileRange(self: *Linker, source_fd: std.posix.fd_t, dest_fd: std.posix.fd_t) ?u64 {
+    if (self.linux_seen_exdev.load(.acquire) or self.linux_copy_file_range_failed.load(.acquire)) return null;
+
+    const linux = std.os.linux;
+    while (true) {
+      const rc = linux.copy_file_range(source_fd, null, dest_fd, null, std.math.maxInt(i32) - 1, 0);
+      const err = linux.errno(rc);
+      if (err == .SUCCESS) return @intCast(rc);
+      if (err == .INTR) continue;
+      if (err == .XDEV) {
+        self.linux_seen_exdev.store(true, .release);
+      }
+      self.linux_copy_file_range_failed.store(true, .release);
+      return null;
+    }
+  }
+
+  fn tryLinuxSendfile(self: *Linker, source_fd: std.posix.fd_t, dest_fd: std.posix.fd_t) ?u64 {
+    if (self.linux_sendfile_failed.load(.acquire)) return null;
+
+    const linux = std.os.linux;
+    while (true) {
+      const rc = linux.sendfile(dest_fd, source_fd, null, std.math.maxInt(i32) - 1);
+      const err = linux.errno(rc);
+      if (err == .SUCCESS) return @intCast(rc);
+      if (err == .INTR) continue;
+      if (err == .XDEV) {
+        self.linux_seen_exdev.store(true, .release);
+      }
+      self.linux_sendfile_failed.store(true, .release);
+      return null;
+    }
+  }
+
+  fn copyFileBuffered(source: std.Io.File, dest: std.Io.File) !u64 {
+    var total: u64 = 0;
+    var buf: [64 * 1024]u8 = undefined;
+    while (true) {
+      const bytes_read = source.readStreaming(io, &.{&buf}) catch |err| switch (err) {
+        error.EndOfStream => break,
+        else => return error.IoError,
+      };
+      dest.writeStreamingAll(io, buf[0..bytes_read]) catch return error.IoError;
+      total += bytes_read;
+    }
+    return total;
+  }
+
+  fn copyFileBufferedFd(source_fd: std.posix.fd_t, dest_fd: std.posix.fd_t) !u64 {
+    var total: u64 = 0;
+    var buf: [64 * 1024]u8 = undefined;
+    while (true) {
+      const read_rc = std.os.linux.read(source_fd, &buf, buf.len);
+      const err = std.os.linux.errno(read_rc);
+      if (err == .INTR) continue;
+      if (err != .SUCCESS) return error.IoError;
+      if (read_rc == 0) return total;
+
+      try writeAllFd(dest_fd, buf[0..read_rc]);
+      total += read_rc;
+    }
+  }
+
+  fn writeAllFd(fd: std.posix.fd_t, bytes: []const u8) !void {
+    var written: usize = 0;
+    while (written < bytes.len) {
+      const rc = std.os.linux.write(fd, bytes[written..].ptr, bytes.len - written);
+      const err = std.os.linux.errno(rc);
+      if (err == .INTR) continue;
+      if (err != .SUCCESS or rc == 0) return error.IoError;
+      written += rc;
+    }
+  }
 
   pub fn getStats(self: *const Linker) StatsSnapshot {
     return self.stats.snapshot();
