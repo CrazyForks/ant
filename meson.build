@@ -74,19 +74,6 @@ lib_sources = files(run_command(
   check: true
 ).stdout().strip().split())
 
-libant = static_library(
-  'ant',
-  lib_sources + sandbox_backend_sources + [
-    builtin_bundle_h,
-    snapshot_h,
-    messages_h,
-    theme_h
-  ],
-  install: true,
-  include_directories: [include, sandbox_backend_include],
-  dependencies: ant_deps
-)
-
 pkg_lib = custom_target(
   'pkg_zig',
   output: 'libpkg.a',
@@ -97,11 +84,11 @@ pkg_lib = custom_target(
   env: {
     'ZIG': zig.full_path(),
     'ANT_VERSION': ant_version,
-    
+
     'PKG_ZIG_DIR': pkg_zig_dir, 'PKG_BUILD_DIR': pkg_build_dir,
     'LMDB_INCLUDE': lmdb_include_path, 'ZLIB_INCLUDE': zlib_include_path,
     'LIBUV_INCLUDE': libuv_include_path, 'YYJSON_INCLUDE': yyjson_include_path,
-    
+
     'PKG_TARGET': host_machine.cpu_family() + '-' + host_machine.system(),
     'PKG_LIB_NAME': host_machine.system() == 'windows' ? 'pkg.lib' : 'libpkg.a',
   },
@@ -113,6 +100,19 @@ pkg_dep = declare_dependency(
   link_with: [pkg_lib],
   include_directories: include,
   dependencies: [lmdb_dep, tlsuv_dep, libuv_dep, nghttp2_dep]
+)
+
+libant = static_library(
+  'ant',
+  lib_sources + sandbox_backend_sources + [
+    builtin_bundle_h,
+    snapshot_h,
+    messages_h,
+    theme_h
+  ],
+  install: true,
+  include_directories: [include, sandbox_backend_include],
+  dependencies: ant_deps
 )
 
 libant_dep = declare_dependency(
