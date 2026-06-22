@@ -790,13 +790,15 @@ pub const Linker = struct {
       if (comptime builtin.os.tag != .windows) .{ .permissions = stat.permissions } else .{}
     ) catch return error.IoError; defer dest.close(io);
 
-    var buf: [64 * 1024]u8 = undefined;
-    while (true) {
-      const bytes_read = source.readStreaming(io, &.{&buf}) catch return error.IoError;
-      if (bytes_read == 0) break;
-      dest.writeStreamingAll(io, buf[0..bytes_read]) catch return error.IoError;
-    }
-  }
+	    var buf: [64 * 1024]u8 = undefined;
+	    while (true) {
+	      const bytes_read = source.readStreaming(io, &.{&buf}) catch |err| switch (err) {
+	        error.EndOfStream => break,
+	        else => return error.IoError,
+	      };
+	      dest.writeStreamingAll(io, buf[0..bytes_read]) catch return error.IoError;
+	    }
+	  }
 
   pub fn getStats(self: *const Linker) StatsSnapshot {
     return self.stats.snapshot();

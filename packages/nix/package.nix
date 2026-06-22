@@ -105,8 +105,8 @@ llvmPackages_21.stdenv.mkDerivation (finalAttrs: {
 
   installPhase = ''
     runHook preInstall
-    install -Dm755 ant "$out/ant"
-    ln -s ant "$out/antx"
+    install -Dm755 ant "$out/bin/ant"
+    ln -s ant "$out/bin/antx"
     runHook postInstall
   '';
 
