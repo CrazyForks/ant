@@ -230,7 +230,7 @@ pub const Linker = struct {
     };
     _ = self.stats.dirs_created.fetchAdd(1, .release);
 
-    var dest_dir = node_modules.openDir(io, install_path, .{}) catch return error.IoError;
+    var dest_dir = node_modules.openDir(io, install_path, .{ .iterate = true }) catch return error.IoError;
     defer dest_dir.close(io);
 
     self.linkDirectoryWithHint(source_dir, dest_dir, pkg.file_count, replace_existing_files) catch |err| return err;
