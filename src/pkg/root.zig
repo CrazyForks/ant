@@ -4301,8 +4301,29 @@ export fn pkg_exec_temp(
   };
   pkg_json_file.close(io);
 
-  const http = c.http orelse return .network_error;
   const db = c.cache_db orelse return .cache_error;
+  const configured_registry = if (c.options.registry_url) |url| std.mem.span(url) else "https://registry.npmjs.org";
+  var effective_registry = configured_registry;
+  var fallback_http: ?*fetcher.Fetcher = null;
+  defer if (fallback_http) |h| h.deinit();
+
+  var http = c.http orelse return .network_error;
+  if (isAntsLandRegistry(configured_registry)) {
+    var specs = [_][*:0]const u8{package_spec};
+    const cache_dir_z = std.fmt.allocPrintSentinel(arena_alloc, "{s}", .{c.cache_dir}, 0) catch return .out_of_memory;
+    const choice = pkg_choose_registry_many(
+      &specs, 1,
+      cache_dir_z,
+      "npm.ants.land",
+      "registry.npmjs.org",
+    );
+    if (choice == .fallback) {
+      effective_registry = "registry.npmjs.org";
+      fallback_http = fetcher.Fetcher.init(c.allocator, effective_registry) catch return .network_error;
+      http = fallback_http orelse unreachable;
+      debug.log("exec: using npm registry fallback for {s}", .{pkg_name});
+    }
+  }
 
   var interleaved = InterleavedContext.init(c.allocator, arena_alloc, db, http, c);
   defer interleaved.deinit();
@@ -4313,7 +4334,7 @@ export fn pkg_exec_temp(
     &c.string_pool,
     http,
     db,
-    if (c.options.registry_url) |url| std.mem.span(url) else "https://registry.npmjs.org",
+    effective_registry,
     &c.metadata_cache,
   ); defer res.deinit();
 
