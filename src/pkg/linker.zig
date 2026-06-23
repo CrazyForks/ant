@@ -227,8 +227,8 @@ pub const Linker = struct {
         defer if (installed_version) |v| self.allocator.free(v);
         has_existing_package = installed_version != null;
         should_skip = packageVersionsMatch(source_version, installed_version) and
-          pkg.file_count != 0 and
-          installedFileCountMatches(installed_dir, pkg.file_count);
+          (pkg.trust_installed or
+            (pkg.file_count != 0 and installedFileCountMatches(installed_dir, pkg.file_count)));
       }
     }
 
@@ -456,9 +456,9 @@ pub const Linker = struct {
     for (bins) |bin| {
       if (!explicitBinIsSafe(bin)) continue;
       if (preserve_symlinks_main)
-        self.createBinWrapper(pkg_name, bin.name, bin.path, bin_dir) catch continue
+        try self.createBinWrapper(pkg_name, bin.name, bin.path, bin_dir)
       else
-        self.createBinSymlink(pkg_name, bin.name, bin.path, bin_dir) catch continue;
+        try self.createBinSymlink(pkg_name, bin.name, bin.path, bin_dir);
     }
   }
 

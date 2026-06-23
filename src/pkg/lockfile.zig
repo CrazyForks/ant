@@ -288,6 +288,9 @@ pub const Lockfile = struct {
     }
     const disabled_dependencies = try disabledDependenciesFromDataWindows(data, header);
     const platform_entries = try platformEntriesFromDataWindows(data, header);
+    if (!validateSideTables(header.package_count, bin_entries, disabled_dependencies, platform_entries)) {
+      return error.InvalidLockfile;
+    }
 
     return .{
       .data = data,
@@ -347,6 +350,9 @@ pub const Lockfile = struct {
     }
     const disabled_dependencies = try disabledDependenciesFromData(data, header);
     const platform_entries = try platformEntriesFromData(data, header);
+    if (!validateSideTables(header.package_count, bin_entries, disabled_dependencies, platform_entries)) {
+      return error.InvalidLockfile;
+    }
 
     return .{
       .data = data,
@@ -419,6 +425,37 @@ pub const Lockfile = struct {
     const bytes = std.math.mul(usize, count, @sizeOf(PlatformEntry)) catch return error.InvalidLockfile;
     if (offset > data.len or bytes > data.len - offset) return error.InvalidLockfile;
     return @as([*]const PlatformEntry, @ptrCast(@alignCast(data.ptr + offset)))[0..count];
+  }
+
+  fn validateSideTables(
+    package_count: u32,
+    bin_entries: []const BinEntry,
+    disabled_dependencies: []const DisabledDependency,
+    platform_entries: []const PlatformEntry,
+  ) bool {
+    var last_bin_package: ?u32 = null;
+    for (bin_entries) |entry| {
+      if (entry.package_index >= package_count) return false;
+      if (last_bin_package) |last| if (entry.package_index < last) return false;
+      last_bin_package = entry.package_index;
+    }
+
+    var last_disabled_parent: ?u32 = null;
+    for (disabled_dependencies) |entry| {
+      if (entry.parent_package_index != DisabledDependency.root_parent and
+          entry.parent_package_index >= package_count) return false;
+      if (last_disabled_parent) |last| if (entry.parent_package_index < last) return false;
+      last_disabled_parent = entry.parent_package_index;
+    }
+
+    var last_platform_package: ?u32 = null;
+    for (platform_entries) |entry| {
+      if (entry.package_index >= package_count) return false;
+      if (last_platform_package) |last| if (entry.package_index < last) return false;
+      last_platform_package = entry.package_index;
+    }
+
+    return true;
   }
 
   pub fn close(self: *Lockfile) void {

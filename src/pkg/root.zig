@@ -475,8 +475,8 @@ pub const PkgContext = struct {
       self.setError("Lockfile was generated for a different platform");
       return error.InvalidLockfile;
     }
-    removeInstallStateMarker(arena_alloc, node_modules_path);
     const trust_installed = installStateMarkerMatches(arena_alloc, node_modules_path, lf.header.graph_hash);
+    removeInstallStateMarker(arena_alloc, node_modules_path);
 
     const pkg_count = lf.header.package_count;
     stage_start = trace.mark("lockfile open", stage_start);
@@ -1692,7 +1692,6 @@ export fn pkg_resolve_and_install(
     std.mem.span(lockfile_path),
     std.mem.span(node_modules_path),
   });
-  removeInstallStateMarker(arena_alloc, std.mem.span(node_modules_path));
 
   const http = c.http orelse return .network_error;
   http.resetMetaClients();
@@ -1756,6 +1755,7 @@ export fn pkg_resolve_and_install(
     }
   }
   stage_start = trace.mark("resolution lock cache lookup", stage_start);
+  removeInstallStateMarker(arena_alloc, std.mem.span(node_modules_path));
 
   var interleaved = InterleavedContext.init(c.allocator, arena_alloc, db, http, c);
   defer interleaved.deinit();
