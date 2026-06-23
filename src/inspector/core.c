@@ -149,7 +149,7 @@ void inspector_send_raw(inspector_client_t *client, const char *data, size_t len
 void inspector_send_ws(inspector_client_t *client, const char *json) {
   if (!client || !client->websocket || !json) return;
   size_t frame_len = 0;
-  uint8_t *frame = ant_ws_encode_frame(ANT_WS_OPCODE_TEXT, (const uint8_t *)json, strlen(json), false, &frame_len);
+  uint8_t *frame = ant_ws_encode_frame(ANT_WS_OPCODE_TEXT, (const uint8_t *)json, strlen(json), false, false, &frame_len);
   if (!frame) return;
   inspector_send_raw(client, (const char *)frame, frame_len);
   free(frame);

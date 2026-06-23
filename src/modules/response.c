@@ -42,6 +42,16 @@ ant_value_t response_get_headers(ant_value_t obj) {
   return js_get_slot(obj, SLOT_RESPONSE_HEADERS);
 }
 
+ant_value_t response_get_websocket(ant_value_t obj) {
+  response_data_t *data = get_data(obj);
+  return data ? data->websocket : js_mkundef();
+}
+
+void response_set_websocket(ant_value_t obj, ant_value_t websocket) {
+  response_data_t *data = get_data(obj);
+  if (data) data->websocket = websocket;
+}
+
 static void data_free(response_data_t *d) {
   if (!d) return;
   free(d->type);
@@ -71,6 +81,7 @@ static response_data_t *data_new(void) {
   d->status = 200;
   d->status_text = strdup("");
   d->url_list_size = 0;
+  d->websocket = js_mkundef();
   if (!d->type || !d->status_text) {
     data_free(d);
     return NULL;
@@ -94,6 +105,7 @@ static response_data_t *data_dup(const response_data_t *src) {
   d->body_used = src->body_used;
   d->body_size = src->body_size;
   d->body_type = src->body_type ? strdup(src->body_type) : NULL;
+  d->websocket = js_mkundef();
 
   su = (url_state_t *)&src->url;
   du = &d->url;

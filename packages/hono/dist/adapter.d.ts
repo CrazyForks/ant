@@ -36,6 +36,18 @@ export interface AntHonoServeOptions {
   /** Request timeout in seconds. */
   requestTimeout?: number;
 
+  /** WebSocket behavior for upgraded connections. */
+  websocket?: {
+    /** Idle WebSocket timeout in seconds. Defaults to 120. Set 0 to disable. */
+    idleTimeout?: number;
+
+    /** Maximum incoming WebSocket message size in bytes. Defaults to 16 MiB. */
+    maxPayloadLength?: number;
+
+    /** Enables permessage-deflate negotiation for clients that request it. */
+    perMessageDeflate?: boolean | object;
+  };
+
   /** Allows future Ant server options without forcing package updates. */
   [key: string]: unknown;
 }

@@ -34,6 +34,26 @@ bool ant_ws_header_contains_token(const char *value, const char *token) {
   return false;
 }
 
+bool ant_ws_header_contains_extension(const char *value, const char *extension) {
+  size_t extension_len = extension ? strlen(extension) : 0;
+  const char *p = value;
+
+  if (!value || !extension || extension_len == 0) return false;
+  while (*p) {
+    while (*p == ' ' || *p == '\t' || *p == ',') p++;
+    const char *start = p;
+    while (*p && *p != ';' && *p != ',') p++;
+    const char *end = p;
+    while (end > start && (end[-1] == ' ' || end[-1] == '\t')) end--;
+    if ((size_t)(end - start) == extension_len && strncasecmp(start, extension, extension_len) == 0)
+      return true;
+    while (*p && *p != ',') p++;
+    if (*p == ',') p++;
+  }
+
+  return false;
+}
+
 bool ant_ws_validate_client_handshake(const ant_http_header_t *headers, const char **key_out) {
   const char *upgrade = ant_ws_find_header(headers, "upgrade");
   const char *connection = ant_ws_find_header(headers, "connection");
@@ -108,6 +128,7 @@ ant_ws_frame_result_t ant_ws_parse_frame(
   const uint8_t *data,
   size_t len,
   bool require_mask,
+  bool allow_rsv1,
   ant_ws_frame_t *out
 ) {
   size_t pos = 2;
@@ -123,9 +144,11 @@ ant_ws_frame_result_t ant_ws_parse_frame(
   masked = (data[1] & 0x80u) != 0;
   payload_len = data[1] & 0x7fu;
 
-  if ((data[0] & 0x70u) != 0) return ANT_WS_FRAME_PROTOCOL_ERROR;
+  if ((data[0] & 0x30u) != 0) return ANT_WS_FRAME_PROTOCOL_ERROR;
+  if ((data[0] & 0x40u) != 0 && !allow_rsv1) return ANT_WS_FRAME_PROTOCOL_ERROR;
   if (require_mask && !masked) return ANT_WS_FRAME_PROTOCOL_ERROR;
   if (opcode >= 0x8 && ((data[0] & 0x80u) == 0 || payload_len > 125)) return ANT_WS_FRAME_PROTOCOL_ERROR;
+  if (opcode >= 0x8 && (data[0] & 0x40u) != 0) return ANT_WS_FRAME_PROTOCOL_ERROR;
 
   if (payload_len == 126) {
     if (len < pos + 2) return ANT_WS_FRAME_INCOMPLETE;
@@ -155,6 +178,7 @@ ant_ws_frame_result_t ant_ws_parse_frame(
   }
 
   out->fin = (data[0] & 0x80u) != 0;
+  out->rsv1 = (data[0] & 0x40u) != 0;
   out->masked = masked;
   out->opcode = (ant_ws_opcode_t)opcode;
   out->payload_len = (size_t)payload_len;
@@ -174,6 +198,7 @@ uint8_t *ant_ws_encode_frame(
   const uint8_t *payload,
   size_t payload_len,
   bool mask,
+  bool rsv1,
   size_t *out_len
 ) {
   size_t header_len = 2;
@@ -189,7 +214,7 @@ uint8_t *ant_ws_encode_frame(
   out = malloc(header_len + mask_len + payload_len);
   if (!out) return NULL;
 
-  out[pos++] = 0x80u | (uint8_t)opcode;
+  out[pos++] = 0x80u | (rsv1 ? 0x40u : 0) | (uint8_t)opcode;
   if (payload_len < 126) out[pos++] = (mask ? 0x80u : 0) | (uint8_t)payload_len;
   else if (payload_len <= UINT16_MAX) {
     out[pos++] = (mask ? 0x80u : 0) | 126u;
@@ -228,5 +253,5 @@ uint8_t *ant_ws_encode_close_frame(uint16_t code, const char *reason, bool mask,
   payload[1] = (uint8_t)(code & 0xffu);
   
   if (reason_len > 0) memcpy(payload + 2, reason, reason_len);
-  return ant_ws_encode_frame(ANT_WS_OPCODE_CLOSE, payload, 2 + reason_len, mask, out_len);
+  return ant_ws_encode_frame(ANT_WS_OPCODE_CLOSE, payload, 2 + reason_len, mask, false, out_len);
 }

@@ -18,6 +18,7 @@ static void inspector_process_ws(inspector_client_t *client) {
       (const uint8_t *)client->read_buf,
       client->read_len,
       true,
+      false,
       &frame
     );
     if (r == ANT_WS_FRAME_INCOMPLETE) return;
@@ -33,7 +34,7 @@ static void inspector_process_ws(inspector_client_t *client) {
       return;
     } else if (frame.opcode == ANT_WS_OPCODE_PING) {
       size_t len = 0;
-      uint8_t *pong = ant_ws_encode_frame(ANT_WS_OPCODE_PONG, frame.payload, frame.payload_len, false, &len);
+      uint8_t *pong = ant_ws_encode_frame(ANT_WS_OPCODE_PONG, frame.payload, frame.payload_len, false, false, &len);
       if (pong) {
         inspector_send_raw(client, (const char *)pong, len);
         free(pong);

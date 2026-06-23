@@ -2,8 +2,14 @@ const decoder = new TextDecoder();
 const port = Number(process.argv[2] || 32187);
 
 export default {
-  hostname: '127.0.0.1',
   port,
+  hostname: '127.0.0.1',
+  idleTimeout: 0.2,
+  websocket: {
+    idleTimeout: 1,
+    maxPayloadLength: 64,
+    perMessageDeflate: true
+  },
   fetch(request, ctx) {
     const url = new URL(request.url);
     if (url.pathname !== '/ws') return new Response('not found', { status: 404 });

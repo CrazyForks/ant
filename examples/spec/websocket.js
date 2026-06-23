@@ -18,19 +18,32 @@ const result = await new Promise(resolve => {
   const seen = [];
   const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`);
   socket.binaryType = 'arraybuffer';
+  const timeout = setTimeout(() => {
+    resolve({
+      seen,
+      code: -2,
+      reason: 'timeout',
+      readyState: socket.readyState
+    });
+  }, 2000);
+
+  const finish = value => {
+    clearTimeout(timeout);
+    resolve(value);
+  };
 
   socket.onopen = () => {
     seen.push('open');
-    socket.send('hello');
+    setTimeout(() => socket.send('idle'), 350);
   };
 
   socket.addEventListener('message', event => {
     seen.push(event.data);
-    if (event.data === 'string:hello') socket.send('close');
+    if (event.data === 'string:idle') socket.send('close');
   });
 
   socket.onclose = event => {
-    resolve({
+    finish({
       seen,
       code: event.code,
       reason: event.reason,
@@ -39,14 +52,14 @@ const result = await new Promise(resolve => {
   };
 
   socket.onerror = () => {
-    resolve({ seen, code: -1, reason: 'error', readyState: socket.readyState });
+    finish({ seen, code: -1, reason: 'error', readyState: socket.readyState });
   };
 });
 
 server.kill('SIGTERM');
 
 test('WebSocket opened', result.seen.includes('open'), true);
-test('WebSocket text send preserves opcode', result.seen.includes('string:hello'), true);
+test('WebSocket survives server idle timeout after upgrade', result.seen.includes('string:idle'), true);
 test('WebSocket close code', result.code, 1000);
 test('WebSocket closed state', result.readyState, WebSocket.CLOSED);
 

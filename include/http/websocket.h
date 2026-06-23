@@ -31,10 +31,12 @@ typedef struct {
   ant_ws_opcode_t opcode;
   uint8_t mask[4];
   bool fin;
+  bool rsv1;
   bool masked;
 } ant_ws_frame_t;
 
 bool ant_ws_header_contains_token(const char *value, const char *token);
+bool ant_ws_header_contains_extension(const char *value, const char *extension);
 bool ant_ws_validate_client_handshake(const ant_http_header_t *headers, const char **key_out);
 const char *ant_ws_find_header(const ant_http_header_t *headers, const char *name);
 
@@ -45,6 +47,7 @@ ant_ws_frame_result_t ant_ws_parse_frame(
   const uint8_t *data,
   size_t len,
   bool require_mask,
+  bool allow_rsv1,
   ant_ws_frame_t *out
 );
 
@@ -53,6 +56,7 @@ uint8_t *ant_ws_encode_frame(
   const uint8_t *payload,
   size_t payload_len,
   bool mask,
+  bool rsv1,
   size_t *out_len
 );
 

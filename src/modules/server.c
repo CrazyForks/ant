@@ -1,5 +1,6 @@
 #include <compat.h> // IWYU pragma: keep
 
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -128,8 +129,11 @@ struct server_runtime_s {
   
   uint64_t request_timeout_ms;
   uint64_t idle_timeout_ms;
+  uint64_t websocket_idle_timeout_ms;
+  size_t websocket_max_payload_len;
   
   int port;
+  bool websocket_per_message_deflate;
   bool sigint_closed;
   bool sigterm_closed;
   bool stopping;
@@ -635,7 +639,10 @@ static ant_value_t server_upgrade_websocket(ant_t *js, ant_value_t *args, int na
   
   ant_value_t request_obj = nargs > 0 ? args[0] : js_mkundef();
   const char *key = NULL;
+  const char *extensions = NULL;
   char *accept = NULL;
+  bool per_message_deflate = false;
+  ant_websocket_server_options_t ws_options = {0};
   
   ant_value_t socket = 0;
   ant_value_t response_headers = 0;
@@ -652,7 +659,12 @@ static ant_value_t server_upgrade_websocket(ant_t *js, ant_value_t *args, int na
 
   accept = ant_ws_accept_key(key);
   if (!accept) return js_mkerr_typed(js, JS_ERR_TYPE, "Invalid WebSocket key");
-  socket = ant_websocket_accept_server(js, req->conn, request_obj, NULL);
+  extensions = ant_ws_find_header(req->raw_headers, "sec-websocket-extensions");
+  per_message_deflate = server->websocket_per_message_deflate &&
+    ant_ws_header_contains_extension(extensions, "permessage-deflate");
+  ws_options.max_payload_len = server->websocket_max_payload_len;
+  ws_options.per_message_deflate = per_message_deflate;
+  socket = ant_websocket_accept_server(js, req->conn, request_obj, NULL, &ws_options);
   if (is_err(socket)) { free(accept); return socket; }
 
   response_headers = headers_create_empty(js);
@@ -660,11 +672,17 @@ static ant_value_t server_upgrade_websocket(ant_t *js, ant_value_t *args, int na
   headers_append_literal(js, response_headers, "Upgrade", "websocket");
   headers_append_literal(js, response_headers, "Connection", "Upgrade");
   headers_append_literal(js, response_headers, "Sec-WebSocket-Accept", accept);
+  if (per_message_deflate)
+    headers_append_literal(
+      js, response_headers,
+      "Sec-WebSocket-Extensions",
+      "permessage-deflate; server_no_context_takeover; client_no_context_takeover"
+    );
   free(accept);
 
   response = response_create_fetched(js, 101, "Switching Protocols", NULL, 0, response_headers, NULL, 0, js_mkundef(), NULL);
   if (is_err(response)) return response;
-  js_set(js, response, "__antWebSocket", socket);
+  response_set_websocket(response, socket);
 
   result = js_mkobj(js);
   js_set(js, result, "socket", socket);
@@ -971,7 +989,7 @@ static void server_send_request_internal_error(server_request_t *req, const char
 static void server_finish_with_response(server_request_t *req, ant_value_t response_obj) {
   response_data_t *resp = response_get_data(response_obj);
   ant_value_t headers = response_get_headers(response_obj);
-  ant_value_t websocket_obj = js_get(req->server->js, response_obj, "__antWebSocket");
+  ant_value_t websocket_obj = response_get_websocket(response_obj);
   
   ant_value_t stream = js_get_slot(response_obj, SLOT_RESPONSE_BODY_STREAM);
   bool body_is_stream = resp && resp->body_is_stream && rs_is_stream(stream);
@@ -1252,12 +1270,12 @@ static void server_write_cb(ant_conn_t *conn, int status, void *user_data) {
   case SERVER_WRITE_WEBSOCKET_UPGRADE:
     if (req) server_network_finish(req);
     if (cs && req) {
-      ant_value_t websocket_obj = js_get(req->server->js, req->response_obj, "__antWebSocket");
+      ant_value_t websocket_obj = response_get_websocket(req->response_obj);
       ant_conn_consume(conn, req->consumed_len);
       ant_http1_conn_parser_free(&cs->parser);
       cs->websocket_obj = websocket_obj;
       cs->active_req = NULL;
-      ant_conn_set_timeout_ms(conn, cs->server->idle_timeout_ms);
+      ant_conn_set_timeout_ms(conn, cs->server->websocket_idle_timeout_ms);
       ant_websocket_server_open(req->server->js, websocket_obj);
       server_request_release(req);
       ant_conn_resume_read(conn);
@@ -1530,6 +1548,7 @@ static bool server_export_has_fetch_handler(ant_t *js, ant_value_t default_expor
     ant_value_t hostname = js_get(js, default_export, "hostname");
     ant_value_t idle_timeout = js_get(js, default_export, "idleTimeout");
     ant_value_t request_timeout = js_get(js, default_export, "requestTimeout");
+    ant_value_t websocket = js_get(js, default_export, "websocket");
     ant_value_t unix_path = js_get(js, default_export, "unix");
     ant_value_t tls = js_get(js, default_export, "tls");
 
@@ -1539,6 +1558,7 @@ static bool server_export_has_fetch_handler(ant_t *js, ant_value_t default_expor
       vtype(hostname)        != T_UNDEF ||
       vtype(idle_timeout)    != T_UNDEF ||
       vtype(request_timeout) != T_UNDEF ||
+      vtype(websocket)       != T_UNDEF ||
       vtype(unix_path)       != T_UNDEF ||
       vtype(tls)             != T_UNDEF;
   }
@@ -1581,6 +1601,7 @@ ant_value_t server_start_from_export(ant_t *js, ant_value_t default_export) {
   ant_value_t hostname_v = 0;
   ant_value_t idle_timeout_v = 0;
   ant_value_t request_timeout_v = 0;
+  ant_value_t websocket_v = 0;
   ant_value_t unix_v = 0;
   ant_value_t tls_v = 0;
   
@@ -1602,6 +1623,8 @@ ant_value_t server_start_from_export(ant_t *js, ant_value_t default_export) {
     .port = 3000,
     .request_timeout_ms = 30000,
     .idle_timeout_ms = 30000,
+    .websocket_idle_timeout_ms = 120000,
+    .websocket_max_payload_len = 16u * 1024u * 1024u,
     .loop = uv_default_loop(),
   };
 
@@ -1639,6 +1662,7 @@ ant_value_t server_start_from_export(ant_t *js, ant_value_t default_export) {
   hostname_v = js_get(js, default_export, "hostname");
   idle_timeout_v = js_get(js, default_export, "idleTimeout");
   request_timeout_v = js_get(js, default_export, "requestTimeout");
+  websocket_v = js_get(js, default_export, "websocket");
 
   if (vtype(port_v) != T_UNDEF && vtype(port_v) != T_NULL) {
     if (vtype(port_v) != T_NUM) {
@@ -1711,6 +1735,69 @@ ant_value_t server_start_from_export(ant_t *js, ant_value_t default_export) {
     }
     
     server->request_timeout_ms = (uint64_t)(timeout * 1000.0);
+  }
+
+  if (vtype(websocket_v) != T_UNDEF && vtype(websocket_v) != T_NULL) {
+    ant_value_t ws_idle_timeout_v = 0;
+    ant_value_t ws_max_payload_v = 0;
+    ant_value_t ws_deflate_v = 0;
+
+    if (!is_object_type(websocket_v)) {
+      free(server->unix_path);
+      free(server->hostname);
+      free(server);
+      return js_mkerr_typed(js, JS_ERR_TYPE, "server websocket must be an object");
+    }
+
+    ws_idle_timeout_v = js_get(js, websocket_v, "idleTimeout");
+    ws_max_payload_v = js_get(js, websocket_v, "maxPayloadLength");
+    ws_deflate_v = js_get(js, websocket_v, "perMessageDeflate");
+
+    if (vtype(ws_idle_timeout_v) != T_UNDEF && vtype(ws_idle_timeout_v) != T_NULL) {
+      double timeout = 0;
+      if (vtype(ws_idle_timeout_v) != T_NUM) {
+        free(server->unix_path);
+        free(server->hostname);
+        free(server);
+        return js_mkerr_typed(js, JS_ERR_TYPE, "server websocket.idleTimeout must be a number");
+      }
+      timeout = js_getnum(ws_idle_timeout_v);
+      if (!isfinite(timeout) || timeout < 0) {
+        free(server->unix_path);
+        free(server->hostname);
+        free(server);
+        return js_mkerr_typed(js, JS_ERR_RANGE, "server websocket.idleTimeout must be >= 0");
+      }
+      server->websocket_idle_timeout_ms = (uint64_t)(timeout * 1000.0);
+    }
+
+    if (vtype(ws_max_payload_v) != T_UNDEF && vtype(ws_max_payload_v) != T_NULL) {
+      double max_payload = 0;
+      if (vtype(ws_max_payload_v) != T_NUM) {
+        free(server->unix_path);
+        free(server->hostname);
+        free(server);
+        return js_mkerr_typed(js, JS_ERR_TYPE, "server websocket.maxPayloadLength must be a number");
+      }
+      max_payload = js_getnum(ws_max_payload_v);
+      if (!isfinite(max_payload) || max_payload < 1 || max_payload > (double)SIZE_MAX) {
+        free(server->unix_path);
+        free(server->hostname);
+        free(server);
+        return js_mkerr_typed(js, JS_ERR_RANGE, "server websocket.maxPayloadLength must be > 0");
+      }
+      server->websocket_max_payload_len = (size_t)max_payload;
+    }
+
+    if (vtype(ws_deflate_v) != T_UNDEF && vtype(ws_deflate_v) != T_NULL) {
+      if (vtype(ws_deflate_v) != T_BOOL && !is_object_type(ws_deflate_v)) {
+        free(server->unix_path);
+        free(server->hostname);
+        free(server);
+        return js_mkerr_typed(js, JS_ERR_TYPE, "server websocket.perMessageDeflate must be a boolean or object");
+      }
+      server->websocket_per_message_deflate = is_object_type(ws_deflate_v) || js_truthy(js, ws_deflate_v);
+    }
   }
 
   uv_signal_init(server->loop, &server->sigint_handle);
