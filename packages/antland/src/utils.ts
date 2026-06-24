@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as util from 'node:util';
+import * as readline from 'node:readline';
 import { spawn } from 'node:child_process';
 import type { PkgManagerName } from './pkg_manager';
 
@@ -151,6 +152,21 @@ export function timeAgo(diff: number): string {
 export function getNewLineChars(source: string): string {
   const i = source.indexOf('\n');
   return source[i - 1] === '\r' ? '\r\n' : '\n';
+}
+
+export function isInteractive(): boolean {
+  return process.stdin.isTTY === true && process.stdout.isTTY === true;
+}
+
+export async function confirm(question: string, def = false): Promise<boolean> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const ans = (await new Promise<string>(resolve => rl.question(question, resolve))).trim().toLowerCase();
+    if (!ans) return def;
+    return ans === 'y' || ans === 'yes';
+  } finally {
+    rl.close();
+  }
 }
 
 export class ExecError extends Error {

@@ -21,7 +21,12 @@ export interface PackageManager {
   remove(ids: string[]): Promise<void>;
   runScript(script: string): Promise<void>;
   publish(args: string[]): Promise<void>;
+  dlx(spec: string, args: string[]): Promise<void>;
   setConfigValue?(key: string, value: string): Promise<void>;
+}
+
+function npx(spec: string, args: string[], cwd: string) {
+  return execWithLog('npx', ['-y', spec, ...args], cwd);
 }
 
 class Npm implements PackageManager {
@@ -37,6 +42,9 @@ class Npm implements PackageManager {
   }
   async publish(args: string[]) {
     await execWithLog('npm', ['publish', ...args], this.cwd);
+  }
+  async dlx(spec: string, args: string[]) {
+    await npx(spec, args, this.cwd);
   }
 }
 
@@ -54,11 +62,17 @@ class Yarn implements PackageManager {
   async publish(args: string[]) {
     await execWithLog('yarn', ['npm', 'publish', ...args], this.cwd);
   }
+  async dlx(spec: string, args: string[]) {
+    await npx(spec, args, this.cwd);
+  }
 }
 
 export class YarnBerry extends Yarn {
   async setConfigValue(key: string, value: string) {
     await execWithLog('yarn', ['config', 'set', key, value], this.cwd);
+  }
+  async dlx(spec: string, args: string[]) {
+    await execWithLog('yarn', ['dlx', spec, ...args], this.cwd);
   }
 }
 
@@ -76,6 +90,9 @@ class Pnpm implements PackageManager {
   async publish(args: string[]) {
     await execWithLog('pnpm', ['publish', ...args], this.cwd);
   }
+  async dlx(spec: string, args: string[]) {
+    await execWithLog('pnpm', ['dlx', spec, ...args], this.cwd);
+  }
 }
 
 export class Bun implements PackageManager {
@@ -90,11 +107,14 @@ export class Bun implements PackageManager {
     await execWithLog('bun', ['run', script], this.cwd);
   }
   async publish(args: string[]) {
-    await execWithLog('npm', ['publish', ...args], this.cwd); // bun has no publish to a custom registry
+    await execWithLog('npm', ['publish', ...args], this.cwd);
+  }
+  async dlx(spec: string, args: string[]) {
+    await npx(spec, args, this.cwd);
   }
   async isNpmrcSupported() {
     const { stdout } = await exec('bun', ['--version'], this.cwd, undefined, true);
-    return stdout != null && semiver(stdout.trim(), '1.1.18') >= 0; // npmrc support since 1.1.18
+    return stdout != null && semiver(stdout.trim(), '1.1.18') >= 0;
   }
 }
 

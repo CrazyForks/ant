@@ -1,8 +1,8 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { AntPackage, getNewLineChars, styleText, timeAgo } from './utils';
+import { AntPackage, confirm, getNewLineChars, isInteractive, styleText, timeAgo } from './utils';
 import { Bun, getPkgManager, YarnBerry, type InstallMode, type PkgManagerName } from './pkg_manager';
-import { getPackument, getTarballUrl, resolveVersion, REGISTRY_URL } from './api';
+import { getPackument, getScore, getTarballUrl, resolveVersion, REGISTRY_URL, type PackageScore } from './api';
 
 const NPMRC_FILE = '.npmrc';
 const BUNFIG_FILE = 'bunfig.toml';
@@ -95,6 +95,90 @@ export async function publish(options: PublishOptions) {
   console.log(`Publishing to ${styleText('cyan', REGISTRY_URL)}...`);
   console.log(styleText('dim', 'Authenticate with a token from your package’s Publish tab (//npm.ants.land/:_authToken=...).'));
   await pkgManager.publish(['--registry', REGISTRY_URL, ...options.publishArgs.filter(a => a !== '--verbose')]);
+}
+
+const RISK_LABELS: Record<string, string> = {
+  'install-scripts': 'runs install scripts',
+  eval: 'dynamic eval',
+  'encoded-blobs': 'encoded blobs',
+  'native-binary': 'ships a native binary',
+  'suspicious-files': 'suspicious files',
+  'compression-bomb': 'huge when unpacked',
+  process: 'spawns processes',
+  network: 'network access',
+  filesystem: 'filesystem access',
+  env: 'reads env vars',
+  oversized: 'large package'
+};
+
+const DANGER_RISKS = new Set(['install-scripts', 'eval', 'encoded-blobs', 'native-binary', 'suspicious-files', 'compression-bomb']);
+
+type StyleColor = Parameters<typeof styleText>[0];
+const scoreColor = (score: number): StyleColor => (score >= 70 ? 'green' : score >= 40 ? 'yellow' : 'red');
+const fieldLabel = (s: string) => '  ' + styleText('dim', s.padEnd(11));
+
+function printSafetyReport(id: string, version: string, score: PackageScore | null) {
+  console.log();
+  console.log(`  ${styleText('cyan', `${id}@${version}`)}  ${styleText('dim', 'ants.land')}`);
+  console.log();
+  if (!score) {
+    console.log(`  ${styleText('yellow', 'No safety report available for this package.')}`);
+    return;
+  }
+
+  console.log(fieldLabel('Score') + styleText(scoreColor(score.score), `${score.score}/100`));
+
+  if (score.publisher) {
+    const p = score.publisher;
+    let line = p.handle ? `${p.name} ${styleText('dim', `@${p.handle}`)}` : p.name;
+    if (p.githubVerified && p.githubLogin) line += `  ${styleText('green', `✓ github:${p.githubLogin}`)}`;
+    console.log(fieldLabel('Publisher') + line);
+  }
+
+  if (score.risks.length) {
+    const parts = score.risks.map(r => styleText(DANGER_RISKS.has(r) ? 'red' : 'yellow', RISK_LABELS[r] ?? r));
+    console.log(fieldLabel('Risks') + parts.join(styleText('dim', ', ')));
+  } else {
+    console.log(fieldLabel('Risks') + styleText('green', 'none detected'));
+  }
+
+  if (score.flags.obfuscated) console.log(fieldLabel('') + styleText('red', 'ships obfuscated source'));
+  else if (score.flags.minified) console.log(fieldLabel('') + styleText('yellow', 'ships minified-only source'));
+
+  if (score.typosquat) {
+    console.log();
+    console.log(`  ${styleText('yellow', '⚠')} Name looks similar to ${styleText('cyan', score.typosquat)} (possible typosquat).`);
+  }
+}
+
+export interface ExecOptions extends BaseOptions {
+  yes: boolean;
+  binArgs: string[];
+}
+
+export async function execPackage(raw: string, options: ExecOptions) {
+  const pkg = AntPackage.from(raw);
+  const meta = await getPackument(pkg);
+  const version = resolveVersion(meta, pkg.version);
+  const tarball = meta.versions[version]?.dist?.tarball;
+  if (!tarball) throw new Error(`No tarball for ${pkg.id}@${version}`);
+
+  const score = await getScore(AntPackage.from(`${pkg.id}@${version}`));
+  printSafetyReport(pkg.id, version, score);
+
+  if (!options.yes) {
+    if (!isInteractive()) throw new Error('Refusing to run without confirmation in a non-interactive shell — re-run with --yes.');
+    const ok = await confirm(`\n  ${styleText('yellow', 'Run this package?')} ${styleText('dim', '[y/N]')} `, false);
+    if (!ok) {
+      console.log(styleText('dim', '  Aborted.'));
+      return;
+    }
+  }
+
+  const { pkgManager } = await getPkgManager(process.cwd(), options.pkgManagerName);
+  console.log();
+  console.log(`Running ${styleText('cyan', `${pkg.id}@${version}`)} from ants.land...`);
+  await pkgManager.dlx(tarball, options.binArgs);
 }
 
 export async function showPackageInfo(raw: string) {

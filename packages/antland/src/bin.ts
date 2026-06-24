@@ -3,7 +3,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parseArgs } from 'node:util';
-import { install, publish, remove, runScript, showPackageInfo } from './commands';
+import { execPackage, install, publish, remove, runScript, showPackageInfo } from './commands';
 import { login, logout } from './login';
 import { AntPackage, ExecError, prettyTime, setDebug, styleText } from './utils';
 import type { PkgManagerName } from './pkg_manager';
@@ -32,6 +32,7 @@ ${row([
   ['i, install, add', 'Install one or more ants.land packages'],
   ['r, uninstall, remove', 'Remove one or more packages'],
   ['publish', 'Publish the current package to ants.land'],
+  ['npx, exec, x', 'Run a package binary after a safety check'],
   ['login', 'Authorize this device (saves a publish token).'],
   ['logout', 'Remove the saved ants.land token.'],
   ['info, show, view', 'Show package information']
@@ -42,6 +43,7 @@ ${row([
   ['-P, --save-prod', 'Add to dependencies (default).'],
   ['-D, --save-dev', 'Add to devDependencies.'],
   ['-O, --save-optional', 'Add to optionalDependencies.'],
+  ['-y, --yes', 'Skip the npx safety prompt.'],
   ['--npm', 'Use npm.'],
   ['--yarn', 'Use yarn.'],
   ['--pnpm', 'Use pnpm.'],
@@ -87,10 +89,12 @@ function unknown(cmd: string): never {
   process.exit(1);
 }
 
-if (args.length === 0 || args.some(a => a === '-h' || a === '--help')) {
+const isExecCmd = args.length > 0 && (args[0] === 'npx' || args[0] === 'exec' || args[0] === 'x');
+
+if (!isExecCmd && (args.length === 0 || args.some(a => a === '-h' || a === '--help'))) {
   printHelp();
   process.exit(0);
-} else if (args.some(a => a === '-v' || a === '--version')) {
+} else if (!isExecCmd && args.some(a => a === '-v' || a === '--version')) {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf-8')) as { version: string };
   console.log(pkg.version);
   process.exit(0);
@@ -99,6 +103,24 @@ if (args.length === 0 || args.some(a => a === '-h' || a === '--help')) {
 
   if (cmd === 'publish') {
     run(() => publish({ pkgManagerName: pkgManagerFrom(args), publishArgs: args.slice(1) }));
+  } else if (cmd === 'npx' || cmd === 'exec' || cmd === 'x') {
+    const rest = args.slice(1);
+    const ours: string[] = [];
+    let yes = false;
+    let i = 0;
+    for (; i < rest.length; i++) {
+      const a = rest[i];
+      if (a === '-y' || a === '--yes') yes = true;
+      else if (a === '--debug') setDebug(true);
+      else if (a === '--npm' || a === '--yarn' || a === '--pnpm' || a === '--bun') ours.push(a);
+      else break;
+    }
+    const target = rest[i];
+    if (!target) {
+      console.error(styleText('red', 'Missing package to run. Usage: antland npx <pkg>[@version] [args...]'));
+      process.exit(1);
+    }
+    run(() => execPackage(target, { yes, binArgs: rest.slice(i + 1), pkgManagerName: pkgManagerFrom(ours) }));
   } else if (cmd === 'login') {
     run(() => login());
   } else if (cmd === 'logout') {

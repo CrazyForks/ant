@@ -2,6 +2,7 @@ import semiver from 'semiver';
 import { AntPackage } from './utils';
 
 export const REGISTRY_URL = process.env.ANTS_REGISTRY ?? 'https://npm.ants.land';
+export const SITE_URL = process.env.ANTS_SITE ?? REGISTRY_URL.replace('://npm.', '://');
 
 export interface Packument {
   name: string;
@@ -47,4 +48,39 @@ export async function getTarballUrl(pkg: AntPackage): Promise<string> {
   const tarball = meta.versions[version]?.dist?.tarball;
   if (!tarball) throw new Error(`No tarball for ${pkg.id}@${version}`);
   return tarball;
+}
+
+export interface ScoreCheck {
+  id: string;
+  got: number;
+  max: number;
+  disabled: boolean;
+  passed: boolean;
+}
+
+export interface PackageScore {
+  id: string;
+  version: string;
+  score: number;
+  checks: ScoreCheck[];
+  flags: { minified: boolean; obfuscated: boolean; verified: boolean };
+  risks: string[];
+  typosquat: string | null;
+  publisher: { name: string; handle: string; githubLogin: string | null; githubVerified: boolean } | null;
+}
+
+export async function getScore(pkg: AntPackage): Promise<PackageScore | null> {
+  const params = new URLSearchParams({ id: pkg.id });
+  if (pkg.version) params.set('version', pkg.version);
+  const url = `${SITE_URL}/api/package/score?${params.toString()}`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      await res.body?.cancel();
+      return null;
+    }
+    return (await res.json()) as PackageScore;
+  } catch {
+    return null;
+  }
 }
