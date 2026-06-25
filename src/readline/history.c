@@ -7,6 +7,20 @@ static const unsigned char HISTORY_FILE_MAGIC[] = {
   0x63, 0x68, 0x65, 0x6D, 0x61, 0x32, 0x0A, 0x00
 };
 
+#define MAX_HISTORY_RECORD_LENGTH (1024 * 1024)
+
+static bool history_drain_record(FILE *fp, unsigned long long len) {
+  char scratch[4096];
+
+  while (len > 0) {
+    size_t chunk = len > sizeof(scratch) ? sizeof(scratch) : (size_t)len;
+    if (fread(scratch, 1, chunk, fp) != chunk) return false;
+    len -= chunk;
+  }
+
+  return true;
+}
+
 void ant_history_init(ant_history_t *hist, int capacity) {
   hist->capacity = (capacity > 0) ? capacity : 512;
   hist->lines = malloc(sizeof(char *) * (size_t)hist->capacity);
@@ -101,6 +115,14 @@ void ant_history_load(ant_history_t *hist) {
 
     if (end == lenbuf || (*end != '\n' && *end != '\0')) break;
     if (record_len > (unsigned long long)SIZE_MAX - 1) break;
+
+    if (record_len > MAX_HISTORY_RECORD_LENGTH) {
+      if (!history_drain_record(fp, record_len)) break;
+
+      int sep = fgetc(fp);
+      if (sep != '\n' && sep != EOF) break;
+      continue;
+    }
 
     size_t line_len = (size_t)record_len;
     char *line = malloc(line_len + 1);
