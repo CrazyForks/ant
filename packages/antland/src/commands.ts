@@ -1,8 +1,10 @@
+import * as os from 'node:os';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { AntPackage, confirm, getNewLineChars, isInteractive, styleText, timeAgo } from './utils';
+import { AntPackage, confirm, exec, getNewLineChars, isInteractive, styleText, timeAgo } from './utils';
 import { Bun, getPkgManager, YarnBerry, type InstallMode, type PkgManagerName } from './pkg_manager';
-import { getPackument, getScore, getTarballUrl, resolveVersion, REGISTRY_URL, type PackageScore } from './api';
+import { getPackument, getScore, getTarballUrl, resolveVersion, uploadGist, fetchGist, REGISTRY_URL, SITE_URL, type PackageScore } from './api';
+import { readToken } from './login';
 
 const NPMRC_FILE = '.npmrc';
 const BUNFIG_FILE = 'bunfig.toml';
@@ -167,7 +169,7 @@ export async function execPackage(raw: string, options: ExecOptions) {
   printSafetyReport(pkg.id, version, score);
 
   if (!options.yes) {
-    if (!isInteractive()) throw new Error('Refusing to run without confirmation in a non-interactive shell — re-run with --yes.');
+    if (!isInteractive()) throw new Error('Refusing to run without confirmation in a non-interactive shell, re-run with --yes.');
     const ok = await confirm(`\n  ${styleText('yellow', 'Run this package?')} ${styleText('dim', '[y/N]')} `, false);
     if (!ok) {
       console.log(styleText('dim', '  Aborted.'));
@@ -179,6 +181,69 @@ export async function execPackage(raw: string, options: ExecOptions) {
   console.log();
   console.log(`Running ${styleText('cyan', `${pkg.id}@${version}`)} from ants.land...`);
   await pkgManager.dlx(tarball, options.binArgs);
+}
+
+export async function uploadGistFile(file: string) {
+  const token = await readToken();
+  if (!token) throw new Error('Not logged in. Run `antland login` first.');
+  let content: string;
+  try {
+    content = await fs.promises.readFile(file, 'utf-8');
+  } catch {
+    throw new Error(`Could not read ${file}`);
+  }
+  const g = await uploadGist(token, path.basename(file), content);
+  console.log(`Uploaded ${styleText('cyan', g.filename)} as a gist.`);
+  console.log();
+  console.log(`  run:  ${styleText('green', g.run)}`);
+  console.log(`  raw:  ${styleText('cyan', g.url)}`);
+}
+
+export interface ExecGistOptions {
+  yes: boolean;
+  binArgs: string[];
+}
+
+export async function execGist(id: string, options: ExecGistOptions) {
+  const { filename, content } = await fetchGist(id);
+
+  console.log();
+  console.log(`  ${styleText('cyan', `gist:${id}`)}  ${styleText('dim', filename)}`);
+  console.log(`  ${styleText('yellow', 'Unverified single-file gist.')} ${styleText('dim', `${SITE_URL}/g/${id}`)}`);
+  if (!options.yes) {
+    if (!isInteractive()) throw new Error('Refusing to run a gist without confirmation in a non-interactive shell, re-run with --yes.');
+    const ok = await confirm(`\n  ${styleText('yellow', 'Run this gist?')} ${styleText('dim', '[y/N]')} `, false);
+    if (!ok) {
+      console.log(styleText('dim', '  Aborted.'));
+      return;
+    }
+  }
+
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'antland-gist-'));
+  const tmp = path.join(dir, filename);
+  await fs.promises.writeFile(tmp, content);
+
+  let cmd: string;
+  let args: string[];
+  if (/\.(ts|mts|cts)$/i.test(filename)) {
+    cmd = 'npx';
+    args = ['-y', 'tsx', tmp, ...options.binArgs];
+  } else if (content.startsWith('#!') && process.platform !== 'win32') {
+    await fs.promises.chmod(tmp, 0o755);
+    cmd = tmp;
+    args = options.binArgs;
+  } else {
+    cmd = 'node';
+    args = [tmp, ...options.binArgs];
+  }
+
+  console.log();
+  console.log(`Running ${styleText('cyan', `gist:${id}`)} from ants.land...`);
+  try {
+    await exec(cmd, args, process.cwd());
+  } finally {
+    await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 export async function showPackageInfo(raw: string) {

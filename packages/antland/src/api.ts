@@ -84,3 +84,31 @@ export async function getScore(pkg: AntPackage): Promise<PackageScore | null> {
     return null;
   }
 }
+
+export interface GistUpload {
+  id: string;
+  filename: string;
+  url: string;
+  run: string;
+}
+
+export async function uploadGist(token: string, filename: string, content: string): Promise<GistUpload> {
+  const res = await fetch(`${SITE_URL}/api/gist`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ filename, content })
+  });
+  const data = (await res.json().catch(() => ({}))) as GistUpload & { error?: string };
+  if (!res.ok) throw new Error(data.error || `gist upload failed (${res.status})`);
+  return data;
+}
+
+export async function fetchGist(id: string): Promise<{ filename: string; content: string }> {
+  const res = await fetch(`${SITE_URL}/g/${encodeURIComponent(id)}`);
+  if (!res.ok) {
+    await res.body?.cancel();
+    throw new Error(`Gist "${id}" not found`);
+  }
+  const filename = res.headers.get('x-gist-filename') || `${id}.js`;
+  return { filename, content: await res.text() };
+}

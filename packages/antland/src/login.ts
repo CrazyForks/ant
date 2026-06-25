@@ -82,6 +82,18 @@ export async function logout() {
   console.log(`${styleText('green', 'Logged out')}. Removed the ants.land token from ~/.npmrc`);
 }
 
+export async function readToken(): Promise<string | null> {
+  const npmrc = path.join(os.homedir(), '.npmrc');
+  const prefix = `//${REGISTRY_HOST}/:_authToken=`;
+  try {
+    const content = await fs.promises.readFile(npmrc, 'utf-8');
+    const line = content.split('\n').find(l => l.startsWith(prefix));
+    return line ? line.slice(prefix.length).trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 async function saveToken(token: string) {
   const npmrc = path.join(os.homedir(), '.npmrc');
   const prefix = `//${REGISTRY_HOST}/:_authToken=`;

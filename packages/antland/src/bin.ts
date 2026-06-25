@@ -3,7 +3,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parseArgs } from 'node:util';
-import { execPackage, install, publish, remove, runScript, showPackageInfo } from './commands';
+import { execGist, execPackage, install, publish, remove, runScript, showPackageInfo, uploadGistFile } from './commands';
 import { login, logout } from './login';
 import { AntPackage, ExecError, prettyTime, setDebug, styleText } from './utils';
 import type { PkgManagerName } from './pkg_manager';
@@ -32,7 +32,8 @@ ${row([
   ['i, install, add', 'Install one or more ants.land packages'],
   ['r, uninstall, remove', 'Remove one or more packages'],
   ['publish', 'Publish the current package to ants.land'],
-  ['npx, exec, x', 'Run a package binary after a safety check'],
+  ['npx, exec, x', 'Run a package binary (or gist:<id>) after a safety check'],
+  ['gist <file>', 'Upload a single file; run it with `npx gist:<id>`'],
   ['login', 'Authorize this device (saves a publish token).'],
   ['logout', 'Remove the saved ants.land token.'],
   ['info, show, view', 'Show package information']
@@ -117,10 +118,19 @@ if (!isExecCmd && (args.length === 0 || args.some(a => a === '-h' || a === '--he
     }
     const target = rest[i];
     if (!target) {
-      console.error(styleText('red', 'Missing package to run. Usage: antland npx <pkg>[@version] [args...]'));
+      console.error(styleText('red', 'Missing package to run. Usage: antland npx <pkg>[@version] [args...] (or gist:<id>)'));
       process.exit(1);
     }
-    run(() => execPackage(target, { yes, binArgs: rest.slice(i + 1), pkgManagerName: pkgManagerFrom(ours) }));
+    const binArgs = rest.slice(i + 1);
+    if (target.startsWith('gist:')) run(() => execGist(target.slice('gist:'.length), { yes, binArgs }));
+    else run(() => execPackage(target, { yes, binArgs, pkgManagerName: pkgManagerFrom(ours) }));
+  } else if (cmd === 'gist') {
+    const file = args[1];
+    if (!file) {
+      console.error(styleText('red', 'Missing file. Usage: antland gist <file>'));
+      process.exit(1);
+    }
+    run(() => uploadGistFile(file));
   } else if (cmd === 'login') {
     run(() => login());
   } else if (cmd === 'logout') {
