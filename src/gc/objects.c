@@ -5,6 +5,7 @@
 #include "internal.h"
 
 #include "silver/engine.h"
+#include "modules/async_hooks.h"
 #include "modules/regex.h"
 #include "modules/generator.h"
 #include "modules/collections.h"
@@ -526,6 +527,7 @@ static inline void gc_mark_promise_handler(ant_t *js, const promise_handler_t *h
   gc_mark_value(js, h->onFulfilled);
   gc_mark_value(js, h->onRejected);
   gc_mark_value(js, h->nextPromise);
+  async_hooks_async_resource_mark(js, h->async_resource, gc_mark_value);
   
   if (h->await_coro) gc_mark_coroutine(js, h->await_coro);
 }
@@ -559,6 +561,7 @@ static void gc_mark_roots(ant_t *js) {
   gc_mark_value(js, js->current_func);
   gc_mark_value(js, js->thrown_value);
   gc_mark_value(js, js->thrown_stack);
+  async_hooks_async_resource_mark(js, js->current_async_resource, gc_mark_value);
   gc_mark_value(js, js->length_str);
 
   if (rt && rt->js == js)
@@ -578,6 +581,7 @@ static void gc_mark_roots(ant_t *js) {
 
   gc_visit_roots(js, gc_mark_value);
   gc_mark_timers(js, gc_mark_value);
+  gc_mark_async_hooks(js, gc_mark_value);
   gc_mark_atomics(js, gc_mark_value);
   gc_mark_fetch(js, gc_mark_value);
   gc_mark_fs(js, gc_mark_value);

@@ -14,6 +14,7 @@
 #include "gc/roots.h"
 #include "gc/modules.h"
 #include "modules/abort.h"
+#include "modules/async_hooks.h"
 #include "modules/timer.h"
 #include "modules/symbol.h"
 
@@ -21,15 +22,14 @@ typedef struct timer_entry {
   uv_timer_t handle;
   ant_value_t obj;
   ant_value_t callback;
+  async_resource_t *async_resource;
   ant_value_t *args;
   int nargs;
   int timer_id;
-  int active;
-  int closed;
-  int is_interval;
   uint64_t timeout_ms;
   struct timer_entry *next;
   struct timer_entry *prev;
+  uint8_t flags;
 } timer_entry_t;
 
 typedef struct microtask_entry {
@@ -37,11 +37,13 @@ typedef struct microtask_entry {
   ant_value_t promise;
   struct microtask_entry *next;
   uint8_t argc;
+  uint8_t flags;
   ant_value_t argv[];
 } microtask_entry_t;
 
 typedef struct immediate_entry {
   ant_value_t callback;
+  async_resource_t *async_resource;
   int immediate_id;
   int active;
   struct immediate_entry *next;
@@ -83,6 +85,66 @@ static struct {
 
 static ant_value_t g_timeout_proto = 0;
 static ant_value_t g_interval_proto = 0;
+
+#define TIMER_ENTRY_ACTIVE      0x01u
+#define TIMER_ENTRY_CLOSED      0x02u
+#define TIMER_ENTRY_IS_INTERVAL 0x04u
+#define MICROTASK_ENTRY_HAS_ASYNC_RESOURCE 0x01u
+
+static inline bool timer_entry_has_flag(const timer_entry_t *entry, uint8_t flag) {
+  return entry && (entry->flags & flag) != 0;
+}
+
+static inline void timer_entry_set_flag(timer_entry_t *entry, uint8_t flag, bool enabled) {
+  if (!entry) return;
+  if (enabled) entry->flags |= flag;
+  else entry->flags &= (uint8_t)~flag;
+}
+
+static inline bool microtask_entry_has_async_resource(const microtask_entry_t *entry) {
+  return entry && (entry->flags & MICROTASK_ENTRY_HAS_ASYNC_RESOURCE) != 0;
+}
+
+static inline async_resource_t **microtask_entry_async_resource_slot(microtask_entry_t *entry) {
+  return (async_resource_t **)((char *)entry + sizeof(*entry));
+}
+
+static inline async_resource_t *microtask_entry_async_resource(microtask_entry_t *entry) {
+  return microtask_entry_has_async_resource(entry)
+    ? *microtask_entry_async_resource_slot(entry)
+    : NULL;
+}
+
+static inline ant_value_t *microtask_entry_argv(microtask_entry_t *entry) {
+  char *base = (char *)entry + sizeof(*entry);
+  if (microtask_entry_has_async_resource(entry)) base += sizeof(async_resource_t *);
+  return (ant_value_t *)base;
+}
+
+static microtask_entry_t *microtask_entry_alloc(async_resource_t *resource, int argc) {
+  size_t extra_resource = resource ? sizeof(async_resource_t *) : 0;
+  size_t extra_args = argc > 0 ? (size_t)argc * sizeof(ant_value_t) : 0;
+  microtask_entry_t *entry = ant_calloc(sizeof(*entry) + extra_resource + extra_args);
+  if (!entry) return NULL;
+
+  if (resource) {
+    entry->flags |= MICROTASK_ENTRY_HAS_ASYNC_RESOURCE;
+    *microtask_entry_async_resource_slot(entry) = resource;
+  }
+  entry->argc = argc > 0 ? (uint8_t)argc : 0;
+  return entry;
+}
+
+static microtask_entry_t *microtask_entry_create(ant_t *js, const char *type, int argc) {
+  async_resource_t *resource = async_hooks_async_resource_capture_or_create(js, type);
+  microtask_entry_t *entry = microtask_entry_alloc(resource, argc);
+  if (!entry) async_hooks_async_resource_destroy(js, resource);
+  return entry;
+}
+
+static inline void microtask_entry_destroy_async_resource(ant_t *js, microtask_entry_t *entry) {
+  async_hooks_async_resource_destroy(js, microtask_entry_async_resource(entry));
+}
 
 static void add_timer_entry(timer_entry_t *entry) {
   entry->next = timer_state.timers;
@@ -130,9 +192,11 @@ static void timer_release_args(timer_entry_t *entry) {
   entry->nargs = 0;
 }
 
-static void timer_release_callback_args(timer_entry_t *entry) {
+static void timer_release_callback_args(ant_t *js, timer_entry_t *entry) {
   if (!entry) return;
   entry->callback = js_mkundef();
+  async_hooks_async_resource_destroy(js, entry->async_resource);
+  entry->async_resource = NULL;
   timer_release_args(entry);
 }
 
@@ -192,10 +256,10 @@ static ant_value_t timer_inspect(ant_t *js, ant_value_t *args, int nargs) {
 static ant_value_t js_timer_ref(ant_t *js, ant_value_t *args, int nargs) {
   ant_value_t this_obj = js_getthis(js);
   timer_entry_t *entry = find_timer_entry_by_id((int)js_getnum(js_get_slot(this_obj, SLOT_DATA)));
-  if (entry && !entry->closed && !uv_is_closing((uv_handle_t *)&entry->handle)) {
+  if (entry && !timer_entry_has_flag(entry, TIMER_ENTRY_CLOSED) && !uv_is_closing((uv_handle_t *)&entry->handle)) {
     int was_refed = uv_has_ref((const uv_handle_t *)&entry->handle);
     uv_ref((uv_handle_t *)&entry->handle);
-    if (entry->active && !was_refed) timer_state.active_refed_timer_count++;
+    if (timer_entry_has_flag(entry, TIMER_ENTRY_ACTIVE) && !was_refed) timer_state.active_refed_timer_count++;
   }
   return this_obj;
 }
@@ -203,17 +267,17 @@ static ant_value_t js_timer_ref(ant_t *js, ant_value_t *args, int nargs) {
 static ant_value_t js_timer_unref(ant_t *js, ant_value_t *args, int nargs) {
   ant_value_t this_obj = js_getthis(js);
   timer_entry_t *entry = find_timer_entry_by_id((int)js_getnum(js_get_slot(this_obj, SLOT_DATA)));
-  if (entry && !entry->closed && !uv_is_closing((uv_handle_t *)&entry->handle)) {
+  if (entry && !timer_entry_has_flag(entry, TIMER_ENTRY_CLOSED) && !uv_is_closing((uv_handle_t *)&entry->handle)) {
     int was_refed = uv_has_ref((const uv_handle_t *)&entry->handle);
     uv_unref((uv_handle_t *)&entry->handle);
-    if (entry->active && was_refed) timer_state.active_refed_timer_count--;
+    if (timer_entry_has_flag(entry, TIMER_ENTRY_ACTIVE) && was_refed) timer_state.active_refed_timer_count--;
   }
   return this_obj;
 }
 
 static ant_value_t js_timer_has_ref(ant_t *js, ant_value_t *args, int nargs) {
   timer_entry_t *entry = find_timer_entry_by_id((int)js_getnum(js_get_slot(js_getthis(js), SLOT_DATA)));
-  if (!entry || entry->closed || uv_is_closing((uv_handle_t *)&entry->handle)) return js_false;
+  if (!entry || timer_entry_has_flag(entry, TIMER_ENTRY_CLOSED) || uv_is_closing((uv_handle_t *)&entry->handle)) return js_false;
   return js_bool(uv_has_ref((const uv_handle_t *)&entry->handle) != 0);
 }
 
@@ -228,17 +292,17 @@ static void timer_close_cb(uv_handle_t *h) {
   if (!entry) return;
   if (timer_entry_is_registered(entry)) remove_timer_entry(entry);
   
-  entry->closed = 1;
-  entry->active = 0;
+  timer_entry_set_flag(entry, TIMER_ENTRY_CLOSED, true);
+  timer_entry_set_flag(entry, TIMER_ENTRY_ACTIVE, false);
   entry->obj = js_mkundef();
-  timer_release_callback_args(entry);
+  timer_release_callback_args(timer_state.js, entry);
   free(entry);
 }
 
 static void timer_close_entry(timer_entry_t *entry) {
-  if (!entry || entry->closed) return;
-  if (entry->active) {
-    entry->active = 0;
+  if (!entry || timer_entry_has_flag(entry, TIMER_ENTRY_CLOSED)) return;
+  if (timer_entry_has_flag(entry, TIMER_ENTRY_ACTIVE)) {
+    timer_entry_set_flag(entry, TIMER_ENTRY_ACTIVE, false);
     timer_state.active_timer_count--;
     if (uv_has_ref((const uv_handle_t *)&entry->handle))
       timer_state.active_refed_timer_count--;
@@ -278,12 +342,18 @@ static ant_value_t timer_make_object(
 
 static void timer_callback(uv_timer_t *handle) {
   timer_entry_t *entry = (timer_entry_t *)handle->data;
-  if (!entry || entry->closed || !timer_entry_is_registered(entry) || !entry->active) return;
+  if (
+    !entry ||
+    timer_entry_has_flag(entry, TIMER_ENTRY_CLOSED) ||
+    !timer_entry_is_registered(entry) ||
+    !timer_entry_has_flag(entry, TIMER_ENTRY_ACTIVE)
+  ) return;
   
   ant_t *js = timer_state.js;
   ant_value_t callback = entry->callback;
-  if (!entry->is_interval) {
-    entry->active = 0;
+  async_resource_t *async_resource = entry->async_resource;
+  if (!timer_entry_has_flag(entry, TIMER_ENTRY_IS_INTERVAL)) {
+    timer_entry_set_flag(entry, TIMER_ENTRY_ACTIVE, false);
     timer_state.active_timer_count--;
     if (uv_has_ref((const uv_handle_t *)&entry->handle))
       timer_state.active_refed_timer_count--;
@@ -292,9 +362,19 @@ static void timer_callback(uv_timer_t *handle) {
   GC_ROOT_SAVE(root_mark, js);
   GC_ROOT_PIN(js, callback);
   for (int i = 0; i < entry->nargs; i++) GC_ROOT_PIN(js, entry->args[i]);
+  bool restore_resource = async_resource || js->current_async_resource;
+  async_resource_t *previous_resource = restore_resource
+    ? async_hooks_async_resource_swap(js, async_resource)
+    : NULL;
+  async_hooks_emit_before(js, async_resource);
   sv_vm_call(js->vm, js, callback, js_mkundef(), entry->args, entry->nargs, NULL, false);
+  async_hooks_emit_after(js, async_resource);
+  if (restore_resource) async_hooks_async_resource_swap(js, previous_resource);
   GC_ROOT_RESTORE(js, root_mark);
-  if (!entry->is_interval && !entry->active) timer_release_callback_args(entry);
+  if (
+    !timer_entry_has_flag(entry, TIMER_ENTRY_IS_INTERVAL) &&
+    !timer_entry_has_flag(entry, TIMER_ENTRY_ACTIVE)
+  ) timer_release_callback_args(js, entry);
   process_microtasks(js);
 }
 
@@ -302,16 +382,17 @@ static ant_value_t js_timer_refresh(ant_t *js, ant_value_t *args, int nargs) {
   ant_value_t this_obj = js_getthis(js);
   
   timer_entry_t *entry = find_timer_entry_by_id((int)js_getnum(js_get_slot(this_obj, SLOT_DATA)));
-  if (!entry || entry->closed || uv_is_closing((uv_handle_t *)&entry->handle)) return this_obj;
+  if (!entry || timer_entry_has_flag(entry, TIMER_ENTRY_CLOSED) || uv_is_closing((uv_handle_t *)&entry->handle)) return this_obj;
 
-  if (!entry->active) {
+  if (!timer_entry_has_flag(entry, TIMER_ENTRY_ACTIVE)) {
     if (vtype(entry->callback) == T_UNDEF) {
       entry->callback = js_get(js, this_obj, "callback");
       if (!is_callable(entry->callback)) return this_obj;
+      entry->async_resource = async_hooks_async_resource_capture_or_create(js, "Timeout");
       if (timer_copy_args_from_object(js, entry, this_obj) != 0)
         return js_mkerr(js, "failed to allocate timer args");
     }
-    entry->active = 1;
+    timer_entry_set_flag(entry, TIMER_ENTRY_ACTIVE, true);
     timer_state.active_timer_count++;
     if (uv_has_ref((const uv_handle_t *)&entry->handle))
       timer_state.active_refed_timer_count++;
@@ -321,7 +402,7 @@ static ant_value_t js_timer_refresh(ant_t *js, ant_value_t *args, int nargs) {
     &entry->handle,
     timer_callback,
     entry->timeout_ms,
-    entry->is_interval ? entry->timeout_ms : 0
+    timer_entry_has_flag(entry, TIMER_ENTRY_IS_INTERVAL) ? entry->timeout_ms : 0
   );
   
   return this_obj;
@@ -349,10 +430,11 @@ static ant_value_t js_set_timeout(ant_t *js, ant_value_t *args, int nargs) {
   uv_timer_init(uv_default_loop(), &entry->handle);
   entry->handle.data = entry;
   entry->callback = callback;
+  entry->async_resource = async_hooks_async_resource_capture_or_create(js, "Timeout");
   entry->timer_id = timer_state.next_timer_id++;
-  entry->active = 1;
-  entry->closed = 0;
-  entry->is_interval = 0;
+  timer_entry_set_flag(entry, TIMER_ENTRY_ACTIVE, true);
+  timer_entry_set_flag(entry, TIMER_ENTRY_CLOSED, false);
+  timer_entry_set_flag(entry, TIMER_ENTRY_IS_INTERVAL, false);
   entry->timeout_ms = ms;
   
   add_timer_entry(entry);
@@ -385,10 +467,11 @@ static ant_value_t js_set_interval(ant_t *js, ant_value_t *args, int nargs) {
   uv_timer_init(uv_default_loop(), &entry->handle);
   entry->handle.data = entry;
   entry->callback = callback;
+  entry->async_resource = async_hooks_async_resource_capture_or_create(js, "Timeout");
   entry->timer_id = timer_state.next_timer_id++;
-  entry->active = 1;
-  entry->closed = 0;
-  entry->is_interval = 1;
+  timer_entry_set_flag(entry, TIMER_ENTRY_ACTIVE, true);
+  timer_entry_set_flag(entry, TIMER_ENTRY_CLOSED, false);
+  timer_entry_set_flag(entry, TIMER_ENTRY_IS_INTERVAL, true);
   entry->timeout_ms = ms;
   
   add_timer_entry(entry);
@@ -405,7 +488,7 @@ static ant_value_t js_clear_timeout(ant_t *js, ant_value_t *args, int nargs) {
   int timer_id = timer_id_from_arg(js, args[0]);
   
   for (timer_entry_t *entry = timer_state.timers; entry != NULL; entry = entry->next) {
-  if (entry->timer_id == timer_id && !entry->closed) {
+  if (entry->timer_id == timer_id && !timer_entry_has_flag(entry, TIMER_ENTRY_CLOSED)) {
     timer_close_entry(entry);
     break;
   }}
@@ -427,6 +510,7 @@ static ant_value_t js_set_immediate(ant_t *js, ant_value_t *args, int nargs) {
   }
   
   entry->callback = callback;
+  entry->async_resource = async_hooks_async_resource_capture_or_create(js, "Immediate");
   entry->immediate_id = timer_state.next_immediate_id++;
   entry->active = 1;
   entry->next = NULL;
@@ -674,13 +758,12 @@ empty:
 }
 
 void queue_microtask(ant_t *js, ant_value_t callback) {
-  microtask_entry_t *entry = ant_calloc(sizeof(microtask_entry_t));
+  microtask_entry_t *entry = microtask_entry_create(js, "Microtask", 0);
   if (entry == NULL) return;
   
   entry->callback = callback;
   entry->promise = js_mkundef();
   entry->next = NULL;
-  entry->argc = 0;
   
   queue_microtask_entry(&timer_state.microtasks, &timer_state.microtasks_tail, entry);
 }
@@ -688,26 +771,25 @@ void queue_microtask(ant_t *js, ant_value_t callback) {
 void queue_microtask_with_args(ant_t *js, ant_value_t callback, ant_value_t *args, int nargs) {
   if (nargs <= 0) { queue_microtask(js, callback); return; }
   
-  microtask_entry_t *entry = ant_calloc(sizeof(microtask_entry_t) + (size_t)nargs * sizeof(ant_value_t));
+  microtask_entry_t *entry = microtask_entry_create(js, "Microtask", nargs);
   if (entry == NULL) return;
   
   entry->callback = callback;
   entry->promise = js_mkundef();
   entry->next = NULL;
-  entry->argc = (uint8_t)nargs;
   
-  for (int i = 0; i < nargs; i++) entry->argv[i] = args[i];
+  ant_value_t *argv = microtask_entry_argv(entry);
+  for (int i = 0; i < nargs; i++) argv[i] = args[i];
   queue_microtask_entry(&timer_state.microtasks, &timer_state.microtasks_tail, entry);
 }
 
 void queue_next_tick(ant_t *js, ant_value_t callback) {
-  microtask_entry_t *entry = ant_calloc(sizeof(microtask_entry_t));
+  microtask_entry_t *entry = microtask_entry_create(js, "TickObject", 0);
   if (entry == NULL) return;
 
   entry->callback = callback;
   entry->promise = js_mkundef();
   entry->next = NULL;
-  entry->argc = 0;
 
   queue_microtask_entry(&timer_state.next_ticks, &timer_state.next_ticks_tail, entry);
 }
@@ -715,22 +797,22 @@ void queue_next_tick(ant_t *js, ant_value_t callback) {
 void queue_next_tick_with_args(ant_t *js, ant_value_t callback, ant_value_t *args, int nargs) {
   if (nargs <= 0) { queue_next_tick(js, callback); return; }
 
-  microtask_entry_t *entry = ant_calloc(sizeof(microtask_entry_t) + (size_t)nargs * sizeof(ant_value_t));
+  microtask_entry_t *entry = microtask_entry_create(js, "TickObject", nargs);
   if (entry == NULL) return;
 
   entry->callback = callback;
   entry->promise = js_mkundef();
   entry->next = NULL;
-  entry->argc = (uint8_t)nargs;
 
-  for (int i = 0; i < nargs; i++) entry->argv[i] = args[i];
+  ant_value_t *argv = microtask_entry_argv(entry);
+  for (int i = 0; i < nargs; i++) argv[i] = args[i];
   queue_microtask_entry(&timer_state.next_ticks, &timer_state.next_ticks_tail, entry);
 }
 
 void queue_promise_trigger(ant_t *js, ant_value_t promise) {
   if (!js_mark_promise_trigger_queued(js, promise)) return;
 
-  microtask_entry_t *entry = ant_calloc(sizeof(microtask_entry_t));
+  microtask_entry_t *entry = microtask_entry_alloc(NULL, 0);
   if (entry == NULL) {
     js_mark_promise_trigger_dequeued(js, promise);
     return;
@@ -760,10 +842,19 @@ static inline void process_microtask_entry(ant_t *js, microtask_entry_t *entry) 
 
   GC_ROOT_SAVE(root_mark, js);
   ant_value_t callback = entry->callback;
+  async_resource_t *async_resource = microtask_entry_async_resource(entry);
+  ant_value_t *argv = microtask_entry_argv(entry);
   GC_ROOT_PIN(js, callback);
   
-  for (uint8_t i = 0; i < entry->argc; i++) GC_ROOT_PIN(js, entry->argv[i]);
-  sv_vm_call(js->vm, js, callback, js_mkundef(), entry->argv, entry->argc, NULL, false);
+  for (uint8_t i = 0; i < entry->argc; i++) GC_ROOT_PIN(js, argv[i]);
+  bool restore_resource = async_resource || js->current_async_resource;
+  async_resource_t *previous_resource = restore_resource
+    ? async_hooks_async_resource_swap(js, async_resource)
+    : NULL;
+  async_hooks_emit_before(js, async_resource);
+  sv_vm_call(js->vm, js, callback, js_mkundef(), argv, entry->argc, NULL, false);
+  async_hooks_emit_after(js, async_resource);
+  if (restore_resource) async_hooks_async_resource_swap(js, previous_resource);
   GC_ROOT_RESTORE(js, root_mark);
 }
 
@@ -793,6 +884,7 @@ while (batch != NULL) {
   batch = entry->next;
   timer_state.microtasks_processing = batch;
   process_microtask_entry(js, entry);
+  microtask_entry_destroy_async_resource(js, entry);
   free(entry);
 }}
 
@@ -802,6 +894,7 @@ while (batch != NULL) {
   batch = entry->next;
   timer_state.next_ticks_processing = batch;
   process_microtask_entry(js, entry);
+  microtask_entry_destroy_async_resource(js, entry);
   free(entry);
 }}
 
@@ -861,11 +954,22 @@ while (timer_state.immediates != NULL) {
   }
   
   if (entry->active) {
+    GC_ROOT_SAVE(root_mark, js);
+    GC_ROOT_PIN(js, entry->callback);
     ant_value_t args[0];
+    bool restore_resource = entry->async_resource || js->current_async_resource;
+    async_resource_t *previous_resource = restore_resource
+      ? async_hooks_async_resource_swap(js, entry->async_resource)
+      : NULL;
+    async_hooks_emit_before(js, entry->async_resource);
     sv_vm_call(js->vm, js, entry->callback, js_mkundef(), args, 0, NULL, false);
+    async_hooks_emit_after(js, entry->async_resource);
+    if (restore_resource) async_hooks_async_resource_swap(js, previous_resource);
+    GC_ROOT_RESTORE(js, root_mark);
     process_microtasks(js);
   }
   
+  async_hooks_async_resource_destroy(js, entry->async_resource);
   free(entry);
 }}
 
@@ -952,32 +1056,42 @@ void gc_mark_timers(ant_t *js, gc_mark_fn mark) {
   if (is_object_type(g_timeout_proto)) mark(js, g_timeout_proto);
   if (is_object_type(g_interval_proto)) mark(js, g_interval_proto);
   for (timer_entry_t *t = timer_state.timers; t; t = t->next) {
-    if (!t->active) continue;
+    if (!timer_entry_has_flag(t, TIMER_ENTRY_ACTIVE)) continue;
     if (is_object_type(t->obj)) mark(js, t->obj);
     mark(js, t->callback);
+    async_hooks_async_resource_mark(js, t->async_resource, mark);
     for (int i = 0; i < t->nargs; i++) mark(js, t->args[i]);
   }
   for (microtask_entry_t *m = timer_state.microtasks; m; m = m->next) {
+    ant_value_t *argv = microtask_entry_argv(m);
     mark(js, m->callback);
     mark(js, m->promise);
-    for (uint8_t i = 0; i < m->argc; i++) mark(js, m->argv[i]);
+    async_hooks_async_resource_mark(js, microtask_entry_async_resource(m), mark);
+    for (uint8_t i = 0; i < m->argc; i++) mark(js, argv[i]);
   }
   for (microtask_entry_t *m = timer_state.microtasks_processing; m; m = m->next) {
+    ant_value_t *argv = microtask_entry_argv(m);
     mark(js, m->callback);
     mark(js, m->promise);
-    for (uint8_t i = 0; i < m->argc; i++) mark(js, m->argv[i]);
+    async_hooks_async_resource_mark(js, microtask_entry_async_resource(m), mark);
+    for (uint8_t i = 0; i < m->argc; i++) mark(js, argv[i]);
   }
   for (microtask_entry_t *m = timer_state.next_ticks; m; m = m->next) {
+    ant_value_t *argv = microtask_entry_argv(m);
     mark(js, m->callback);
     mark(js, m->promise);
-    for (uint8_t i = 0; i < m->argc; i++) mark(js, m->argv[i]);
+    async_hooks_async_resource_mark(js, microtask_entry_async_resource(m), mark);
+    for (uint8_t i = 0; i < m->argc; i++) mark(js, argv[i]);
   }
   for (microtask_entry_t *m = timer_state.next_ticks_processing; m; m = m->next) {
+    ant_value_t *argv = microtask_entry_argv(m);
     mark(js, m->callback);
     mark(js, m->promise);
-    for (uint8_t i = 0; i < m->argc; i++) mark(js, m->argv[i]);
+    async_hooks_async_resource_mark(js, microtask_entry_async_resource(m), mark);
+    for (uint8_t i = 0; i < m->argc; i++) mark(js, argv[i]);
   }
   for (immediate_entry_t *i = timer_state.immediates; i; i = i->next) {
     mark(js, i->callback);
+    async_hooks_async_resource_mark(js, i->async_resource, mark);
   }
 }

@@ -21,6 +21,7 @@ typedef struct promise_handler {
   ant_value_t onFulfilled;
   ant_value_t onRejected;
   ant_value_t nextPromise;
+  struct async_resource *async_resource;
   struct coroutine *await_coro;
 } promise_handler_t;
 

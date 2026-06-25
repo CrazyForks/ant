@@ -34,6 +34,7 @@
 #include "silver/compiler.h"
 #include "silver/engine.h"
 #include "silver/ops/using.h"
+#include "modules/async_hooks.h"
 #include "modules/regex.h"
 
 #include <uv.h>
@@ -200,8 +201,21 @@ static inline promise_handler_t *promise_handler_at(ant_promise_state_t *pd, uin
   return (promise_handler_t *)utarray_eltptr(pd->handlers, (unsigned int)index);
 }
 
-static inline void promise_handlers_clear(ant_promise_state_t *pd) {
+static inline void promise_handler_dispose(ant_t *js, promise_handler_t *handler) {
+  if (!handler) return;
+  async_hooks_async_resource_destroy(js, handler->async_resource);
+  handler->async_resource = NULL;
+}
+
+static inline void promise_handlers_clear(ant_t *js, ant_promise_state_t *pd) {
   if (!pd) return;
+  if (pd->handler_count == 1) promise_handler_dispose(js, &pd->inline_handler);  
+  else if (pd->handler_count > 1 && pd->handlers) {
+    promise_handler_t *h = NULL;
+    while ((h = (promise_handler_t *)utarray_next(pd->handlers, h))) 
+      promise_handler_dispose(js, h);
+  }
+  
   pd->handler_count = 0;
   pd->inline_handler = (promise_handler_t){ 0 };
   if (pd->handlers) utarray_clear(pd->handlers);
@@ -14126,8 +14140,13 @@ js_await_result_t js_promise_await_coroutine(ant_t *js, ant_value_t promise, cor
     return result;
   }
 
-  promise_handler_t h = { js_mkundef(), js_mkundef(), js_mkundef(), coro };
+  promise_handler_t h = {
+    js_mkundef(), js_mkundef(), js_mkundef(),
+    async_hooks_async_resource_capture_or_create(js, "PROMISE"), coro
+  };
+  
   if (!promise_handler_append(pd, &h)) {
+    promise_handler_dispose(js, &h);
     result.state = JS_AWAIT_ERROR;
     result.value = js_mkerr(js, "out of memory");
     return result;
@@ -14162,10 +14181,19 @@ void js_process_promise_handlers(ant_t *js, ant_value_t promise) {
     promise_handler_t *h = promise_handler_at(pd, i);
     if (!h) continue;
     
+    bool restore_resource = h->async_resource || js->current_async_resource;
+    async_resource_t *previous_resource = restore_resource
+      ? async_hooks_async_resource_swap(js, h->async_resource)
+      : NULL;
+    
+    async_hooks_emit_before(js, h->async_resource);
+
     if (h->await_coro) {
       coroutine_t *await_coro = h->await_coro;
       h->await_coro = NULL;
       settle_and_resume_coroutine(js, await_coro, val, state != 1);
+      async_hooks_emit_after(js, h->async_resource);
+      if (restore_resource) async_hooks_async_resource_swap(js, previous_resource);
       continue;
     }
     
@@ -14173,6 +14201,8 @@ void js_process_promise_handlers(ant_t *js, ant_value_t promise) {
     if (vtype(handler) != T_FUNC && vtype(handler) != T_CFUNC) {
       if (state == 1) js_resolve_promise(js, h->nextPromise, val);
       else js_reject_promise(js, h->nextPromise, val);
+      async_hooks_emit_after(js, h->async_resource);
+      if (restore_resource) async_hooks_async_resource_swap(js, previous_resource);
       continue;
     }
     
@@ -14187,6 +14217,8 @@ void js_process_promise_handlers(ant_t *js, ant_value_t promise) {
     
     if (!is_err(res)) {
       js_resolve_promise(js, h->nextPromise, res);
+      async_hooks_emit_after(js, h->async_resource);
+      if (restore_resource) async_hooks_async_resource_swap(js, previous_resource);
       continue;
     }
     
@@ -14197,10 +14229,12 @@ void js_process_promise_handlers(ant_t *js, ant_value_t promise) {
     js->thrown_value = js_mkundef();
     js->thrown_stack = js_mkundef();
     js_reject_promise(js, h->nextPromise, reject_val);
+    async_hooks_emit_after(js, h->async_resource);
+    if (restore_resource) async_hooks_async_resource_swap(js, previous_resource);
   }
 
   pd->processing = false;
-  promise_handlers_clear(pd);
+  promise_handlers_clear(js, pd);
   gc_unroot_pending_promise(js_obj_ptr(promise));
 }
 
@@ -14234,9 +14268,13 @@ void js_resolve_promise(ant_t *js, ant_value_t p, ant_value_t val) {
     }
 
     pd->trigger_parent = val;
-
-    promise_handler_t h = { js_mkundef(), js_mkundef(), p, NULL };
+    promise_handler_t h = {
+      js_mkundef(), js_mkundef(), p,
+      async_hooks_async_resource_capture_or_create(js, "PROMISE"), NULL
+    };
+    
     if (!promise_handler_append(src_pd, &h)) {
+      promise_handler_dispose(js, &h);
       pd->state = 2;
       pd->value = js_mkerr(js, "out of memory");
       gc_write_barrier(js, js_obj_ptr(js_as_obj(p)), pd->value);
@@ -14498,8 +14536,13 @@ static ant_value_t builtin_promise_then(ant_t *js, ant_value_t *args, int nargs)
 
   ant_promise_state_t *pd = get_promise_data(js, p, false);
   if (pd) {
-    promise_handler_t h = { onFulfilled, onRejected, nextP, NULL };
+    promise_handler_t h = {
+      onFulfilled, onRejected, nextP,
+      async_hooks_async_resource_capture_or_create(js, "PROMISE"), NULL
+    };
+    
     if (!promise_handler_append(pd, &h)) {
+      promise_handler_dispose(js, &h);
       GC_ROOT_RESTORE(js, root_mark);
       return js_mkerr(js, "out of memory");
     }
@@ -17393,6 +17436,10 @@ ant_t *js_create_dynamic() {
 
 void js_destroy(ant_t *js) {
   if (js == NULL) return;  
+  
+  async_hooks_async_resource_release(js->current_async_resource);
+  js->current_async_resource = NULL;
+
   if (js->vm) {
     sv_vm_destroy(js->vm);
     js->vm = NULL;

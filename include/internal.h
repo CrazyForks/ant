@@ -247,8 +247,11 @@ struct ant_isolate_t {
   #endif
 
   uint32_t vm_exec_depth;
+  uint64_t next_async_id;
   bool microtasks_draining;
+
   struct coroutine *active_async_coro;
+  struct async_resource *current_async_resource;
 
   struct {
     ant_value_t *items;
