@@ -3,7 +3,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parseArgs } from 'node:util';
-import { execGist, execPackage, install, publish, remove, runScript, showPackageInfo, uploadGistFile } from './commands';
+import { execSnippet, execPackage, install, publish, remove, runScript, showPackageInfo, uploadSnippetFile } from './commands';
 import { login, logout } from './login';
 import { AntPackage, ExecError, prettyTime, setDebug, styleText } from './utils';
 import type { PkgManagerName } from './pkg_manager';
@@ -32,8 +32,8 @@ ${row([
   ['i, install, add', 'Install one or more ants.land packages'],
   ['r, uninstall, remove', 'Remove one or more packages'],
   ['publish', 'Publish the current package to ants.land'],
-  ['npx, exec, x', 'Run a package binary (or gist:<id>) after a safety check'],
-  ['gist <file>', 'Upload a single file; run it with `npx gist:<id>`'],
+  ['npx, exec, x', 'Run a package binary (or snippet:<id>) after a safety check'],
+  ['snippet <file>', 'Upload a single file (--private optional); run with npx snippet:<id>'],
   ['login', 'Authorize this device (saves a publish token).'],
   ['logout', 'Remove the saved ants.land token.'],
   ['info, show, view', 'Show package information']
@@ -118,19 +118,22 @@ if (!isExecCmd && (args.length === 0 || args.some(a => a === '-h' || a === '--he
     }
     const target = rest[i];
     if (!target) {
-      console.error(styleText('red', 'Missing package to run. Usage: antland npx <pkg>[@version] [args...] (or gist:<id>)'));
+      console.error(styleText('red', 'Missing package to run. Usage: antland npx <pkg>[@version] [args...] (or snippet:<id>)'));
       process.exit(1);
     }
     const binArgs = rest.slice(i + 1);
-    if (target.startsWith('gist:')) run(() => execGist(target.slice('gist:'.length), { yes, binArgs }));
+    const snippetPrefix = target.startsWith('snippet:') ? 'snippet:' : target.startsWith('gist:') ? 'gist:' : null;
+    if (snippetPrefix) run(() => execSnippet(target.slice(snippetPrefix.length), { yes, binArgs }));
     else run(() => execPackage(target, { yes, binArgs, pkgManagerName: pkgManagerFrom(ours) }));
-  } else if (cmd === 'gist') {
-    const file = args[1];
+  } else if (cmd === 'snippet' || cmd === 'gist') {
+    const rest = args.slice(1);
+    const isPrivate = rest.includes('--private');
+    const file = rest.find(a => !a.startsWith('-'));
     if (!file) {
-      console.error(styleText('red', 'Missing file. Usage: antland gist <file>'));
+      console.error(styleText('red', 'Missing file. Usage: antland snippet <file> [--private]'));
       process.exit(1);
     }
-    run(() => uploadGistFile(file));
+    run(() => uploadSnippetFile(file, { private: isPrivate }));
   } else if (cmd === 'login') {
     run(() => login());
   } else if (cmd === 'logout') {

@@ -85,30 +85,31 @@ export async function getScore(pkg: AntPackage): Promise<PackageScore | null> {
   }
 }
 
-export interface GistUpload {
+export interface SnippetUpload {
   id: string;
   filename: string;
   url: string;
   run: string;
+  private: boolean;
 }
 
-export async function uploadGist(token: string, filename: string, content: string): Promise<GistUpload> {
-  const res = await fetch(`${SITE_URL}/api/gist`, {
+export async function uploadSnippet(token: string, filename: string, content: string, isPrivate: boolean): Promise<SnippetUpload> {
+  const res = await fetch(`${SITE_URL}/api/snippet`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-    body: JSON.stringify({ filename, content })
+    body: JSON.stringify({ filename, content, private: isPrivate })
   });
-  const data = (await res.json().catch(() => ({}))) as GistUpload & { error?: string };
-  if (!res.ok) throw new Error(data.error || `gist upload failed (${res.status})`);
+  const data = (await res.json().catch(() => ({}))) as SnippetUpload & { error?: string };
+  if (!res.ok) throw new Error(data.error || `snippet upload failed (${res.status})`);
   return data;
 }
 
-export async function fetchGist(id: string): Promise<{ filename: string; content: string }> {
-  const res = await fetch(`${SITE_URL}/g/${encodeURIComponent(id)}`);
+export async function fetchSnippet(id: string, token?: string | null): Promise<{ filename: string; content: string }> {
+  const res = await fetch(`${SITE_URL}/s/${encodeURIComponent(id)}`, token ? { headers: { authorization: `Bearer ${token}` } } : undefined);
   if (!res.ok) {
     await res.body?.cancel();
-    throw new Error(`Gist "${id}" not found`);
+    throw new Error(`Snippet "${id}" not found`);
   }
-  const filename = res.headers.get('x-gist-filename') || `${id}.js`;
+  const filename = res.headers.get('x-snippet-filename') || `${id}.js`;
   return { filename, content: await res.text() };
 }

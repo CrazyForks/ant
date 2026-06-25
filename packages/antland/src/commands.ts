@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { AntPackage, confirm, exec, getNewLineChars, isInteractive, styleText, timeAgo } from './utils';
 import { Bun, getPkgManager, YarnBerry, type InstallMode, type PkgManagerName } from './pkg_manager';
-import { getPackument, getScore, getTarballUrl, resolveVersion, uploadGist, fetchGist, REGISTRY_URL, SITE_URL, type PackageScore } from './api';
+import { getPackument, getScore, getTarballUrl, resolveVersion, uploadSnippet, fetchSnippet, REGISTRY_URL, SITE_URL, type PackageScore } from './api';
 import { readToken } from './login';
 
 const NPMRC_FILE = '.npmrc';
@@ -183,7 +183,7 @@ export async function execPackage(raw: string, options: ExecOptions) {
   await pkgManager.dlx(tarball, options.binArgs);
 }
 
-export async function uploadGistFile(file: string) {
+export async function uploadSnippetFile(file: string, options: { private: boolean }) {
   const token = await readToken();
   if (!token) throw new Error('Not logged in. Run `antland login` first.');
   let content: string;
@@ -192,34 +192,36 @@ export async function uploadGistFile(file: string) {
   } catch {
     throw new Error(`Could not read ${file}`);
   }
-  const g = await uploadGist(token, path.basename(file), content);
-  console.log(`Uploaded ${styleText('cyan', g.filename)} as a gist.`);
+  const s = await uploadSnippet(token, path.basename(file), content, options.private);
+  console.log(`Uploaded ${styleText('cyan', s.filename)} as a ${s.private ? 'private' : 'public'} snippet.`);
   console.log();
-  console.log(`  run:  ${styleText('green', g.run)}`);
-  console.log(`  raw:  ${styleText('cyan', g.url)}`);
+  console.log(`  run:  ${styleText('green', s.run)}`);
+  console.log(`  raw:  ${styleText('cyan', s.url)}`);
 }
 
-export interface ExecGistOptions {
+export interface ExecSnippetOptions {
   yes: boolean;
   binArgs: string[];
 }
 
-export async function execGist(id: string, options: ExecGistOptions) {
-  const { filename, content } = await fetchGist(id);
+export async function execSnippet(id: string, options: ExecSnippetOptions) {
+  // send the saved token so a private snippet runs for its owner
+  const token = await readToken();
+  const { filename, content } = await fetchSnippet(id, token);
 
   console.log();
-  console.log(`  ${styleText('cyan', `gist:${id}`)}  ${styleText('dim', filename)}`);
-  console.log(`  ${styleText('yellow', 'Unverified single-file gist.')} ${styleText('dim', `${SITE_URL}/g/${id}`)}`);
+  console.log(`  ${styleText('cyan', `snippet:${id}`)}  ${styleText('dim', filename)}`);
+  console.log(`  ${styleText('yellow', 'Unverified single-file snippet.')} ${styleText('dim', `${SITE_URL}/s/${id}`)}`);
   if (!options.yes) {
-    if (!isInteractive()) throw new Error('Refusing to run a gist without confirmation in a non-interactive shell, re-run with --yes.');
-    const ok = await confirm(`\n  ${styleText('yellow', 'Run this gist?')} ${styleText('dim', '[y/N]')} `, false);
+    if (!isInteractive()) throw new Error('Refusing to run a snippet without confirmation in a non-interactive shell, re-run with --yes.');
+    const ok = await confirm(`\n  ${styleText('yellow', 'Run this snippet?')} ${styleText('dim', '[y/N]')} `, false);
     if (!ok) {
       console.log(styleText('dim', '  Aborted.'));
       return;
     }
   }
 
-  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'antland-gist-'));
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'antland-snippet-'));
   const tmp = path.join(dir, filename);
   await fs.promises.writeFile(tmp, content);
 
@@ -238,7 +240,7 @@ export async function execGist(id: string, options: ExecGistOptions) {
   }
 
   console.log();
-  console.log(`Running ${styleText('cyan', `gist:${id}`)} from ants.land...`);
+  console.log(`Running ${styleText('cyan', `snippet:${id}`)} from ants.land...`);
   try {
     await exec(cmd, args, process.cwd());
   } finally {
