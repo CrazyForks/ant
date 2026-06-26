@@ -7,6 +7,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <ctype.h>
+#include <math.h>
 #include <uthash.h>
 #include <uv.h>
 
@@ -42,6 +43,7 @@
 #define DEFAULT_PROMPT "> "
 #define DEFAULT_HISTORY_SIZE 30
 #define DEFAULT_TAB_SIZE 8
+#define MAX_SAFE_ARRAY_LENGTH 9007199254740991ULL
 
 typedef struct {
   char **lines;
@@ -98,6 +100,29 @@ static const char *rl_render_prompt(const rl_interface_t *iface) {
   return iface->active_prompt ? iface->active_prompt : iface->prompt;
 }
 
+static int rl_normalize_history_capacity(int capacity) {
+  if (capacity <= 0) return DEFAULT_HISTORY_SIZE;
+  return capacity > MAX_HISTORY ? MAX_HISTORY : capacity;
+}
+
+static int rl_history_capacity_from_value(ant_value_t value) {
+  if (vtype(value) != T_NUM) return DEFAULT_HISTORY_SIZE;
+
+  double n = js_getnum(value);
+  if (!isfinite(n) || n <= 0) return DEFAULT_HISTORY_SIZE;
+  if (n > MAX_HISTORY) return MAX_HISTORY;
+  return (int)n;
+}
+
+static unsigned long long rl_history_length_from_value(ant_value_t value) {
+  if (vtype(value) != T_NUM) return 0;
+
+  double n = js_getnum(value);
+  if (!isfinite(n) || n <= 0) return 0;
+  if (n > (double)MAX_SAFE_ARRAY_LENGTH) return MAX_SAFE_ARRAY_LENGTH;
+  return (unsigned long long)n;
+}
+
 static void rl_set_active_prompt(rl_interface_t *iface, const char *prompt) {
   if (!iface) return;
   free(iface->active_prompt);
@@ -111,8 +136,9 @@ static void rl_clear_active_prompt(rl_interface_t *iface) {
 }
 
 static void rl_history_init(rl_history_t *hist, int capacity) {
-  hist->capacity = capacity > 0 ? capacity : DEFAULT_HISTORY_SIZE;
-  hist->lines = calloc(hist->capacity, sizeof(char*));
+  hist->capacity = rl_normalize_history_capacity(capacity);
+  hist->lines = calloc((size_t)hist->capacity, sizeof(char*));
+  if (!hist->lines) hist->capacity = 0;
   hist->count = 0;
   hist->current = -1;
 }
@@ -133,6 +159,7 @@ static void rl_history_remove_at(rl_history_t *hist, int index) {
 static void rl_history_add(rl_history_t *hist, const char *line, bool remove_duplicates) {
   int duplicate_index = -1;
 
+  if (!hist || !hist->lines || hist->capacity <= 0) return;
   if (!line || line[0] == '\0') return;
   if (!remove_duplicates && hist->count > 0 && strcmp(hist->lines[hist->count - 1], line) == 0) return;
 
@@ -146,7 +173,10 @@ static void rl_history_add(rl_history_t *hist, const char *line, bool remove_dup
   if (duplicate_index >= 0) rl_history_remove_at(hist, duplicate_index);
   if (hist->count >= hist->capacity) rl_history_remove_at(hist, 0);
 
-  hist->lines[hist->count++] = strdup(line);
+  char *copy = strdup(line);
+  if (!copy) return;
+
+  hist->lines[hist->count++] = copy;
   hist->current = hist->count;
 }
 
@@ -294,12 +324,22 @@ static rl_interface_t *find_interface_by_id(uint64_t id) {
   return iface;
 }
 
+static void set_line_buffer(rl_interface_t *iface, const char *line) {
+  if (!iface || !iface->line_buffer || !line) return;
+
+  size_t len = strlen(line);
+  if (len >= MAX_LINE_LENGTH) len = MAX_LINE_LENGTH - 1;
+
+  memcpy(iface->line_buffer, line, len);
+  iface->line_buffer[len] = '\0';
+  iface->line_len = (int)len;
+  iface->line_pos = iface->line_len;
+}
+
 static void handle_history_up(rl_interface_t *iface) {
   const char *hist_line = rl_history_prev(&iface->history);
   if (hist_line) {
-    strcpy(iface->line_buffer, hist_line);
-    iface->line_len = (int)strlen(iface->line_buffer);
-    iface->line_pos = iface->line_len;
+    set_line_buffer(iface, hist_line);
     refresh_line(iface);
   }
 }
@@ -307,9 +347,7 @@ static void handle_history_up(rl_interface_t *iface) {
 static void handle_history_down(rl_interface_t *iface) {
   const char *hist_line = rl_history_next(&iface->history);
   if (hist_line) {
-    strcpy(iface->line_buffer, hist_line);
-    iface->line_len = (int)strlen(iface->line_buffer);
-    iface->line_pos = iface->line_len;
+    set_line_buffer(iface, hist_line);
     refresh_line(iface);
   }
 }
@@ -1233,6 +1271,14 @@ static ant_value_t rl_create_interface(ant_t *js, ant_value_t *args, int nargs) 
   iface->prompt = strdup(DEFAULT_PROMPT);
   iface->active_prompt = NULL;
   iface->line_buffer = calloc(MAX_LINE_LENGTH, 1);
+  
+  if (!iface->prompt || !iface->line_buffer) {
+    free(iface->prompt);
+    free(iface->line_buffer);
+    free(iface);
+    return js_mkerr(js, "out of memory");
+  }
+  
   iface->line_pos = 0;
   iface->line_len = 0;
   iface->paused = false;
@@ -1255,9 +1301,7 @@ static ant_value_t rl_create_interface(ant_t *js, ant_value_t *args, int nargs) 
   iface->terminal = terminal_val == js_true || vtype(terminal_val) == T_UNDEF;
   
   ant_value_t history_size_val = js_get(js, options, "historySize");
-  iface->history_size = (vtype(history_size_val) == T_NUM) 
-    ? (int)js_getnum(history_size_val) 
-    : DEFAULT_HISTORY_SIZE;
+  iface->history_size = rl_history_capacity_from_value(history_size_val);
   
   ant_value_t remove_dup_val = js_get(js, options, "removeHistoryDuplicates");
   iface->remove_history_duplicates = js_truthy(js, remove_dup_val);
@@ -1287,13 +1331,16 @@ static ant_value_t rl_create_interface(ant_t *js, ant_value_t *args, int nargs) 
   ant_value_t history_val = js_get(js, options, "history");
   if (is_special_object(history_val)) {
     ant_value_t len_val = js_get(js, history_val, "length");
-    int len = (vtype(len_val) == T_NUM) ? (int)js_getnum(len_val) : 0;
+    unsigned long long len = rl_history_length_from_value(len_val);
     
     rl_history_init(&iface->history, iface->history_size);
+    unsigned long long window = (iface->history.capacity > 0)
+      ? (unsigned long long)iface->history.capacity : 0;
+    unsigned long long start = (window > 0 && len > window) ? len - window : 0;
     
-    for (int i = 0; i < len; i++) {
-      char key[16];
-      snprintf(key, sizeof(key), "%d", i);
+    for (unsigned long long i = start; i < len; i++) {
+      char key[32];
+      snprintf(key, sizeof(key), "%llu", i);
       ant_value_t item = js_get(js, history_val, key);
       if (vtype(item) == T_STR) {
         char *line = js_getstr(js, item, NULL);
