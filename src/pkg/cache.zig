@@ -437,17 +437,17 @@ pub const CacheDB = struct {
     return total;
   }
 
-  fn makeMetadataKey(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
-    return std.fmt.allocPrint(allocator, "m:{s}", .{name});
+  fn makeMetadataKey(allocator: std.mem.Allocator, registry_host: []const u8, name: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, "m:{s}:{s}", .{ registry_host, name });
   }
 
-  pub fn lookupMetadata(self: *CacheDB, name: []const u8, allocator: std.mem.Allocator) ?[]u8 {
+  pub fn lookupMetadata(self: *CacheDB, registry_host: []const u8, name: []const u8, allocator: std.mem.Allocator) ?[]u8 {
     var txn: ?*c.MDB_txn = null;
     if (c.mdb_txn_begin(self.env, null, c.MDB_RDONLY, &txn) != 0) {
       return null;
     } defer c.mdb_txn_abort(txn);
 
-    const meta_key = makeMetadataKey(self.allocator, name) catch return null;
+    const meta_key = makeMetadataKey(self.allocator, registry_host, name) catch return null;
     defer self.allocator.free(meta_key);
 
     var key = c.MDB_val{
@@ -470,7 +470,7 @@ pub const CacheDB = struct {
     return allocator.dupe(u8, json_data) catch null;
   }
 
-  pub fn insertMetadata(self: *CacheDB, name: []const u8, json_data: []const u8) !void {
+  pub fn insertMetadata(self: *CacheDB, registry_host: []const u8, name: []const u8, json_data: []const u8) !void {
     var stripped_len: usize = 0;
     const stripped_ptr = strip_npm_metadata(json_data.ptr, json_data.len, &stripped_len);
     defer if (stripped_ptr) |p| strip_metadata_free(p);
@@ -483,7 +483,7 @@ pub const CacheDB = struct {
     }
     errdefer c.mdb_txn_abort(txn);
 
-    const meta_key = try makeMetadataKey(self.allocator, name);
+    const meta_key = try makeMetadataKey(self.allocator, registry_host, name);
     defer self.allocator.free(meta_key);
 
     const value_size = @sizeOf(i64) + data_to_store.len;

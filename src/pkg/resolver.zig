@@ -1124,7 +1124,7 @@ pub const Resolver = struct {
         if (!self.metadata_cache.contains(spec.package_name)) {
           var loaded_from_disk = false;
           if (self.cache_db) |db| {
-            if (db.lookupMetadata(spec.package_name, self.allocator)) |json_data| {
+            if (db.lookupMetadata(self.http.registry_host, spec.package_name, self.allocator)) |json_data| {
               const metadata = PackageMetadata.parseFromJson(self.cache_allocator, json_data) catch {
                 self.allocator.free(json_data);
                 continue;
@@ -1176,7 +1176,7 @@ pub const Resolver = struct {
           if (has_error or data == null) return;
 
           if (ctx.resolver.cache_db) |db| {
-            db.insertMetadata(name, data.?) catch {};
+            db.insertMetadata(ctx.resolver.http.registry_host, name, data.?) catch {};
           }
 
           const metadata = PackageMetadata.parseFromJson(ctx.resolver.cache_allocator, data.?) catch return;
@@ -2220,7 +2220,7 @@ pub const Resolver = struct {
     }
 
     if (self.cache_db) |db| {
-      if (db.lookupMetadata(name, self.allocator)) |json_data| {
+      if (db.lookupMetadata(self.http.registry_host, name, self.allocator)) |json_data| {
         defer self.allocator.free(json_data);
         const metadata = PackageMetadata.parseFromJson(self.cache_allocator, json_data) catch {
           return self.fetchFromNetwork(name);
@@ -2253,7 +2253,7 @@ pub const Resolver = struct {
     defer self.allocator.free(json_data);
 
     if (self.cache_db) |db| {
-      db.insertMetadata(name, json_data) catch {};
+      db.insertMetadata(self.http.registry_host, name, json_data) catch {};
     }
 
     const metadata = try PackageMetadata.parseFromJson(self.cache_allocator, json_data);
@@ -2276,7 +2276,7 @@ pub const Resolver = struct {
 
     if (write_disk_cache) {
       if (self.cache_db) |db| {
-        db.insertMetadata(name, json_data) catch {};
+        db.insertMetadata(http.registry_host, name, json_data) catch {};
       }
     }
 
