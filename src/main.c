@@ -605,6 +605,7 @@ int main(int argc, char *argv[]) {
     }
 
     if (strcmp(arg, "-V") == 0 || strcmp(arg, "--verbose") == 0) pkg_verbose = true;
+    else if (strcmp(arg, "--force") == 0) pkg_force = true;
     else if (strcmp(arg, "--no-color") == 0) { crprintf_set_color(false); io_no_color = true; }
     else if (strncmp(arg, "--stack-size=", 13) == 0) sv_user_stack_size_kb = atoi(arg + 13);
     else if (strcmp(arg, "--sandbox-daemon") == 0) sandbox_daemon = true;

@@ -161,6 +161,7 @@ pub const PkgOptions = extern struct {
   progress_callback: ProgressCallback = null,
   user_data: ?*anyopaque = null,
   verbose: bool = false,
+  force: bool = false,
 };
 
 pub const CacheStats = extern struct {
@@ -1612,6 +1613,7 @@ fn installToolPackageNoLifecycle(
     &c.metadata_cache,
   );
   defer res.deinit();
+  res.force_refresh = c.options.force;
 
   res.setOnPackageResolved(InterleavedContext.onPackageResolved, &interleaved);
   try res.resolveFromPackageJson(package_json_path);
@@ -1769,6 +1771,7 @@ export fn pkg_resolve_and_install(
     registry,
     &c.metadata_cache,
   ); defer res.deinit();
+  res.force_refresh = c.options.force;
   res.setLockResolutionHash(resolution_hash);
 
   res.setOnPackageResolved(InterleavedContext.onPackageResolved, &interleaved);
@@ -2616,6 +2619,7 @@ export fn pkg_add(
     if (c.options.registry_url) |url| std.mem.span(url) else "https://registry.npmjs.org",
     &c.metadata_cache,
   ); defer res.deinit();
+  res.force_refresh = c.options.force;
 
   const resolved_pkg = res.resolve(pkg_name, version_constraint, 0) catch |err| {
     setResolveError(c, pkg_name, err);
@@ -2720,6 +2724,7 @@ export fn pkg_resolve_check_many(
     &c.metadata_cache,
   );
   defer res.deinit();
+  res.force_refresh = c.options.force;
 
   for (0..count) |i| {
     const spec_str = std.mem.span(package_specs[i]);
@@ -3181,6 +3186,7 @@ export fn pkg_add_many(
     if (c.options.registry_url) |url| std.mem.span(url) else "https://registry.npmjs.org",
     &c.metadata_cache,
   ); defer res.deinit();
+  res.force_refresh = c.options.force;
 
   res.resolve_shallow = true;
   const ResolvedEntry = struct {
@@ -4338,6 +4344,7 @@ export fn pkg_exec_temp(
     effective_registry,
     &c.metadata_cache,
   ); defer res.deinit();
+  res.force_refresh = c.options.force;
 
   res.setOnPackageResolved(InterleavedContext.onPackageResolved, &interleaved);
   res.resolveFromPackageJson(temp_pkg_json) catch |err| {

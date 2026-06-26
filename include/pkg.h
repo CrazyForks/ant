@@ -49,6 +49,7 @@ typedef struct {
   pkg_progress_cb progress_callback;
   void *user_data;
   bool verbose;
+  bool force;
 } pkg_options_t;
 
 typedef struct pkg_context pkg_context_t;

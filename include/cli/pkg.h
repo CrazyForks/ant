@@ -4,6 +4,7 @@
 #include <stdbool.h>
 
 extern bool pkg_verbose;
+extern bool pkg_force;
 
 int pkg_cmd_init(int argc, char **argv);
 int pkg_cmd_install(int argc, char **argv);

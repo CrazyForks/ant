@@ -920,6 +920,7 @@ pub const Resolver = struct {
   on_package_resolved_data: ?*anyopaque,
   lock_resolution_hash: u64,
   resolve_shallow: bool,
+  force_refresh: bool,
 
   pub fn init(
     allocator: std.mem.Allocator,
@@ -947,6 +948,7 @@ pub const Resolver = struct {
       .on_package_resolved_data = null,
       .lock_resolution_hash = 0,
       .resolve_shallow = false,
+      .force_refresh = false,
     };
   }
 
@@ -1128,18 +1130,20 @@ pub const Resolver = struct {
         if (!self.metadata_cache.contains(spec.package_name)) {
           var loaded_from_disk = false;
           if (self.cache_db) |db| {
-            if (db.lookupMetadata(self.http.registry_host, spec.package_name, self.allocator)) |json_data| {
-              const metadata = PackageMetadata.parseFromJson(self.cache_allocator, json_data) catch {
+            if (!self.force_refresh) {
+              if (db.lookupMetadata(self.http.registry_host, spec.package_name, self.allocator)) |json_data| {
+                const metadata = PackageMetadata.parseFromJson(self.cache_allocator, json_data) catch {
+                  self.allocator.free(json_data);
+                  continue;
+                };
                 self.allocator.free(json_data);
-                continue;
-              };
-              self.allocator.free(json_data);
-              const cache_key = self.cache_allocator.dupe(u8, spec.package_name) catch continue;
-              self.metadata_cache.put(cache_key, metadata) catch {
-                self.cache_allocator.free(cache_key);
-                continue;
-              };
-              loaded_from_disk = true;
+                const cache_key = self.cache_allocator.dupe(u8, spec.package_name) catch continue;
+                self.metadata_cache.put(cache_key, metadata) catch {
+                  self.cache_allocator.free(cache_key);
+                  continue;
+                };
+                loaded_from_disk = true;
+              }
             }
           }
           if (!loaded_from_disk) {
@@ -2241,12 +2245,12 @@ pub const Resolver = struct {
       };
     }
 
-    if (self.cache_db) |db| {
+    if (self.cache_db) |db| if (!self.force_refresh) {
       if (try self.loadFromDiskCache(db, self.http.registry_host, name, "disk cache")) |metadata| return metadata;
       if (isAntsLandRegistry(self.registry_url)) {
         if (try self.loadFromDiskCache(db, NPM_FALLBACK_HOST, name, "npm fallback, disk cache")) |metadata| return metadata;
       }
-    }
+    };
 
     return self.fetchFromNetwork(name);
   }
@@ -2327,7 +2331,7 @@ pub const Resolver = struct {
     defer missing.deinit(self.allocator);
     for (names) |name| {
       if (self.metadata_cache.contains(name)) continue;
-      if (self.loadMetadataFromDisk(name)) continue;
+      if (!self.force_refresh and self.loadMetadataFromDisk(name)) continue;
       for (missing.items) |m| {
         if (std.mem.eql(u8, m, name)) break;
       } else missing.append(self.allocator, name) catch return;

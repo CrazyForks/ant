@@ -19,6 +19,7 @@
 
 // migrate this file to crprintf for colors
 bool pkg_verbose = false;
+bool pkg_force = false;
 
 static const char *ANT_LAND_REGISTRY = "npm.ants.land";
 static const char *NPM_REGISTRY = "registry.npmjs.org";
@@ -194,7 +195,8 @@ static pkg_options_t pkg_options_make(pkg_source_t source, pkg_progress_cb callb
     .max_connections = 6,
     .progress_callback = callback,
     .user_data = user_data,
-    .verbose = pkg_verbose
+    .verbose = pkg_verbose,
+    .force = pkg_force
   };
 }
 
@@ -1969,18 +1971,21 @@ int pkg_cmd_install(int argc, char **argv) {
   struct arg_str *pkgs = arg_strn(NULL, NULL, "<package[@version]>", 0, 100, NULL);
   struct arg_lit *global = arg_lit0("g", "global", "install globally");
   struct arg_lit *dev = arg_lit0("D", "save-dev", "add as devDependency");
+  struct arg_lit *force = arg_lit0(NULL, "force", "re-resolve, ignore cached metadata");
   struct arg_lit *help = arg_lit0("h", "help", "display help");
   struct arg_end *end = arg_end(5);
-  
-  void *argtable[] = { pkgs, global, dev, help, end };
+
+  void *argtable[] = { pkgs, global, dev, force, help, end };
   int nerrors = arg_parse(argc, argv, argtable);
-  
+  if (force->count > 0) pkg_force = true;
+
   int exitcode = EXIT_SUCCESS;
   if (help->count > 0) {
-    printf("Usage: ant install [packages...] [-g] [-D] [--verbose]\n\n");
+    printf("Usage: ant install [packages...] [-g] [-D] [--force] [--verbose]\n\n");
     printf("Install from lockfile, or add packages if specified.\n");
     printf("\nOptions:\n  -g, --global      Install globally to %s\n", get_global_dir());
     printf("  -D, --save-dev    Add as devDependency\n");
+    printf("      --force       Re-resolve from the registry, ignoring cached metadata\n");
   } else if (nerrors > 0) {
     arg_print_errors(stdout, end, "ant install");
     exitcode = EXIT_FAILURE;
@@ -1999,15 +2004,17 @@ int pkg_cmd_install(int argc, char **argv) {
 
 int pkg_cmd_update(int argc, char **argv) {
   struct arg_str *pkgs = arg_strn(NULL, NULL, "<package[@version]>", 0, 100, NULL);
+  struct arg_lit *force = arg_lit0(NULL, "force", "re-resolve, ignore cached metadata");
   struct arg_lit *help = arg_lit0("h", "help", "display help");
   struct arg_end *end = arg_end(5);
-  
-  void *argtable[] = { pkgs, help, end };
+
+  void *argtable[] = { pkgs, force, help, end };
   int nerrors = arg_parse(argc, argv, argtable);
-  
+  if (force->count > 0) pkg_force = true;
+
   int exitcode = EXIT_SUCCESS;
   if (help->count > 0) {
-    printf("Usage: ant update [packages...] [--verbose]\n\n");
+    printf("Usage: ant update [packages...] [--force] [--verbose]\n\n");
     printf("Re-resolve all dependencies, or upgrade specific packages in place.\n");
   } else if (nerrors > 0) {
     arg_print_errors(stdout, end, "ant update");
@@ -2024,18 +2031,21 @@ int pkg_cmd_add(int argc, char **argv) {
   struct arg_str *pkgs = arg_strn(NULL, NULL, "<package[@version]>", 1, 100, NULL);
   struct arg_lit *global = arg_lit0("g", "global", "install globally");
   struct arg_lit *dev = arg_lit0("D", "save-dev", "add as devDependency");
+  struct arg_lit *force = arg_lit0(NULL, "force", "re-resolve, ignore cached metadata");
   struct arg_lit *help = arg_lit0("h", "help", "display help");
   struct arg_end *end = arg_end(5);
-  
-  void *argtable[] = { pkgs, global, dev, help, end };
+
+  void *argtable[] = { pkgs, global, dev, force, help, end };
   int nerrors = arg_parse(argc, argv, argtable);
-  
+  if (force->count > 0) pkg_force = true;
+
   int exitcode = EXIT_SUCCESS;
   if (help->count > 0) {
     printf("Usage: ant add <package[@version]>... [options]\n\n");
     printf("Add packages to dependencies.\n");
     printf("\nOptions:\n  -g, --global      Install globally to %s\n", get_global_dir());
     printf("  -D, --save-dev    Add as devDependency\n");
+    printf("      --force       Re-resolve from the registry, ignoring cached metadata\n");
   } else if (nerrors > 0) {
     arg_print_errors(stdout, end, "ant add");
     exitcode = EXIT_FAILURE;
