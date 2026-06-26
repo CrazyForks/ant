@@ -491,6 +491,9 @@ pub const PkgContext = struct {
     const db = self.cache_db orelse return error.CacheError;
     var cache_hits = try db.batchLookup(integrities, arena_alloc);
     defer cache_hits.deinit();
+    // --force: treat every package as a miss so it is re-downloaded and
+    // re-extracted into the store rather than linked from the cached copy.
+    if (self.options.force) cache_hits.items = &.{};
     stage_start = trace.mark("cache lookup", stage_start);
 
     var hit_set = std.AutoHashMap(u32, u32).init(arena_alloc);
@@ -1516,7 +1519,7 @@ const InterleavedContext = struct {
       self.integrity_duplicates += 1; return;
     } self.queued_integrities.put(pkg.integrity, {}) catch return;
 
-    if (self.db.hasIntegrity(&pkg.integrity)) {
+    if (!self.pkg_ctx.options.force and self.db.hasIntegrity(&pkg.integrity)) {
       self.cache_hits += 1; return;
     } self.tarballs_queued += 1;
 
