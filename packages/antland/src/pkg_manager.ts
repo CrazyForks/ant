@@ -1,3 +1,6 @@
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import semiver from 'semiver';
 import { exec, findProjectDir, logDebug, styleText } from './utils';
 
@@ -21,12 +24,24 @@ export interface PackageManager {
   remove(ids: string[]): Promise<void>;
   runScript(script: string): Promise<void>;
   publish(args: string[]): Promise<void>;
-  dlx(spec: string, args: string[]): Promise<void>;
+  dlx(spec: string, args: string[], binName: string): Promise<void>;
   setConfigValue?(key: string, value: string): Promise<void>;
 }
 
 function npx(spec: string, args: string[], cwd: string) {
   return execWithLog('npx', ['-y', spec, ...args], cwd);
+}
+
+async function npmTarballDlx(spec: string, args: string[], cwd: string, binName: string) {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'antland-dlx-'));
+  const bin = path.join(dir, 'node_modules', '.bin', process.platform === 'win32' ? `${binName}.cmd` : binName);
+  try {
+    await exec('npm', ['install', '--prefix', dir, '--no-save', spec], cwd, undefined, true);
+    const binPath = process.platform === 'win32' ? bin : await fs.promises.realpath(bin).catch(() => bin);
+    await exec(binPath, args, cwd);
+  } finally {
+    await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 class Npm implements PackageManager {
@@ -43,8 +58,8 @@ class Npm implements PackageManager {
   async publish(args: string[]) {
     await execWithLog('npm', ['publish', ...args], this.cwd);
   }
-  async dlx(spec: string, args: string[]) {
-    await npx(spec, args, this.cwd);
+  async dlx(spec: string, args: string[], binName: string) {
+    await npmTarballDlx(spec, args, this.cwd, binName);
   }
 }
 
@@ -62,7 +77,7 @@ class Yarn implements PackageManager {
   async publish(args: string[]) {
     await execWithLog('yarn', ['npm', 'publish', ...args], this.cwd);
   }
-  async dlx(spec: string, args: string[]) {
+  async dlx(spec: string, args: string[], _binName: string) {
     await npx(spec, args, this.cwd);
   }
 }
@@ -71,7 +86,7 @@ export class YarnBerry extends Yarn {
   async setConfigValue(key: string, value: string) {
     await execWithLog('yarn', ['config', 'set', key, value], this.cwd);
   }
-  async dlx(spec: string, args: string[]) {
+  async dlx(spec: string, args: string[], _binName: string) {
     await execWithLog('yarn', ['dlx', spec, ...args], this.cwd);
   }
 }
@@ -90,7 +105,7 @@ class Pnpm implements PackageManager {
   async publish(args: string[]) {
     await execWithLog('pnpm', ['publish', ...args], this.cwd);
   }
-  async dlx(spec: string, args: string[]) {
+  async dlx(spec: string, args: string[], _binName: string) {
     await execWithLog('pnpm', ['dlx', spec, ...args], this.cwd);
   }
 }
@@ -109,8 +124,8 @@ export class Bun implements PackageManager {
   async publish(args: string[]) {
     await execWithLog('npm', ['publish', ...args], this.cwd);
   }
-  async dlx(spec: string, args: string[]) {
-    await npx(spec, args, this.cwd);
+  async dlx(spec: string, args: string[], binName: string) {
+    await npmTarballDlx(spec, args, this.cwd, binName);
   }
   async isNpmrcSupported() {
     const { stdout } = await exec('bun', ['--version'], this.cwd, undefined, true);

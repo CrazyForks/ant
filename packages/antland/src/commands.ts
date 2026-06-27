@@ -173,12 +173,24 @@ export interface ExecOptions extends BaseOptions {
   binArgs: string[];
 }
 
+function resolveBinName(pkg: AntPackage, bin: string | Record<string, string> | undefined): string {
+  const fallback = pkg.name;
+  if (typeof bin === 'string') return fallback;
+  if (!bin) return fallback;
+  if (bin[fallback]) return fallback;
+  const names = Object.keys(bin);
+  if (names.length === 1) return names[0];
+  return fallback;
+}
+
 export async function execPackage(raw: string, options: ExecOptions) {
   const pkg = AntPackage.from(raw);
   const meta = await getPackument(pkg);
   const version = resolveVersion(meta, pkg.version);
-  const tarball = meta.versions[version]?.dist?.tarball;
+  const info = meta.versions[version];
+  const tarball = info?.dist?.tarball;
   if (!tarball) throw new Error(`No tarball for ${pkg.id}@${version}`);
+  const binName = resolveBinName(pkg, info.bin);
 
   const score = await getScore(AntPackage.from(`${pkg.id}@${version}`));
   printSafetyReport(pkg.id, version, score);
@@ -195,7 +207,7 @@ export async function execPackage(raw: string, options: ExecOptions) {
   const { pkgManager } = await getPkgManager(process.cwd(), options.pkgManagerName);
   console.log();
   console.log(`Running ${styleText('cyan', `${pkg.id}@${version}`)} from ants.land...`);
-  await pkgManager.dlx(tarball, options.binArgs);
+  await pkgManager.dlx(tarball, options.binArgs, binName);
 }
 
 export async function uploadSnippetFile(file: string, options: { private: boolean }) {

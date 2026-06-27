@@ -14,6 +14,7 @@ export interface Packument {
       name: string;
       version: string;
       description?: string;
+      bin?: string | Record<string, string>;
       dist: { tarball: string; shasum?: string; integrity?: string };
     }
   >;
