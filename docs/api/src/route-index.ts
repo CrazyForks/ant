@@ -6,6 +6,7 @@ export function routeIndex(url: URL) {
     routes: {
       latest: route(url, '/v1/latest'),
       refresh: route(url, '/v1/refresh?branch={branch}&run_id={run_id}&revision={full_git_hash}'),
+      refresh_release_notes: route(url, '/v1/refresh-release-notes?version={version}'),
       version: {
         get_tag: route(url, '/v1/version/get-tag'),
         manifest: route(url, '/v1/version/{version}'),

@@ -17,9 +17,11 @@ import { resolveArch, resolveTarget } from './targets';
 import {
   BranchQuerySchema,
   DownloadParamsSchema,
+  ReleaseNotesQuerySchema,
   RefreshQuerySchema,
   VersionQuerySchema,
 } from './schemas';
+import { latestRelease, releaseByTag, releaseTagRevision } from './github';
 import {
   latestAntVersion,
   latestManifest,
@@ -106,6 +108,74 @@ app.post('/v1/refresh', async c => {
     refreshed: true,
     key: MANIFEST_KEY,
     artifact_count: manifestArtifacts(annotated).length,
+  });
+});
+
+app.post('/v1/refresh-release-notes', async c => {
+  const auth = c.req.header('Authorization') || '';
+  const expected = c.env.MANIFEST_REFRESH_TOKEN;
+  if (!expected || auth !== `Bearer ${expected}`) return c.json({ error: 'unauthorized' }, 401);
+
+  const query = ReleaseNotesQuerySchema.parse(c.req.query());
+  const release = query.version
+    ? await releaseByTag(c.env, query.version)
+    : await latestRelease(c.env);
+  const releaseRevision = await releaseTagRevision(c.env, release);
+  if (query.revision && query.revision.toLowerCase() !== releaseRevision.toLowerCase()) {
+    throw new HttpError(
+      `release revision mismatch: requested=${query.revision} release=${releaseRevision}`,
+      409,
+    );
+  }
+
+  const object = await c.env.DOWNLOADS.get(MANIFEST_KEY);
+  if (!object) return c.json({ error: 'manifest missing', key: MANIFEST_KEY }, 404);
+
+  const manifest = parseMutableManifest(await object.text());
+  const ant = Array.isArray(manifest.ant) ? manifest.ant : [];
+  let matched = 0;
+  let changed = 0;
+
+  for (const entry of ant) {
+    if (!isMutableRecord(entry)) continue;
+    if (entry.available !== true) continue;
+    if (typeof entry.revision !== 'string') continue;
+    if (entry.revision.toLowerCase() !== releaseRevision.toLowerCase()) continue;
+
+    matched++;
+    if (entry.release_notes_url !== release.html_url) {
+      entry.release_notes_url = release.html_url;
+      changed++;
+    }
+  }
+
+  if (matched === 0) {
+    throw new HttpError(`manifest does not contain Ant revision ${releaseRevision}`, 409);
+  }
+
+  await c.env.DOWNLOADS.put(MANIFEST_KEY, JSON.stringify(manifest, null, 2) + '\n', {
+    httpMetadata: {
+      contentType: 'application/json; charset=utf-8',
+      cacheControl: 'public, max-age=60',
+    },
+    customMetadata: {
+      ...(object.customMetadata || {}),
+      release_notes_cached_at: new Date().toISOString(),
+      release_notes_tag: release.tag_name,
+    },
+  });
+
+  return c.json({
+    ok: true,
+    refreshed: true,
+    key: MANIFEST_KEY,
+    release: {
+      tag_name: release.tag_name,
+      html_url: release.html_url,
+      revision: releaseRevision,
+    },
+    matched,
+    changed,
   });
 });
 
@@ -245,6 +315,21 @@ function isAvailableArtifact(value: unknown): value is ResolvedArtifact {
       (value as { artifact?: unknown }).artifact &&
       (value as { source?: unknown }).source,
   );
+}
+
+function parseMutableManifest(json: string): { ant?: unknown[]; [key: string]: unknown } {
+  try {
+    const manifest = JSON.parse(json);
+    if (!isMutableRecord(manifest)) throw new Error('manifest root is not an object');
+    return manifest as { ant?: unknown[]; [key: string]: unknown };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'invalid JSON';
+    throw new HttpError(`cached manifest was not valid JSON: ${message}`, 500);
+  }
+}
+
+function isMutableRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
 export default app;

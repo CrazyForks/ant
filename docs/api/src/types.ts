@@ -100,6 +100,7 @@ export type ResolvedArtifact = {
   kind: ArtifactKind;
   name: string;
   version?: string;
+  release_notes_url?: string;
   build_timestamp?: number;
   revision?: string;
   download_url: string;

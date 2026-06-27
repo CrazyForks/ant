@@ -491,8 +491,6 @@ pub const PkgContext = struct {
     const db = self.cache_db orelse return error.CacheError;
     var cache_hits = try db.batchLookup(integrities, arena_alloc);
     defer cache_hits.deinit();
-    // --force: treat every package as a miss so it is re-downloaded and
-    // re-extracted into the store rather than linked from the cached copy.
     if (self.options.force) cache_hits.items = &.{};
     stage_start = trace.mark("cache lookup", stage_start);
 
@@ -558,6 +556,7 @@ pub const PkgContext = struct {
         pkg_idx: u32,
         integrity: [64]u8,
         cache_path: []const u8,
+        staging_path: ?[]const u8,
         pkg_name: []const u8,
         version_str: []const u8,
         direct: bool,
@@ -580,6 +579,12 @@ pub const PkgContext = struct {
         const version_str = pkg.versionString(arena_alloc, lf.string_table) catch continue;
         const cache_path = db.getPackagePath(&pkg.integrity, arena_alloc) catch continue;
 
+        var staging_path: ?[]const u8 = null;
+        if (self.options.force) {
+          staging_path = std.fmt.allocPrint(arena_alloc, "{s}.force-tmp", .{cache_path}) catch continue;
+          std.Io.Dir.cwd().deleteTree(io, staging_path.?) catch {};
+        }
+
         const msg = std.fmt.allocPrintSentinel(arena_alloc, "{s}", .{pkg_name}, 0) catch continue;
         self.reportProgress(.fetching, @intCast(i), @intCast(misses.items.len), msg);
 
@@ -587,15 +592,16 @@ pub const PkgContext = struct {
           debug.log("  queue: {s}@{s}", .{ pkg_name, version_str });
         }
 
-        const ext = extractor.Extractor.init(self.allocator, cache_path) catch continue;
+        const ext = extractor.Extractor.init(self.allocator, staging_path orelse cache_path) catch continue;
         const parent_path_str = pkg.parent_path.slice(lf.string_table);
         const bins = lockfilePackageBins(arena_alloc, &lf, pkg_idx) catch &[_]linker.PackageBin{};
-        
+
         extract_contexts[valid_count] = .{
           .ext = ext,
           .pkg_idx = pkg_idx,
           .integrity = pkg.integrity,
           .cache_path = cache_path,
+          .staging_path = staging_path,
           .pkg_name = pkg_name,
           .version_str = version_str,
           .direct = pkg.flags.direct,
@@ -663,9 +669,25 @@ pub const PkgContext = struct {
 
         if (ctx.has_error or !ctx.completed or !ctx.ext.isComplete()) {
           error_count += 1;
+          if (ctx.staging_path) |staging| std.Io.Dir.cwd().deleteTree(io, staging) catch {};
           debug.log("  error: {s}", .{ctx.pkg_name});
           continue;
         }
+
+        // --force: swap staging into the real store path now that it built cleanly.
+        if (ctx.staging_path) |staging| {
+          const from_z = arena_alloc.dupeZ(u8, staging) catch { error_count += 1; std.Io.Dir.cwd().deleteTree(io, staging) catch {}; continue; };
+          const to_z = arena_alloc.dupeZ(u8, ctx.cache_path) catch { error_count += 1; continue; };
+          std.Io.Dir.cwd().deleteTree(io, ctx.cache_path) catch {};
+          if (std.c.rename(from_z.ptr, to_z.ptr) != 0) {
+            db.delete(&ctx.integrity) catch {};
+            std.Io.Dir.cwd().deleteTree(io, staging) catch {};
+            error_count += 1;
+            debug.log("  error: {s} (force swap failed)", .{ctx.pkg_name});
+            continue;
+          }
+        }
+
         success_count += 1;
 
         const msg = std.fmt.allocPrintSentinel(arena_alloc, "{s}", .{ctx.pkg_name}, 0) catch continue;
@@ -1446,6 +1468,7 @@ const InterleavedExtractCtx = struct {
   ext: *extractor.Extractor,
   integrity: [64]u8,
   cache_path: []const u8,
+  staging_path: ?[]const u8,
   pkg_name: []const u8,
   version_str: []const u8,
   direct: bool,
@@ -1526,15 +1549,22 @@ const InterleavedContext = struct {
     const cache_path = self.db.getPackagePath(&pkg.integrity, self.arena_alloc) catch return;
     const version_str = pkg.version.format(self.arena_alloc) catch return;
 
-    const ext = extractor.Extractor.init(self.allocator, cache_path) catch return;
+    var staging_path: ?[]const u8 = null;
+    if (self.pkg_ctx.options.force) {
+      staging_path = std.fmt.allocPrint(self.arena_alloc, "{s}.force-tmp", .{cache_path}) catch return;
+      std.Io.Dir.cwd().deleteTree(io, staging_path.?) catch {};
+    }
+
+    const ext = extractor.Extractor.init(self.allocator, staging_path orelse cache_path) catch return;
     const ctx = self.arena_alloc.create(InterleavedExtractCtx) catch {
       ext.deinit(); return;
     };
-    
+
     ctx.* = .{
       .ext = ext,
       .integrity = pkg.integrity,
       .cache_path = cache_path,
+      .staging_path = staging_path,
       .pkg_name = pkg.name.slice(),
       .version_str = version_str,
       .direct = pkg.direct,
@@ -1887,8 +1917,22 @@ export fn pkg_resolve_and_install(
   for (interleaved.extract_contexts.items) |ext_ctx| {
     if (ext_ctx.has_error or !ext_ctx.completed or !ext_ctx.ext.isComplete()) {
       error_count += 1;
+      if (ext_ctx.staging_path) |staging| std.Io.Dir.cwd().deleteTree(io, staging) catch {};
       debug.log("  error: {s}", .{ext_ctx.pkg_name}); continue;
     }
+
+    if (ext_ctx.staging_path) |staging| {
+      const from_z = arena_alloc.dupeZ(u8, staging) catch { error_count += 1; std.Io.Dir.cwd().deleteTree(io, staging) catch {}; continue; };
+      const to_z = arena_alloc.dupeZ(u8, ext_ctx.cache_path) catch { error_count += 1; continue; };
+      std.Io.Dir.cwd().deleteTree(io, ext_ctx.cache_path) catch {};
+      if (std.c.rename(from_z.ptr, to_z.ptr) != 0) {
+        interleaved.db.delete(&ext_ctx.integrity) catch {};
+        std.Io.Dir.cwd().deleteTree(io, staging) catch {};
+        error_count += 1;
+        debug.log("  error: {s} (force swap failed)", .{ext_ctx.pkg_name}); continue;
+      }
+    }
+
     success_count += 1;
 
     const stats = ext_ctx.ext.stats();

@@ -1,0 +1,41 @@
+name: Refresh Release Notes
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag to publish notes for, such as v12.1.094641eb.1. Defaults to the latest release.'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.release.tag_name || inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  refresh-release-notes:
+    name: Refresh release notes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refresh release notes
+        env:
+          MANIFEST_REFRESH_TOKEN: ${{ secrets.MANIFEST_REFRESH_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.version }}
+        if: ${{ env.MANIFEST_REFRESH_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+
+          args=()
+          if [[ -n "${RELEASE_TAG:-}" ]]; then
+            args+=(--data-urlencode "version=${RELEASE_TAG}")
+          fi
+
+          curl -fsS -X POST -G https://manifest.antjs.org/v1/refresh-release-notes \
+            "${args[@]}" \
+            -H "Authorization: Bearer ${MANIFEST_REFRESH_TOKEN}"

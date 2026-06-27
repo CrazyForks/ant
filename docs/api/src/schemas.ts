@@ -70,3 +70,8 @@ export const RefreshQuerySchema = BranchQuerySchema.extend({
   version: ArtifactVersionSchema.optional(),
   revision: ArtifactRevisionSchema.optional(),
 });
+
+export const ReleaseNotesQuerySchema = z.object({
+  version: ArtifactVersionSchema.optional(),
+  revision: ArtifactRevisionSchema.optional(),
+});

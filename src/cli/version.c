@@ -336,13 +336,10 @@ static int ant_manifest_select_latest(const char *json, size_t json_len, ant_lat
       if (!version || !download_url) break;
       snprintf(latest->version, sizeof(latest->version), "%s", version);
       snprintf(latest->download_url, sizeof(latest->download_url), "%s", download_url);
-      
-      yyjson_val *source = yyjson_obj_get(item, "source");
-      const char *source_type = version_json_string(source, "type");
-      const char *source_url = version_json_string(source, "html_url");
-      
-      if (source_type && strcmp(source_type, "release") == 0 && source_url)
-        snprintf(latest->release_notes_url, sizeof(latest->release_notes_url), "%s", source_url);
+
+      const char *release_notes_url = version_json_string(item, "release_notes_url");
+      if (release_notes_url)
+        snprintf(latest->release_notes_url, sizeof(latest->release_notes_url), "%s", release_notes_url);
       
       latest->build_timestamp = version_json_uint(item, "build_timestamp");
       yyjson_val *artifact = yyjson_obj_get(item, "artifact");
