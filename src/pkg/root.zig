@@ -361,6 +361,11 @@ pub const PkgContext = struct {
     self.last_error = self.allocator.dupeZ(u8, msg) catch null;
   }
 
+  pub fn clearError(self: *PkgContext) void {
+    if (self.last_error) |e| self.allocator.free(e);
+    self.last_error = null;
+  }
+
   fn getDefaultCacheDir(allocator: std.mem.Allocator) ![]const u8 {
     if (builtin.os.tag != .windows) {
       if (try getLegacyAntDirIfExists(allocator)) |dir| {
@@ -1164,6 +1169,10 @@ export fn pkg_install(
     std.mem.span(lockfile_path),
     std.mem.span(node_modules_path),
   ) catch |err| {
+    if (err == error.InvalidLockfile) {
+      c.clearError();
+      return pkg_resolve_and_install(ctx, package_json_path, lockfile_path, node_modules_path);
+    }
     return switch (err) {
       error.InvalidLockfile => .invalid_lockfile,
       error.CacheError => .cache_error,

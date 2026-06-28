@@ -3,7 +3,7 @@ const io = std.Io.Threaded.global_single_threaded.io();
 const builtin = @import("builtin");
 
 pub const MAGIC: u32 = 0x504B474C;
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 fn platformHash(value: []const u8) u32 {
   return @truncate(std.hash.Wyhash.hash(0, value));
