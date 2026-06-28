@@ -191,6 +191,44 @@ static ant_value_t server_exception_reason(ant_t *js, ant_value_t value) {
   return value;
 }
 
+static ant_value_t server_mk_listen_error(ant_t *js, int status, const server_runtime_t *server) {
+  const char *code = uv_err_name(status);
+  const char *message = uv_strerror(status);
+  ant_value_t props = js_mkobj(js);
+
+  if (!code) code = "UNKNOWN";
+  if (!message) message = "unknown error";
+
+  js_set(js, props, "code", js_mkstr(js, code, strlen(code)));
+  js_set(js, props, "errno", js_mknum((double)status));
+  js_set(js, props, "syscall", js_mkstr(js, "listen", 6));
+
+  if (server && server->unix_path) {
+    js_set(js, props, "path", js_mkstr(js, server->unix_path, strlen(server->unix_path)));
+    return js_mkerr_props(
+      js, JS_ERR_GENERIC, props,
+      "%s: %s, listen %s",
+      code, message, server->unix_path
+    );
+  }
+
+  if (server && server->hostname) {
+    js_set(js, props, "address", js_mkstr(js, server->hostname, strlen(server->hostname)));
+    js_set(js, props, "port", js_mknum((double)server->port));
+    return js_mkerr_props(
+      js, JS_ERR_GENERIC, props,
+      "%s: %s, listen %s:%d",
+      code, message, server->hostname, server->port
+    );
+  }
+
+  return js_mkerr_props(
+    js, JS_ERR_GENERIC, props,
+    "%s: %s, listen",
+    code, message
+  );
+}
+
 static void server_remove_request(server_runtime_t *server, server_request_t *req) {
   server_request_t **it = NULL;
   if (!server || !req) return;
@@ -1838,10 +1876,11 @@ ant_value_t server_start_from_export(ant_t *js, ant_value_t default_export) {
   }
   
   if (rc != 0) {
+    ant_value_t error = server_mk_listen_error(js, rc, server);
     free(server->unix_path);
     free(server->hostname);
     free(server);
-    return js_mkerr_typed(js, JS_ERR_TYPE, "%s", uv_strerror(rc));
+    return error;
   }
 
   server->port = ant_listener_port(&server->listener);
