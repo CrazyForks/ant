@@ -48,6 +48,13 @@ typedef struct {
 static void print_bin_callback(const char *name, void *user_data);
 static size_t package_name_from_spec(const char *spec, char *out, size_t out_size);
 
+static int set_ant_npm_user_agent(void) {
+  char user_agent[128];
+  int len = snprintf(user_agent, sizeof(user_agent), "ant/%s", ANT_VERSION);
+  if (len < 0 || (size_t)len >= sizeof(user_agent)) return -1;
+  return setenv("npm_config_user_agent", user_agent, 1);
+}
+
 static const char *pkg_source_name(pkg_source_t source) {
   return source == PKG_SOURCE_NPM ? "npm" : "land";
 }
@@ -2319,6 +2326,12 @@ int pkg_cmd_exec(int argc, char **argv) {
   exec_argv[idx] = NULL;
 
   const char *cmd = use_ant ? "ant" : bin_path;
+  if (set_ant_npm_user_agent() != 0) {
+    fprintf(stderr, "Error: failed to set npm_config_user_agent: %s\n", strerror(errno));
+    free(exec_argv);
+    return EXIT_FAILURE;
+  }
+
   execvp(cmd, exec_argv);
   int exec_errno = errno;
   free(exec_argv);
