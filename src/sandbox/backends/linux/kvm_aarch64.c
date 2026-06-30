@@ -19,6 +19,11 @@
 
 #define ANT_KVM_REG_ID_AA64PFR0_EL1 ARM64_SYS_REG(3, 0, 0, 4, 0)
 #define ANT_KVM_REG_MPIDR_EL1 ARM64_SYS_REG(3, 0, 0, 0, 5)
+#define ANT_KVM_REG_SPSR_EL1 ARM64_SYS_REG(3, 0, 4, 0, 0)
+#define ANT_KVM_REG_ELR_EL1 ARM64_SYS_REG(3, 0, 4, 0, 1)
+#define ANT_KVM_REG_ESR_EL1 ARM64_SYS_REG(3, 0, 5, 2, 0)
+#define ANT_KVM_REG_FAR_EL1 ARM64_SYS_REG(3, 0, 6, 0, 0)
+#define ANT_KVM_REG_VBAR_EL1 ARM64_SYS_REG(3, 0, 12, 0, 0)
 
 enum {
   ANT_KVM_AARCH64_DTB_MAX = 0x20000u,
@@ -416,7 +421,13 @@ static void ant_kvm_report_aarch64_regs(ant_hvf_vm_t *vm, const char *reason) {
   uint64_t pc = 0;
   uint64_t pstate = 0;
   uint64_t x0 = 0;
+  uint64_t x1 = 0;
   uint64_t sp_el1 = 0;
+  uint64_t spsr_el1 = 0;
+  uint64_t elr_el1 = 0;
+  uint64_t esr_el1 = 0;
+  uint64_t far_el1 = 0;
+  uint64_t vbar_el1 = 0;
   uint64_t kas_offset = 0;
   uint64_t kas_kern_offset = 0;
   uint64_t pcie_ecam_base = 0;
@@ -448,10 +459,22 @@ static void ant_kvm_report_aarch64_regs(ant_hvf_vm_t *vm, const char *reason) {
   (void)ant_kvm_get_one_reg64(
     vm,
     KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM_CORE |
+      KVM_REG_ARM_CORE_REG(regs.regs[1]),
+    &x1,
+    "x1"
+  );
+  (void)ant_kvm_get_one_reg64(
+    vm,
+    KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM_CORE |
       KVM_REG_ARM_CORE_REG(sp_el1),
     &sp_el1,
     "sp_el1"
   );
+  (void)ant_kvm_get_one_reg64(vm, ANT_KVM_REG_SPSR_EL1, &spsr_el1, "spsr_el1");
+  (void)ant_kvm_get_one_reg64(vm, ANT_KVM_REG_ELR_EL1, &elr_el1, "elr_el1");
+  (void)ant_kvm_get_one_reg64(vm, ANT_KVM_REG_ESR_EL1, &esr_el1, "esr_el1");
+  (void)ant_kvm_get_one_reg64(vm, ANT_KVM_REG_FAR_EL1, &far_el1, "far_el1");
+  (void)ant_kvm_get_one_reg64(vm, ANT_KVM_REG_VBAR_EL1, &vbar_el1, "vbar_el1");
   (void)ant_kvm_get_one_reg64(vm, KVM_REG_ARM_TIMER_CTL, &cntv_ctl, "cntv_ctl");
   (void)ant_kvm_get_one_reg64(vm, KVM_REG_ARM_TIMER_CVAL, &cntv_cval, "cntv_cval");
   (void)ant_kvm_get_one_reg64(vm, KVM_REG_ARM_TIMER_CNT, &cntvct, "cntvct");
@@ -467,7 +490,7 @@ static void ant_kvm_report_aarch64_regs(ant_hvf_vm_t *vm, const char *reason) {
   }
   fprintf(
     stderr,
-    "sandbox vm: %s pc=0x%llx low_pc=0x%llx kas_offset=0x%llx kas_kern_offset=0x%llx pcie_ecam_base=0x%llx pstate=0x%llx x0=0x%llx sp_el1=0x%llx cntv_ctl=0x%llx cntv_cval=0x%llx cntvct=0x%llx cntfrq=%llu id_aa64pfr0=0x%llx\n",
+    "sandbox vm: %s pc=0x%llx low_pc=0x%llx kas_offset=0x%llx kas_kern_offset=0x%llx pcie_ecam_base=0x%llx pstate=0x%llx x0=0x%llx x1=0x%llx sp_el1=0x%llx spsr_el1=0x%llx elr_el1=0x%llx esr_el1=0x%llx far_el1=0x%llx vbar_el1=0x%llx cntv_ctl=0x%llx cntv_cval=0x%llx cntvct=0x%llx cntfrq=%llu id_aa64pfr0=0x%llx\n",
     reason,
     (unsigned long long)pc,
     (unsigned long long)(kas_kern_offset ? pc - kas_kern_offset : (kas_offset ? pc - kas_offset : 0)),
@@ -476,7 +499,13 @@ static void ant_kvm_report_aarch64_regs(ant_hvf_vm_t *vm, const char *reason) {
     (unsigned long long)pcie_ecam_base,
     (unsigned long long)pstate,
     (unsigned long long)x0,
+    (unsigned long long)x1,
     (unsigned long long)sp_el1,
+    (unsigned long long)spsr_el1,
+    (unsigned long long)elr_el1,
+    (unsigned long long)esr_el1,
+    (unsigned long long)far_el1,
+    (unsigned long long)vbar_el1,
     (unsigned long long)cntv_ctl,
     (unsigned long long)cntv_cval,
     (unsigned long long)cntvct,
