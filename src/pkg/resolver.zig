@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const io = std.Io.Threaded.global_single_threaded.io();
 const lockfile = @import("lockfile.zig");
 const intern = @import("intern.zig");
@@ -7,6 +6,7 @@ const fetcher = @import("fetcher.zig");
 const json = @import("json.zig");
 const debug = @import("debug.zig");
 const cache = @import("cache.zig");
+const platform = @import("platform.zig");
 
 const NPM_FALLBACK_HOST = "registry.npmjs.org";
 
@@ -373,29 +373,11 @@ pub const VersionInfo = struct {
   }
 
   pub fn matchesPlatform(self: *const VersionInfo) bool {
-    const current_os = comptime switch (builtin.os.tag) {
-      .macos => "darwin",
-      .linux => "linux",
-      .windows => "win32",
-      .freebsd => "freebsd",
-      else => "unknown",
-    };
-
-    const current_cpu = comptime switch (builtin.cpu.arch) {
-      .aarch64 => "arm64",
-      .x86_64 => "x64",
-      .x86 => "ia32",
-      .arm => "arm",
-      else => "unknown",
-    };
-
-    const current_libc: ?[]const u8 = comptime if (builtin.os.tag != .linux) null else if (builtin.abi == .gnu or builtin.abi == .gnueabi or builtin.abi == .gnueabihf) "glibc" else if (builtin.abi == .musl or builtin.abi == .musleabi or builtin.abi == .musleabihf) "musl" else null;
-
-    if (self.os) |os_filter| if (!matchesFilter(os_filter, current_os)) return false;
-    if (self.cpu) |cpu_filter| if (!matchesFilter(cpu_filter, current_cpu)) return false;
+    if (self.os) |os_filter| if (!matchesFilter(os_filter, platform.osName())) return false;
+    if (self.cpu) |cpu_filter| if (!matchesFilter(cpu_filter, platform.cpuName())) return false;
 
     if (self.libc) |libc_filter| {
-      const libc = current_libc orelse return false;
+      const libc = platform.libcName() orelse return false;
       if (!matchesFilter(libc_filter, libc)) return false;
     }
 
@@ -537,31 +519,20 @@ fn optionalDependencyUsesNativePlatformName(name: []const u8) bool {
 }
 
 fn tokenMatchesCurrentOs(token: []const u8) bool {
-  return switch (builtin.os.tag) {
-    .macos => std.mem.eql(u8, token, "darwin") or std.mem.eql(u8, token, "macos"),
-    .linux => std.mem.eql(u8, token, "linux"),
-    .windows => std.mem.eql(u8, token, "win32") or std.mem.eql(u8, token, "windows"),
-    .freebsd => std.mem.eql(u8, token, "freebsd"),
-    else => false,
-  };
+  const os = platform.osName();
+  if (std.mem.eql(u8, token, os)) return true;
+  return (std.mem.eql(u8, os, "darwin") and std.mem.eql(u8, token, "macos")) or
+    (std.mem.eql(u8, os, "win32") and std.mem.eql(u8, token, "windows"));
 }
 
 fn tokenMatchesCurrentArch(token: []const u8) bool {
-  return switch (builtin.cpu.arch) {
-    .aarch64 => std.mem.eql(u8, token, "arm64"),
-    .x86_64 => std.mem.eql(u8, token, "x64"),
-    .x86 => std.mem.eql(u8, token, "ia32"),
-    .arm => std.mem.eql(u8, token, "arm"),
-    else => false,
-  };
+  return std.mem.eql(u8, token, platform.cpuName());
 }
 
 fn tokenMatchesCurrentLibc(token: []const u8) bool {
-  if (comptime builtin.os.tag != .linux) return false;
-  if (comptime builtin.abi == .musl or builtin.abi == .musleabi or builtin.abi == .musleabihf) {
-    return std.mem.eql(u8, token, "musl");
-  }
-  return std.mem.eql(u8, token, "gnu") or std.mem.eql(u8, token, "glibc");
+  const libc = platform.libcName() orelse return false;
+  if (std.mem.eql(u8, libc, "glibc")) return std.mem.eql(u8, token, "gnu") or std.mem.eql(u8, token, "glibc");
+  return std.mem.eql(u8, token, libc);
 }
 
 fn optionalDependencyNamePlatformMismatch(name: []const u8) bool {

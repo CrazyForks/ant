@@ -12,6 +12,7 @@ pub const resolver = @import("resolver.zig");
 pub const intern = @import("intern.zig");
 pub const json = @import("json.zig");
 pub const debug = @import("debug.zig");
+pub const platform = @import("platform.zig");
 
 const global_allocator: std.mem.Allocator = std.heap.c_allocator;
 
@@ -899,7 +900,7 @@ fn resolutionCacheKey(
   hasher.update(&[_]u8{0});
   hasher.update(@tagName(builtin.cpu.arch));
   hasher.update(&[_]u8{0});
-  hasher.update(@tagName(builtin.abi));
+  hasher.update(platform.abiName());
 
   for (entries.items) |entry| {
     hasher.update(&[_]u8{0, entry.section, 0});
@@ -1092,7 +1093,7 @@ fn installStateMarkerPath(allocator: std.mem.Allocator, node_modules_path: []con
 fn installStateMarkerContent(allocator: std.mem.Allocator, graph_hash: u64) ![]const u8 {
   return std.fmt.allocPrint(allocator,
     "ant-install-state-v1\n{x}\n{s}\n{s}\n{s}\n",
-    .{ graph_hash, @tagName(builtin.os.tag), @tagName(builtin.cpu.arch), @tagName(builtin.abi) },
+    .{ graph_hash, @tagName(builtin.os.tag), @tagName(builtin.cpu.arch), platform.abiName() },
   );
 }
 

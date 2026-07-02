@@ -1,6 +1,7 @@
 const std = @import("std");
 const io = std.Io.Threaded.global_single_threaded.io();
 const builtin = @import("builtin");
+const platform = @import("platform.zig");
 
 pub const MAGIC: u32 = 0x504B474C;
 pub const VERSION: u32 = 4;
@@ -71,7 +72,7 @@ pub const Header = extern struct {
   pub fn matchesCurrentPlatform(self: *const Header) bool {
     const os_hash = platformHash(@tagName(builtin.os.tag));
     const cpu_hash = platformHash(@tagName(builtin.cpu.arch));
-    const abi_hash = platformHash(@tagName(builtin.abi));
+    const abi_hash = platformHash(platform.abiName());
     return (self.platform_os_hash == 0 or self.platform_os_hash == os_hash) and
       (self.platform_cpu_hash == 0 or self.platform_cpu_hash == cpu_hash) and
       (self.platform_abi_hash == 0 or self.platform_abi_hash == abi_hash);
@@ -796,7 +797,7 @@ pub const LockfileWriter = struct {
       .hash_table_size = hash_table_size,
       .platform_os_hash = platformHash(@tagName(builtin.os.tag)),
       .platform_cpu_hash = platformHash(@tagName(builtin.cpu.arch)),
-      .platform_abi_hash = platformHash(@tagName(builtin.abi)),
+      .platform_abi_hash = platformHash(platform.abiName()),
       .bin_entry_offset = bin_entry_offset,
       .bin_entry_count = @intCast(self.bin_entries.items.len),
       .disabled_dependency_count = @intCast(self.disabled_dependencies.items.len),
