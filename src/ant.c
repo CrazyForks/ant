@@ -14152,7 +14152,7 @@ js_await_result_t js_promise_await_coroutine(ant_t *js, ant_value_t promise, cor
   coroutine_hold(coro, CORO_HOLD_AWAIT);
 
   js_mark_promise_rejection_handled_chain(js, promise);
-  if (pd->state == 0) gc_root_pending_promise(js_obj_ptr(js_as_obj(promise)));
+  if (pd->state == 0) gc_root_pending_promise(js, js_obj_ptr(js_as_obj(promise)));
   else queue_promise_trigger(js, promise);
 
   return result;
@@ -14169,7 +14169,7 @@ void js_process_promise_handlers(ant_t *js, ant_value_t promise) {
   uint32_t len = promise_handler_count(pd);
   if (len == 0) return;
   
-  gc_root_pending_promise(pobj);
+  gc_root_pending_promise(js, pobj);
   pd->processing = true;
   
   for (uint32_t i = 0; i < len; i++) {
@@ -14226,7 +14226,7 @@ void js_process_promise_handlers(ant_t *js, ant_value_t promise) {
 
   pd->processing = false;
   promise_handlers_clear(pd);
-  gc_unroot_pending_promise(js_obj_ptr(promise));
+  gc_unroot_pending_promise(js, js_obj_ptr(promise));
 }
 
 void js_resolve_promise(ant_t *js, ant_value_t p, ant_value_t val) {
@@ -14272,7 +14272,7 @@ void js_resolve_promise(ant_t *js, ant_value_t p, ant_value_t val) {
     gc_write_barrier(js, js_obj_ptr(js_as_obj(val)), p);
     js_mark_promise_rejection_handled_chain(js, val);
     
-    if (src_pd->state == 0) gc_root_pending_promise(js_obj_ptr(js_as_obj(val)));
+    if (src_pd->state == 0) gc_root_pending_promise(js, js_obj_ptr(js_as_obj(val)));
     else queue_promise_trigger(js, val);
     GC_ROOT_RESTORE(js, root_mark);
     
@@ -14537,7 +14537,7 @@ static ant_value_t builtin_promise_then(ant_t *js, ant_value_t *args, int nargs)
       js_mark_promise_rejection_handled_chain(js, p);
       
     if (pd->state == 0)
-      gc_root_pending_promise(js_obj_ptr(p));
+      gc_root_pending_promise(js, js_obj_ptr(p));
   }
 
   if (pd && pd->state != 0) queue_promise_trigger(js, p);

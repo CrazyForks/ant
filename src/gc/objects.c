@@ -59,13 +59,11 @@ static inline bool gc_get_stack_bounds(
 }
 
 static gc_func_mark_profile_t g_gc_func_mark_profile = {0};
-static void gc_mark_coroutine(ant_t *js, coroutine_t *c);
+static gc_str_mark_fn g_str_mark = NULL;
 
+static void gc_mark_coroutine(ant_t *js, coroutine_t *c);
 static uint32_t g_gc_func_mark_profile_depth = 0;
 static uint64_t g_gc_func_mark_profile_start_ns = 0;
-
-static gc_str_mark_fn g_str_mark = NULL;
-static ant_object_t *g_pending_promises = NULL;
 
 static uint64_t gc_epoch = 0;
 static uint8_t gc_obj_epoch = 0;
@@ -96,28 +94,32 @@ bool gc_obj_is_marked(const ant_object_t *obj) {
   return obj && obj->mark_epoch == gc_obj_epoch;
 }
 
-void gc_root_pending_promise(ant_object_t *obj) {
+void gc_root_pending_promise(ant_t *js, ant_object_t *obj) {
   ant_promise_state_t *pd = obj ? obj->promise_state : NULL;
-  if (!pd || pd->gc_pending_rooted) return;
-  
+  if (!js || !pd || pd->gc_pending_rooted) return;
+
   pd->gc_pending_rooted = true;
-  pd->gc_pending_next = g_pending_promises;
-  g_pending_promises = obj;
+  pd->gc_pending_prev = NULL;
+  pd->gc_pending_next = js->pending_promises;
+  if (js->pending_promises && js->pending_promises->promise_state)
+    js->pending_promises->promise_state->gc_pending_prev = obj;
+  js->pending_promises = obj;
 }
 
-void gc_unroot_pending_promise(ant_object_t *obj) {
+void gc_unroot_pending_promise(ant_t *js, ant_object_t *obj) {
   ant_promise_state_t *pd = obj ? obj->promise_state : NULL;
-  if (!pd || !pd->gc_pending_rooted) return;
-  
+  if (!js || !pd || !pd->gc_pending_rooted) return;
+
   pd->gc_pending_rooted = false;
-  ant_object_t **pp = &g_pending_promises;
-  while (*pp) {
-    ant_promise_state_t *current = (*pp)->promise_state;
-    if (*pp == obj) { *pp = pd->gc_pending_next; break; }
-    if (!current) { *pp = NULL; break; }
-    pp = &current->gc_pending_next;
-  }
+  ant_object_t *prev = pd->gc_pending_prev;
+  ant_object_t *next = pd->gc_pending_next;
+
+  if (prev && prev->promise_state) prev->promise_state->gc_pending_next = next;
+  else if (js->pending_promises == obj) js->pending_promises = next;
+  if (next && next->promise_state) next->promise_state->gc_pending_prev = prev;
+
   pd->gc_pending_next = NULL;
+  pd->gc_pending_prev = NULL;
 }
 
 void gc_remember_add(ant_t *js, ant_object_t *obj) {
@@ -608,7 +610,7 @@ static void gc_mark_roots(ant_t *js) {
   gc_mark_napi(js, gc_mark_value);
   gc_mark_rpc(js, gc_mark_value);
 
-  for (ant_object_t *obj = g_pending_promises; obj;) {
+  for (ant_object_t *obj = js->pending_promises; obj;) {
     ant_promise_state_t *pd = obj->promise_state;
     ant_object_t *next = pd ? pd->gc_pending_next : NULL;
     gc_grey_obj(js, obj);
@@ -640,7 +642,7 @@ void gc_object_free(ant_t *js, ant_object_t *obj) {
   }
 
   if (obj->promise_state && obj->promise_state->gc_pending_rooted)
-    gc_unroot_pending_promise(obj);
+    gc_unroot_pending_promise(js, obj);
 
   if (obj->promise_state) {
     if (obj->promise_state->handlers)

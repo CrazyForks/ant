@@ -227,6 +227,8 @@ struct ant_isolate_t {
   size_t gc_pool_last_live;
 
   ant_object_t *objects_old;
+  ant_object_t *pending_promises;
+  
   size_t old_live_count;
   size_t minor_gc_count;
 
