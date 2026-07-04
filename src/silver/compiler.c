@@ -5047,23 +5047,37 @@ static void compile_catch_body(sv_compiler_t *c, sv_ast_t *node) {
 void compile_try(sv_compiler_t *c, sv_ast_t *node) {
   emit_set_completion_undefined(c);
 
+  bool has_catch = (node->catch_body != NULL);
+  bool has_finally = (node->finally_body != NULL);
+
   c->try_depth++;
   int try_jump = emit_jump(c, OP_TRY_PUSH);
 
-  compile_stmt(c, node->body);
-  emit_op(c, OP_TRY_POP);
+  if (has_catch && has_finally) {
+    c->try_depth++;
+    int inner_jump = emit_jump(c, OP_TRY_PUSH);
+    compile_stmt(c, node->body);
+    
+    emit_op(c, OP_TRY_POP);
+    int inner_end = emit_jump(c, OP_JMP);
+    patch_jump(c, inner_jump);
+    
+    int catch_tag = emit_jump(c, OP_CATCH);
+    compile_catch_body(c, node);
+    
+    patch_jump(c, catch_tag);
+    patch_jump(c, inner_end);
+    c->try_depth--;
+  } else compile_stmt(c, node->body);
 
-  bool has_catch = (node->catch_body != NULL);
-  bool has_finally = (node->finally_body != NULL);
+  emit_op(c, OP_TRY_POP);
 
   if (!has_finally) {
     int end_jump = emit_jump(c, OP_JMP);
     patch_jump(c, try_jump);
     int catch_tag = emit_jump(c, OP_CATCH);
-    if (has_catch)
-      compile_catch_body(c, node);
-    else
-      emit_op(c, OP_POP);
+    if (has_catch) compile_catch_body(c, node);
+    else emit_op(c, OP_POP);
     patch_jump(c, catch_tag);
     patch_jump(c, end_jump);
     c->try_depth--;
@@ -5071,35 +5085,14 @@ void compile_try(sv_compiler_t *c, sv_ast_t *node) {
   }
 
   int to_finally_from_try = emit_jump(c, OP_JMP);
-  int to_finally_from_catch = -1;
-  int to_finally_from_throw = -1;
-
   patch_jump(c, try_jump);
-
-  if (has_catch) {
-    int catch_tag = emit_jump(c, OP_CATCH);
-    int catch_throw_jump = emit_jump(c, OP_TRY_PUSH);
-
-    compile_catch_body(c, node);
-    emit_op(c, OP_TRY_POP);
-    to_finally_from_catch = emit_jump(c, OP_JMP);
-
-    patch_jump(c, catch_throw_jump);
-    emit_op(c, OP_POP);  
-    to_finally_from_throw = emit_jump(c, OP_JMP);
-
-    patch_jump(c, catch_tag);
-  } else {
-    emit_op(c, OP_POP);  
-    to_finally_from_throw = emit_jump(c, OP_JMP);
-  }
-
+  emit_op(c, OP_POP);
+  
+  int to_finally_from_throw = emit_jump(c, OP_JMP);
   patch_jump(c, to_finally_from_try);
-  if (to_finally_from_catch >= 0) patch_jump(c, to_finally_from_catch);
-  if (to_finally_from_throw >= 0) patch_jump(c, to_finally_from_throw);
-
+  patch_jump(c, to_finally_from_throw);
+  
   compile_finally_block(c, node->finally_body);
-
   c->try_depth--;
 }
 

@@ -50,6 +50,35 @@ test(
   true
 );
 
+class ForAwaitInsideAsyncGenerator {
+  async *source() {
+    yield 1;
+  }
+
+  async *read() {
+    for await (const value of this.source()) {
+      const resolved = await Promise.resolve(value);
+      yield resolved;
+      return;
+    }
+  }
+}
+testDeep(
+  'async generator direct next preserves for-await iterable',
+  await new ForAwaitInsideAsyncGenerator().read().next(),
+  { value: 1, done: false }
+);
+
+async function* awaitBeforeYield(options) {
+  const value = await Promise.resolve({ signal: options.signal, value: 2 });
+  yield value.value;
+}
+testDeep(
+  'async generator await before yield keeps generator context',
+  await awaitBeforeYield({ signal: true }).next(),
+  { value: 2, done: false }
+);
+
 class CustomAsyncIterator extends AsyncIterator {
   constructor(values) {
     super();

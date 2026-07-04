@@ -3584,6 +3584,20 @@ static ant_value_t js_buffer_proto_compare(ant_t *js, ant_value_t *args, int nar
   return buffer_compare_arrays(js, ta1, ta2);
 }
 
+// Buffer.prototype.equals(target)
+static ant_value_t js_buffer_proto_equals(ant_t *js, ant_value_t *args, int nargs) {
+  if (nargs < 1) return js_mkerr(js, "Buffer.equals requires a target buffer");
+
+  TypedArrayData *ta1 = buffer_get_typedarray_data(js_getthis(js));
+  TypedArrayData *ta2 = buffer_get_typedarray_data(args[0]);
+  if (!ta1 || !ta2) return js_mkerr(js, "Arguments must be Buffers");
+  if (ta1->byte_length != ta2->byte_length) return js_bool(false);
+
+  ant_value_t cmp = buffer_compare_arrays(js, ta1, ta2);
+  if (is_err(cmp)) return cmp;
+  return js_bool(js_getnum(cmp) == 0);
+}
+
 // Buffer.compare(buf1, buf2)
 static ant_value_t js_buffer_compare(ant_t *js, ant_value_t *args, int nargs) {
   if (nargs < 2) return js_mkerr(js, "Buffer.compare requires two arguments");
@@ -3844,6 +3858,7 @@ void init_buffer_module() {
   js_set(js, buffer_proto, "toBase64", js_mkfun(js_buffer_toBase64));
   js_set(js, buffer_proto, "indexOf", js_mkfun(js_buffer_indexOf));
   js_set(js, buffer_proto, "compare", js_mkfun(js_buffer_proto_compare));
+  js_set(js, buffer_proto, "equals", js_mkfun(js_buffer_proto_equals));
   js_set(js, buffer_proto, "write", js_mkfun(js_buffer_write));
   js_set(js, buffer_proto, "copy", js_mkfun(js_buffer_copy));
   js_set(js, buffer_proto, "writeInt16BE", js_mkfun(js_buffer_writeInt16BE));

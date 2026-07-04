@@ -14175,42 +14175,53 @@ void js_process_promise_handlers(ant_t *js, ant_value_t promise) {
   for (uint32_t i = 0; i < len; i++) {
     promise_handler_t *h = promise_handler_at(pd, i);
     if (!h) continue;
+    promise_handler_t handler = *h;
     
-    if (h->await_coro) {
-      coroutine_t *await_coro = h->await_coro;
+    if (handler.await_coro) {
+      coroutine_t *await_coro = handler.await_coro;
       h->await_coro = NULL;
       settle_and_resume_coroutine(js, await_coro, val, state != 1);
       continue;
     }
     
-    ant_value_t handler = (state == 1) ? h->onFulfilled : h->onRejected;
-    if (vtype(handler) != T_FUNC && vtype(handler) != T_CFUNC) {
-      if (state == 1) js_resolve_promise(js, h->nextPromise, val);
-      else js_reject_promise(js, h->nextPromise, val);
+    GC_ROOT_SAVE(handler_root_mark, js);
+    GC_ROOT_PIN(js, handler.onFulfilled);
+    GC_ROOT_PIN(js, handler.onRejected);
+    GC_ROOT_PIN(js, handler.nextPromise);
+
+    ant_value_t callback = (state == 1) ? handler.onFulfilled : handler.onRejected;
+    if (vtype(callback) != T_FUNC && vtype(callback) != T_CFUNC) {
+      if (state == 1) js_resolve_promise(js, handler.nextPromise, val);
+      else js_reject_promise(js, handler.nextPromise, val);
+      GC_ROOT_RESTORE(js, handler_root_mark);
       continue;
     }
     
     ant_value_t res = js_mkundef();
-    if (vtype(handler) == T_CFUNC) {
-      ant_value_t (*fn)(ant_t *, ant_value_t *, int) = js_as_cfunc(handler);
+    if (vtype(callback) == T_CFUNC) {
+      ant_value_t (*fn)(ant_t *, ant_value_t *, int) = js_as_cfunc(callback);
       res = fn(js, &val, 1);
     } else {
       ant_value_t call_args[] = { val };
-      res = sv_vm_call(js->vm, js, handler, js_mkundef(), call_args, 1, NULL, false);
+      res = sv_vm_call(js->vm, js, callback, js_mkundef(), call_args, 1, NULL, false);
     }
     
     if (!is_err(res)) {
-      js_resolve_promise(js, h->nextPromise, res);
+      GC_ROOT_PIN(js, res);
+      js_resolve_promise(js, handler.nextPromise, res);
+      GC_ROOT_RESTORE(js, handler_root_mark);
       continue;
     }
     
     ant_value_t reject_val = js->thrown_value;
     if (vtype(reject_val) == T_UNDEF) reject_val = res;
+    GC_ROOT_PIN(js, reject_val);
     
     js->thrown_exists = false;
     js->thrown_value = js_mkundef();
     js->thrown_stack = js_mkundef();
-    js_reject_promise(js, h->nextPromise, reject_val);
+    js_reject_promise(js, handler.nextPromise, reject_val);
+    GC_ROOT_RESTORE(js, handler_root_mark);
   }
 
   pd->processing = false;

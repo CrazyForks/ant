@@ -3,6 +3,7 @@
 
 #include "ant.h"
 #include "gc/roots.h"
+#include "modules/generator.h"
 #include "sugar.h"
 #include "silver/engine.h"
 
@@ -133,7 +134,6 @@ static inline bool sv_async_coro_matches_vm(const coroutine_t *coro, const sv_vm
 
 static inline coroutine_t *sv_async_get_active_coro_for_vm(ant_t *js, sv_vm_t *vm) {
   if (!js || !js->active_async_coro) return NULL;
-
   if (!vm) return js->active_async_coro;
 
   for (coroutine_t *it = js->active_async_coro; it; it = it->active_parent) {
@@ -711,13 +711,16 @@ static inline sv_await_result_t sv_await_value(sv_vm_t *vm, ant_t *js, ant_value
   }
 
   mco_coro *current_mco = mco_running();
-  if (!current_mco) current_mco = NULL;
-
   coroutine_t *coro = NULL;
+  
   if (current_mco) {
     sv_coro_header_t *hdr = (sv_coro_header_t *)mco_get_user_data(current_mco);
-    if (hdr) coro = hdr->coro;
-  } else coro = sv_async_get_active_coro_for_vm(js, vm);
+    coroutine_t *mco_coro = hdr ? hdr->coro : NULL;
+    if (mco_coro && (!vm || sv_async_coro_matches_vm(mco_coro, vm))) coro = mco_coro;
+  }
+  
+  if (!coro) coro = sv_async_get_active_coro_for_vm(js, vm);
+  if (!coro) coro = generator_get_coro_for_vm(js, vm);
 
   if (!coro) {
     out.state = SV_AWAIT_ERROR;
@@ -725,9 +728,10 @@ static inline sv_await_result_t sv_await_value(sv_vm_t *vm, ant_t *js, ant_value
     return out;
   }
 
-  sv_vm_t *prepared_vm = NULL;
-  bool handoff = false;
-  if (!current_mco && vm && coro->owner_vm == vm && !coro->sv_vm) {
+  bool on_own_mco = current_mco && coro->mco == current_mco;
+  sv_vm_t *prepared_vm = NULL; bool handoff = false;
+  
+  if (!on_own_mco && vm && coro->owner_vm == vm && !coro->sv_vm) {
     prepared_vm = sv_async_prepare_materialization(vm, js, coro);
     if (!prepared_vm) {
       out.state = SV_AWAIT_ERROR;
@@ -754,20 +758,21 @@ static inline sv_await_result_t sv_await_value(sv_vm_t *vm, ant_t *js, ant_value
   }
 
   coro->did_suspend = true;
-  if (!current_mco) {
-    if (prepared_vm) {
-      if (!sv_async_materialize_activation(vm, prepared_vm, coro)) {
-        coroutine_clear_await_registration(coro);
-        sv_vm_destroy(prepared_vm);
-        out.state = SV_AWAIT_ERROR;
-        out.value = js_mkerr(js, "failed to materialize async activation");
-        return out;
-      }
+  if (!on_own_mco) {
+    if (prepared_vm) if (!sv_async_materialize_activation(vm, prepared_vm, coro)) {
+      coroutine_clear_await_registration(coro);
+      sv_vm_destroy(prepared_vm);
+      out.state = SV_AWAIT_ERROR;
+      out.value = js_mkerr(js, "failed to materialize async activation");
+      return out;
     }
+    
     out.state = SV_AWAIT_SUSPENDED;
     out.handoff = handoff;
+    
     if (handoff) coro->sv_vm->suspended = true;
     else if (coro->sv_vm) coro->sv_vm->suspended = true;
+    
     return out;
   }
   

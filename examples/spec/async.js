@@ -163,6 +163,35 @@ sequential().then(v => {
   results.sequential = v;
 });
 
+let tryCatchFinallyRan = false;
+async function tryCatchFinallyReturn() {
+  try {
+    const v = await Promise.resolve('try');
+    return v;
+  } catch (e) {
+    return 'catch';
+  } finally {
+    tryCatchFinallyRan = true;
+  }
+}
+tryCatchFinallyReturn().then(v => {
+  results.tryCatchFinallyReturn = v;
+});
+
+async function raceFinallyReturn() {
+  const pending = new Promise(() => {});
+  try {
+    return await Promise.race([Promise.resolve('winner'), pending]);
+  } catch (e) {
+    throw e;
+  } finally {
+    results.raceFinallyRan = true;
+  }
+}
+raceFinallyReturn().then(v => {
+  results.raceFinallyReturn = v;
+});
+
 setTimeout(() => {
   test('basic async', results.basic, 42);
   test('arrow async', results.arrow, 'arrow result');
@@ -184,5 +213,9 @@ setTimeout(() => {
   test('await in loop', results.awaitLoop, 3);
   test('nested async', results.nestedAsync, 20);
   test('sequential awaits', results.sequential, 6);
+  test('return in try runs finally (catch+finally, await)', results.tryCatchFinallyReturn, 'try');
+  test('finally ran after await return', tryCatchFinallyRan, true);
+  test('race with pending loser returns winner', results.raceFinallyReturn, 'winner');
+  test('finally ran after race return', results.raceFinallyRan, true);
   summary();
 }, 50);

@@ -241,6 +241,8 @@ test('Buffer.compare shorter', Buffer.compare(cmpD, cmpA), -1);
 test('Buffer.compare longer', Buffer.compare(cmpA, cmpD), 1);
 test('Buffer.prototype.compare less', cmpA.compare(cmpC), -1);
 test('Buffer.prototype.compare equal', cmpA.compare(cmpB), 0);
+test('Buffer.prototype.equals true', cmpA.equals(cmpB), true);
+test('Buffer.prototype.equals false', cmpA.equals(cmpC), false);
 
 console.log('\nBuffer Encoding Tests\n');
 

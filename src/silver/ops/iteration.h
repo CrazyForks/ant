@@ -69,7 +69,10 @@ static inline ant_value_t sv_op_for_of(sv_vm_t *vm, ant_t *js) {
 
   if (vtype(iterable) == T_STR) {
     if (str_is_heap_rope(iterable) || str_is_heap_builder(iterable)) {
+      GC_ROOT_SAVE(str_root_mark, js);
+      GC_ROOT_PIN(js, iterable);
       iterable = str_materialize(js, iterable);
+      GC_ROOT_RESTORE(js, str_root_mark);
       if (is_err(iterable)) return iterable;
     }
     vm->stack[vm->sp++] = iterable;
@@ -78,18 +81,31 @@ static inline ant_value_t sv_op_for_of(sv_vm_t *vm, ant_t *js) {
     return tov(0);
   }
 
+  GC_ROOT_SAVE(root_mark, js);
+  GC_ROOT_PIN(js, iterable);
+
   ant_value_t iter_fn = js_get_sym(js, iterable, get_iterator_sym());
-  if (!is_callable(iter_fn)) return js_mkerr(js, "not iterable");
+  GC_ROOT_PIN(js, iter_fn);
+  if (!is_callable(iter_fn)) {
+    GC_ROOT_RESTORE(js, root_mark);
+    return js_mkerr(js, "not iterable");
+  }
   
   ant_value_t iterator = sv_vm_call(vm, js, iter_fn, iterable, NULL, 0, NULL, false);
-  if (is_err(iterator)) return iterator;
-
+  if (is_err(iterator)) {
+    GC_ROOT_RESTORE(js, root_mark);
+    return iterator;
+  }
+  
+  GC_ROOT_PIN(js, iterator);
   map_iterator_state_t *map_st;
   iter_type_t map_type;
+  
   if (sv_is_map_iter(js, iterator, &map_st, &map_type)) {
     vm->stack[vm->sp++] = iterator;
     vm->stack[vm->sp++] = tov((double)map_type);
     vm->stack[vm->sp++] = tov(SV_ITER_MAP);
+    GC_ROOT_RESTORE(js, root_mark);
     return tov(0);
   }
 
@@ -99,31 +115,50 @@ static inline ant_value_t sv_op_for_of(sv_vm_t *vm, ant_t *js) {
     vm->stack[vm->sp++] = iterator;
     vm->stack[vm->sp++] = tov((double)set_type);
     vm->stack[vm->sp++] = tov(SV_ITER_SET);
+    GC_ROOT_RESTORE(js, root_mark);
     return tov(0);
   }
 
   ant_value_t next_method = js_getprop_fallback(js, iterator, "next");
+  GC_ROOT_PIN(js, next_method);
   vm->stack[vm->sp++] = iterator;
   vm->stack[vm->sp++] = next_method;
   vm->stack[vm->sp++] = tov(SV_ITER_GENERIC);
+  GC_ROOT_RESTORE(js, root_mark);
+  
   return tov(0);
 }
 
 static inline ant_value_t sv_op_for_await_of(sv_vm_t *vm, ant_t *js) {
   ant_value_t iterable = vm->stack[--vm->sp];
+  GC_ROOT_SAVE(root_mark, js);
+  GC_ROOT_PIN(js, iterable);
+
   ant_value_t iter_fn = js_get_sym(js, iterable, get_asyncIterator_sym());
+  GC_ROOT_PIN(js, iter_fn);
 
   if (!is_callable(iter_fn)) {
     iter_fn = js_get_sym(js, iterable, get_iterator_sym());
-    if (!is_callable(iter_fn)) return js_mkerr(js, "not iterable");
+    GC_ROOT_PIN(js, iter_fn);
+    if (!is_callable(iter_fn)) {
+      GC_ROOT_RESTORE(js, root_mark);
+      return js_mkerr(js, "not iterable");
+    }
   }
 
   ant_value_t iterator = sv_vm_call(vm, js, iter_fn, iterable, NULL, 0, NULL, false);
-  if (is_err(iterator)) return iterator;
+  if (is_err(iterator)) {
+    GC_ROOT_RESTORE(js, root_mark);
+    return iterator;
+  }
+  GC_ROOT_PIN(js, iterator);
+
   ant_value_t next_method = js_getprop_fallback(js, iterator, "next");
+  GC_ROOT_PIN(js, next_method);
   vm->stack[vm->sp++] = iterator;
   vm->stack[vm->sp++] = next_method;
   vm->stack[vm->sp++] = tov(SV_ITER_GENERIC);
+  GC_ROOT_RESTORE(js, root_mark);
   return tov(0);
 }
 
@@ -353,14 +388,24 @@ static inline sv_await_result_t sv_op_await_iter_next(sv_vm_t *vm, ant_t *js) {
     .value = js_mkundef(),
     .handoff = false,
   };
-  ant_value_t next_method = vm->stack[vm->sp - 2];
-  ant_value_t iterator = vm->stack[vm->sp - 3];
-  if (!is_callable(next_method))
-    return (sv_await_result_t){ .state = SV_AWAIT_ERROR, .value = js_mkerr(js, "iterator.next is not a function"), .handoff = false };
-  ant_value_t result = sv_vm_call(vm, js, next_method, iterator, NULL, 0, NULL, false);
-  if (is_err(result))
-    return (sv_await_result_t){ .state = SV_AWAIT_ERROR, .value = result, .handoff = false };
-  if (vtype(result) == T_PROMISE) {
+
+  ant_value_t result = js_mkundef();
+  bool has_resumed_result = vm->sp >= 4 &&
+    vtype(vm->stack[vm->sp - 2]) == T_NUM &&
+    (int)js_getnum(vm->stack[vm->sp - 2]) == SV_ITER_GENERIC;
+
+  if (has_resumed_result) result = vm->stack[--vm->sp];
+  else {
+    ant_value_t next_method = vm->stack[vm->sp - 2];
+    ant_value_t iterator = vm->stack[vm->sp - 3];
+    if (!is_callable(next_method))
+      return (sv_await_result_t){ .state = SV_AWAIT_ERROR, .value = js_mkerr(js, "iterator.next is not a function"), .handoff = false };
+    result = sv_vm_call(vm, js, next_method, iterator, NULL, 0, NULL, false);
+    if (is_err(result))
+      return (sv_await_result_t){ .state = SV_AWAIT_ERROR, .value = result, .handoff = false };
+  }
+
+  if (!has_resumed_result && vtype(result) == T_PROMISE) {
     vm->suspended_entry_fp = vm->fp;
     vm->suspended_saved_fp = vm->fp - 1;
     sv_await_result_t awaited = sv_await_value(vm, js, result);

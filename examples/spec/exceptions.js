@@ -117,4 +117,78 @@ try {
 }
 test('finally modifies value', counter, 12);
 
+function testCatchFinallyReturn(x) {
+  try {
+    return 'try';
+  } catch (e) {
+    return 'catch';
+  } finally {
+    x.push('finally');
+  }
+}
+{
+  let x = [];
+  test('return in try runs finally (with catch)', testCatchFinallyReturn(x), 'try');
+  testDeep('finally ran on return-in-try', x, ['finally']);
+}
+
+function testThrowInCatchRunsFinally() {
+  let x = [];
+  try {
+    try {
+      throw new Error('a');
+    } catch (e) {
+      throw new Error('b');
+    } finally {
+      x.push('finally');
+    }
+  } catch (e) {
+    x.push('outer: ' + e.message);
+  }
+  return x;
+}
+testDeep('throw in catch runs finally then propagates', testThrowInCatchRunsFinally(), ['finally', 'outer: b']);
+
+function testNestedFinallyReturn() {
+  let x = [];
+  try {
+    try {
+      return x;
+    } catch (e) {
+      x.push('inner catch');
+    } finally {
+      x.push('inner finally');
+    }
+  } catch (e) {
+    x.push('outer catch');
+  } finally {
+    x.push('outer finally');
+  }
+}
+testDeep('return unwinds through nested finallies', testNestedFinallyReturn(), ['inner finally', 'outer finally']);
+
+function testReturnInCatchRunsFinally() {
+  let x = [];
+  try {
+    throw new Error('a');
+  } catch (e) {
+    x.push('catch');
+    return x;
+  } finally {
+    x.push('finally');
+  }
+}
+testDeep('return in catch runs finally', testReturnInCatchRunsFinally(), ['catch', 'finally']);
+
+function testFinallyOverridesReturn() {
+  try {
+    return 'try';
+  } catch (e) {
+    return 'catch';
+  } finally {
+    return 'finally';
+  }
+}
+test('return in finally overrides return in try', testFinallyOverridesReturn(), 'finally');
+
 summary();

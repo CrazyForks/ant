@@ -39,3 +39,22 @@ console.log('Test 6: Finally');
 Promise.resolve('fin').finally(() => {
   console.log('Finally called');
 });
+
+console.log('Test 7: Reentrant handler append');
+let resolveReentrant;
+const reentrant = new Promise(resolve => {
+  resolveReentrant = resolve;
+});
+const reentrantChildren = [];
+for (let i = 0; i < 8; i++) {
+  reentrantChildren.push(reentrant.then(v => {
+    if (i === 0) {
+      for (let j = 0; j < 2048; j++) reentrant.then(() => j);
+    }
+    return v + i;
+  }));
+}
+resolveReentrant(10);
+Promise.all(reentrantChildren).then(values => {
+  console.log('Reentrant handler result: ' + values.join(','));
+});

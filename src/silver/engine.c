@@ -4,6 +4,7 @@
 
 #include "silver/engine.h"
 #include "silver/swarm.h"
+#include "modules/generator.h"
 #include "modules/regex.h"
 
 #include "ops/literals.h"
@@ -1750,8 +1751,19 @@ ant_value_t sv_execute_frame(sv_vm_t *vm, sv_func_t *func, ant_value_t this, ant
       goto sv_throw;
     }
     if (action == SV_FINALLY_RET_RETURN) {
-      vm->handler_depth = frame->handler_base;
-      frame->handler_top = frame->handler_base;
+      if (vm->handler_depth != frame->handler_base) {
+        uint8_t *finally_ip = sv_vm_unwind_for_return(vm, completion);
+        if (finally_ip) {
+          frame = &vm->frames[vm->fp];
+          func = frame->func;
+          bp = frame->bp;
+          lp = frame->lp;
+          ip = finally_ip;
+          DISPATCH();
+        }
+        vm->handler_depth = frame->handler_base;
+        frame->handler_top = frame->handler_base;
+      }
       vm->sp = frame->prev_sp;
       if (vm->fp <= entry_fp) {
         vm_result = completion;
@@ -1790,6 +1802,7 @@ ant_value_t sv_execute_frame(sv_vm_t *vm, sv_func_t *func, ant_value_t this, ant
   L_ITER_CALL:        { VM_CHECK(sv_op_iter_call(vm, js, ip));    NEXT(2); }
   
   L_AWAIT_ITER_NEXT:  {
+    frame->ip = ip;
     sv_await_result_t await_result = sv_op_await_iter_next(vm, js);
     if (await_result.state == SV_AWAIT_ERROR) {
       sv_err = await_result.value;
@@ -1836,7 +1849,9 @@ ant_value_t sv_execute_frame(sv_vm_t *vm, sv_func_t *func, ant_value_t this, ant
   
   L_YIELD: {
     ant_value_t yielded = vm->stack[--vm->sp];
-    coroutine_t *coro = js->active_async_coro;
+    coroutine_t *coro = sv_async_get_active_coro_for_vm(js, vm);
+    if (!coro || coro->type != CORO_GENERATOR)
+      coro = generator_get_coro_for_vm(js, vm);
     if (!coro || coro->type != CORO_GENERATOR) {
       sv_err = js_mkerr(js, "yield can only be used inside generator functions");
       goto sv_throw;
@@ -1865,7 +1880,9 @@ ant_value_t sv_execute_frame(sv_vm_t *vm, sv_func_t *func, ant_value_t this, ant
   L_YIELD_STAR_NEXT:
   L_YIELD_STAR_THROW:
   L_YIELD_STAR_RETURN: {
-    coroutine_t *coro = js->active_async_coro;
+    coroutine_t *coro = sv_async_get_active_coro_for_vm(js, vm);
+    if (!coro || coro->type != CORO_GENERATOR)
+      coro = generator_get_coro_for_vm(js, vm);
     if (!coro || coro->type != CORO_GENERATOR) {
       sv_err = js_mkerr(js, "yield can only be used inside generator functions");
       goto sv_throw;
