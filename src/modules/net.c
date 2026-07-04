@@ -27,6 +27,7 @@
 #include "modules/buffer.h"
 #include "modules/events.h"
 #include "modules/net.h"
+#include "modules/stream.h"
 #include "modules/symbol.h"
 #include "modules/timer.h"
 
@@ -503,6 +504,7 @@ static net_socket_t *net_socket_create(ant_t *js, bool allow_half_open) {
   socket->allow_half_open = allow_half_open;
 
   js_set_native(obj, socket, NET_SOCKET_NATIVE_TAG);
+  stream_init_duplex_object(js, obj, js_mkundef());
   js_set(js, obj, "remoteAddress", js_mkundef());
   js_set(js, obj, "remotePort", js_mkundef());
   js_set(js, obj, "remoteFamily", js_mkundef());
@@ -1195,15 +1197,17 @@ static void net_init_constructors(ant_t *js) {
   ant_value_t events = 0;
   ant_value_t ee_ctor = 0;
   ant_value_t ee_proto = 0;
+  ant_value_t duplex_proto = 0;
 
   if (g_net_server_ctor && g_net_socket_ctor) return;
 
   events = events_library(js);
   ee_ctor = js_get(js, events, "EventEmitter");
   ee_proto = js_get(js, ee_ctor, "prototype");
+  duplex_proto = stream_duplex_prototype(js);
 
   g_net_socket_proto = js_mkobj(js);
-  js_set_proto_init(g_net_socket_proto, ee_proto);
+  js_set_proto_init(g_net_socket_proto, is_object_type(duplex_proto) ? duplex_proto : ee_proto);
   js_set(js, g_net_socket_proto, "address", js_mkfun(js_net_socket_address));
   js_set(js, g_net_socket_proto, "pause", js_mkfun(js_net_socket_pause));
   js_set(js, g_net_socket_proto, "resume", js_mkfun(js_net_socket_resume));

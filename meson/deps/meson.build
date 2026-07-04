@@ -158,6 +158,8 @@ libffi_dep = subproject('libffi', default_options: [
   'tests=false'
 ]).get_variable('ffi_dep')
 
+cares_dep = dependency('libcares')
+
 pcre2_dep = subproject('pcre2', default_options: [
   'optimization=3',
   'warning_level=0',
@@ -242,7 +244,7 @@ endif
 ant_core_deps = [
   libffi_dep, crprintf_dep, argtable3_dep,
   llhttp, pcre2_dep, libuv_dep, base64_dep,
-  yyjson_dep, minicoro_dep, uuidv7_dep, tlsuv_dep,
+  yyjson_dep, minicoro_dep, uuidv7_dep, tlsuv_dep, cares_dep,
 ]
 
 ant_format_deps = [

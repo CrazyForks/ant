@@ -477,11 +477,31 @@ static ant_value_t js_arraybuffer_detached_getter(ant_t *js, ant_value_t *args, 
 }
 
 static ant_value_t js_arraybuffer_byteLength_getter(ant_t *js, ant_value_t *args, int nargs) {
-  (void)args; (void)nargs;
   ant_value_t this_val = js_getthis(js);
   ArrayBufferData *data = buffer_get_arraybuffer_data(this_val);
   if (!data || data->is_detached) return js_mknum(0);
   return js_mknum((double)data->length);
+}
+
+static ant_value_t js_dataview_buffer_getter(ant_t *js, ant_value_t *args, int nargs) {
+  ant_value_t this_val = js_getthis(js);
+  DataViewData *dv = buffer_get_dataview_data(this_val);
+  if (!dv) return js_mkerr_typed(js, JS_ERR_TYPE, "Not a DataView");
+  return js_get(js, this_val, "buffer");
+}
+
+static ant_value_t js_dataview_byteLength_getter(ant_t *js, ant_value_t *args, int nargs) {
+  ant_value_t this_val = js_getthis(js);
+  DataViewData *dv = buffer_get_dataview_data(this_val);
+  if (!dv) return js_mkerr_typed(js, JS_ERR_TYPE, "Not a DataView");
+  return js_mknum((double)dv->byte_length);
+}
+
+static ant_value_t js_dataview_byteOffset_getter(ant_t *js, ant_value_t *args, int nargs) {
+  ant_value_t this_val = js_getthis(js);
+  DataViewData *dv = buffer_get_dataview_data(this_val);
+  if (!dv) return js_mkerr_typed(js, JS_ERR_TYPE, "Not a DataView");
+  return js_mknum((double)dv->byte_offset);
 }
 
 // ArrayBuffer.isView(value)
@@ -2914,8 +2934,25 @@ static ant_value_t js_buffer_toString(ant_t *js, ant_value_t *args, int nargs) {
     return js_mkerr(js, "Cannot read from detached buffer");
   }
   
-  uint8_t *data = ta_data->buffer->data + ta_data->byte_offset;
-  size_t len = ta_data->byte_length;
+  size_t start = 0;
+  size_t end = ta_data->byte_length;
+  
+  if (nargs > 1 && vtype(args[1]) == T_NUM) {
+    double raw = js_getnum(args[1]);
+    start = raw > 0 && !isnan(raw) ? (size_t)raw : 0;
+  }
+  
+  if (nargs > 2 && vtype(args[2]) == T_NUM) {
+    double raw = js_getnum(args[2]);
+    end = raw > 0 && !isnan(raw) ? (size_t)raw : 0;
+  }
+  
+  if (start > ta_data->byte_length) start = ta_data->byte_length;
+  if (end > ta_data->byte_length) end = ta_data->byte_length;
+  if (end < start) end = start;
+
+  uint8_t *data = ta_data->buffer->data + ta_data->byte_offset + start;
+  size_t len = end - start;
   
   if (encoding == ENC_BASE64) {
     size_t out_len;
@@ -3507,17 +3544,7 @@ static ant_value_t js_buffer_concat(ant_t *js, ant_value_t *args, int nargs) {
   return create_typed_array(js, TYPED_ARRAY_UINT8, buffer, 0, total_length, "Buffer");
 }
 
-// Buffer.compare(buf1, buf2)
-static ant_value_t js_buffer_compare(ant_t *js, ant_value_t *args, int nargs) {
-  if (nargs < 2) return js_mkerr(js, "Buffer.compare requires two arguments");
-  
-  TypedArrayData *ta1 = buffer_get_typedarray_data(args[0]);
-  TypedArrayData *ta2 = buffer_get_typedarray_data(args[1]);
-  
-  if (!ta1 || !ta2) {
-    return js_mkerr(js, "Arguments must be Buffers");
-  }
-  
+static ant_value_t buffer_compare_arrays(ant_t *js, TypedArrayData *ta1, TypedArrayData *ta2) {
   if (!ta1 || !ta1->buffer || !ta2 || !ta2->buffer) {
     return js_mkerr(js, "Invalid buffer");
   }
@@ -3531,6 +3558,28 @@ static ant_value_t js_buffer_compare(ant_t *js, ant_value_t *args, int nargs) {
   } else cmp = cmp < 0 ? -1 : 1;
   
   return js_mknum((double)cmp);
+}
+
+// Buffer.prototype.compare(target)
+static ant_value_t js_buffer_proto_compare(ant_t *js, ant_value_t *args, int nargs) {
+  if (nargs < 1) return js_mkerr(js, "Buffer.compare requires a target buffer");
+  
+  TypedArrayData *ta1 = buffer_get_typedarray_data(js_getthis(js));
+  TypedArrayData *ta2 = buffer_get_typedarray_data(args[0]);
+  if (!ta1 || !ta2) return js_mkerr(js, "Arguments must be Buffers");
+  
+  return buffer_compare_arrays(js, ta1, ta2);
+}
+
+// Buffer.compare(buf1, buf2)
+static ant_value_t js_buffer_compare(ant_t *js, ant_value_t *args, int nargs) {
+  if (nargs < 2) return js_mkerr(js, "Buffer.compare requires two arguments");
+  
+  TypedArrayData *ta1 = buffer_get_typedarray_data(args[0]);
+  TypedArrayData *ta2 = buffer_get_typedarray_data(args[1]);
+  if (!ta1 || !ta2) return js_mkerr(js, "Arguments must be Buffers");
+  
+  return buffer_compare_arrays(js, ta1, ta2);
 }
 
 static ant_value_t js_sharedarraybuffer_constructor(ant_t *js, ant_value_t *args, int nargs) {
@@ -3733,6 +3782,9 @@ void init_buffer_module() {
   js_set(js, dataview_proto, "setBigInt64", js_mkfun(js_dataview_setBigInt64));
   js_set(js, dataview_proto, "getBigUint64", js_mkfun(js_dataview_getBigUint64));
   js_set(js, dataview_proto, "setBigUint64", js_mkfun(js_dataview_setBigUint64));
+  js_set_getter_desc(js, dataview_proto, "buffer", 6, js_mkfun(js_dataview_buffer_getter), JS_DESC_C);
+  js_set_getter_desc(js, dataview_proto, "byteLength", 10, js_mkfun(js_dataview_byteLength_getter), JS_DESC_C);
+  js_set_getter_desc(js, dataview_proto, "byteOffset", 10, js_mkfun(js_dataview_byteOffset_getter), JS_DESC_C);
   js_set_sym(js, dataview_proto, get_toStringTag_sym(), js_mkstr(js, "DataView", 8));
 
   js_set_slot(dataview_ctor_obj, SLOT_CFUNC, js_mkfun(js_dataview_constructor));
@@ -3778,6 +3830,7 @@ void init_buffer_module() {
   js_set(js, buffer_proto, "utf8Slice", js_mkfun(js_buffer_utf8Slice));
   js_set(js, buffer_proto, "toBase64", js_mkfun(js_buffer_toBase64));
   js_set(js, buffer_proto, "indexOf", js_mkfun(js_buffer_indexOf));
+  js_set(js, buffer_proto, "compare", js_mkfun(js_buffer_proto_compare));
   js_set(js, buffer_proto, "write", js_mkfun(js_buffer_write));
   js_set(js, buffer_proto, "copy", js_mkfun(js_buffer_copy));
   js_set(js, buffer_proto, "writeInt16BE", js_mkfun(js_buffer_writeInt16BE));

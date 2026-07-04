@@ -239,6 +239,8 @@ test('Buffer.compare less', Buffer.compare(cmpA, cmpC), -1);
 test('Buffer.compare greater', Buffer.compare(cmpC, cmpA), 1);
 test('Buffer.compare shorter', Buffer.compare(cmpD, cmpA), -1);
 test('Buffer.compare longer', Buffer.compare(cmpA, cmpD), 1);
+test('Buffer.prototype.compare less', cmpA.compare(cmpC), -1);
+test('Buffer.prototype.compare equal', cmpA.compare(cmpB), 0);
 
 console.log('\nBuffer Encoding Tests\n');
 
@@ -256,6 +258,8 @@ test('Buffer base64 roundtrip', b64Roundtrip, 'hello');
 const hexBuf = Buffer.from('Hello');
 test('Buffer.toString hex', hexBuf.toString('hex'), '48656c6c6f');
 test('Buffer.toString HEX (case insensitive)', hexBuf.toString('HEX'), '48656c6c6f');
+test('Buffer.toString utf8 start/end', Buffer.from('ABCD').toString('utf8', 1, 3), 'BC');
+test('Buffer.toString hex start/end', Buffer.from([0xab, 0xcd, 0xef]).toString('hex', 1, 3), 'cdef');
 
 const hexDecoded = Buffer.from('48656c6c6f', 'hex');
 test('Buffer.from hex', hexDecoded.toString(), 'Hello');

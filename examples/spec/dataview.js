@@ -8,6 +8,17 @@ const dv = new DataView(buffer);
 test('DataView byteLength', dv.byteLength, 16);
 test('DataView byteOffset', dv.byteOffset, 0);
 
+const dataViewByteLengthDesc = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteLength');
+const dataViewByteOffsetDesc = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteOffset');
+const dataViewBufferDesc = Object.getOwnPropertyDescriptor(DataView.prototype, 'buffer');
+
+test('DataView.prototype.byteLength getter exists', typeof dataViewByteLengthDesc.get, 'function');
+test('DataView.prototype.byteOffset getter exists', typeof dataViewByteOffsetDesc.get, 'function');
+test('DataView.prototype.buffer getter exists', typeof dataViewBufferDesc.get, 'function');
+test('DataView.prototype.byteLength getter call', dataViewByteLengthDesc.get.call(dv), 16);
+test('DataView.prototype.byteOffset getter call', dataViewByteOffsetDesc.get.call(dv), 0);
+test('DataView.prototype.buffer getter call', dataViewBufferDesc.get.call(dv), buffer);
+
 const dv2 = new DataView(buffer, 4);
 test('DataView with offset byteLength', dv2.byteLength, 12);
 test('DataView with offset byteOffset', dv2.byteOffset, 4);

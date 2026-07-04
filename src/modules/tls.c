@@ -18,6 +18,7 @@
 #include "modules/buffer.h"
 #include "modules/events.h"
 #include "modules/net.h"
+#include "modules/stream.h"
 #include "modules/symbol.h"
 #include "modules/timer.h"
 #include "silver/engine.h"
@@ -873,6 +874,7 @@ static ant_value_t js_tls_socket_ctor(ant_t *js, ant_value_t *args, int nargs) {
   tls_init_socket_proto(js);
   if (tls_socket_data(existing)) {
     tls_define_default_socket_state(js, existing);
+    stream_init_duplex_object(js, existing, js_mkundef());
     js_set_proto_wb(js, existing, g_tls_socket_proto);
     return existing;
   }
@@ -880,6 +882,7 @@ static ant_value_t js_tls_socket_ctor(ant_t *js, ant_value_t *args, int nargs) {
   obj = js_mkobj(js);
   proto = js_instance_proto_from_new_target(js, g_tls_socket_proto);
   if (is_object_type(proto)) js_set_proto_init(obj, proto);
+  stream_init_duplex_object(js, obj, js_mkundef());
   tls_define_default_socket_state(js, obj);
   js_set(js, obj, "alpnProtocol", js_false);
   return obj;
@@ -1212,12 +1215,16 @@ static ant_value_t js_tls_connect_options(ant_t *js, ant_value_t options, ant_va
   js_set_proto_init(obj, g_tls_socket_proto);
   socket->obj = obj;
   js_set_native(obj, socket, TLS_SOCKET_NATIVE_TAG);
+  stream_init_duplex_object(js, obj, js_mkundef());
   tls_define_default_socket_state(js, obj);
+  
   if (is_callable(callback)) eventemitter_add_listener(js, obj, "secureConnect", callback, true);
   tlsuv_stream_init(uv_default_loop(), &socket->stream, socket->ctx);
   socket->stream.data = socket;
   socket->connect_req.data = socket;
-  if (socket->servername) tlsuv_stream_set_hostname(&socket->stream, socket->servername);
+  
+  if (socket->servername) 
+    tlsuv_stream_set_hostname(&socket->stream, socket->servername);
   if (socket->alpn_count > 0)
     tlsuv_stream_set_protocols(&socket->stream, socket->alpn_count, (const char **)socket->alpn_protocols);
 
