@@ -387,10 +387,28 @@ ant_value_t wasi_instantiate(
     return js_mkerr(js, "%s", error_buf[0] ? error_buf : "Failed to load WASI module");
   }
 
-  const char *dirs[] = { "." };
+  const char *default_dirs[] = { "." };
+  const char **dirs = default_dirs;
+  const char *dir_buf[WASM_MAX_ARGS];
+  int dir_count = 1;
+
   ant_value_t args_val = is_object_type(wasi_opts)
     ? js_get(js, wasi_opts, "args")
     : js_mkundef();
+  
+  ant_value_t preopens_val = is_object_type(wasi_opts)
+    ? js_get(js, wasi_opts, "preopens")
+    : js_mkundef();
+
+  if (vtype(preopens_val) == T_ARR && js_arr_len(js, preopens_val) > 0) {
+    dir_count = (int)js_arr_len(js, preopens_val);
+    if (dir_count > WASM_MAX_ARGS) dir_count = WASM_MAX_ARGS;
+    for (int i = 0; i < dir_count; i++) {
+      char *s = js_getstr(js, js_arr_get(js, preopens_val, (ant_offset_t)i), NULL);
+      dir_buf[i] = s ? s : ".";
+    }
+    dirs = dir_buf;
+  }
 
   int argc = vtype(args_val) == T_ARR ? (int)js_arr_len(js, args_val) : 0;
   if (argc < 1) argc = 1;
@@ -404,7 +422,7 @@ ant_value_t wasi_instantiate(
     }
   } else argv[0] = (char *)"wasi";
 
-  wasm_runtime_set_wasi_args(rt_module, dirs, 1, NULL, 0, NULL, 0, argv, argc);
+  wasm_runtime_set_wasi_args(rt_module, dirs, dir_count, NULL, 0, NULL, 0, argv, argc);
   wasm_module_inst_t inst = wasm_runtime_instantiate(rt_module, 512 * 1024, 256 * 1024, error_buf, sizeof(error_buf));
 
   if (!inst) {

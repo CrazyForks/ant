@@ -9,7 +9,7 @@ if (!wasmFile) {
 const bytes = await readFile(wasmFile);
 
 const { instance } = await WebAssembly.instantiate(bytes, {
-  wasi: { args: [wasmFile, ...wasmArgs] }
+  wasi: { args: [wasmFile, ...wasmArgs], preopens: ['.', '/'] }
 });
 
 instance.exports._start();
