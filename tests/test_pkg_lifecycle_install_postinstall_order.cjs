@@ -70,6 +70,46 @@ assert(
   'expected completed lifecycle marker to prevent rerun'
 );
 
+const quietRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ant-pkg-lifecycle-quiet-'));
+const quietPackageRoot = path.join(quietRoot, 'node_modules', 'quiet-lifecycle');
+fs.mkdirSync(quietPackageRoot, { recursive: true });
+fs.writeFileSync(
+  path.join(quietRoot, 'package.json'),
+  JSON.stringify({ dependencies: { 'quiet-lifecycle': '1.0.0' } }, null, 2)
+);
+fs.writeFileSync(
+  path.join(quietPackageRoot, 'package.json'),
+  JSON.stringify(
+    {
+      name: 'quiet-lifecycle',
+      version: '1.0.0',
+      scripts: {
+        install: 'echo quiet lifecycle stdout; echo quiet lifecycle stderr >&2'
+      }
+    },
+    null,
+    2
+  )
+);
+
+result = spawnSync(antPath, ['trust', 'quiet-lifecycle'], {
+  cwd: quietRoot,
+  encoding: 'utf8'
+});
+if (result.error) throw result.error;
+assert(
+  result.status === 0,
+  `expected noisy successful lifecycle to pass, got ${result.status}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`
+);
+assert(
+  !result.stdout.includes('quiet lifecycle stdout') && !result.stderr.includes('quiet lifecycle stdout'),
+  `expected successful lifecycle stdout to stay quiet\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`
+);
+assert(
+  !result.stdout.includes('quiet lifecycle stderr') && !result.stderr.includes('quiet lifecycle stderr'),
+  `expected successful lifecycle stderr to stay quiet\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`
+);
+
 const failRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ant-pkg-lifecycle-fail-'));
 const failPackageRoot = path.join(failRoot, 'node_modules', 'fail-lifecycle');
 fs.mkdirSync(failPackageRoot, { recursive: true });
@@ -84,7 +124,7 @@ fs.writeFileSync(
       name: 'fail-lifecycle',
       version: '1.0.0',
       scripts: {
-        install: 'echo lifecycle failed >&2; exit 7'
+        install: 'echo lifecycle failed stdout; echo lifecycle failed >&2; exit 7'
       }
     },
     null,
@@ -98,6 +138,14 @@ result = spawnSync(antPath, ['trust', 'fail-lifecycle'], {
 });
 if (result.error) throw result.error;
 assert(result.status !== 0, 'expected failing lifecycle script to make ant trust fail');
+assert(
+  /lifecycle failed stdout/.test(result.stderr),
+  `expected lifecycle stdout to be replayed on failure, got ${JSON.stringify(result.stderr)}`
+);
+assert(
+  /lifecycle failed/.test(result.stderr),
+  `expected lifecycle stderr to be replayed on failure, got ${JSON.stringify(result.stderr)}`
+);
 assert(
   /Lifecycle script 'install' failed for fail-lifecycle/.test(result.stderr),
   `expected lifecycle failure in stderr, got ${JSON.stringify(result.stderr)}`

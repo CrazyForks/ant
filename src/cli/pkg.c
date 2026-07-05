@@ -748,6 +748,11 @@ static void print_elapsed(uint64_t elapsed_ms) {
   fputs(C_RESET, stdout);
 }
 
+static void print_lifecycle_builds(uint32_t lifecycle_builds) {
+  if (lifecycle_builds == 0) return;
+  printf(" %s(%u built)%s", C_DIM, lifecycle_builds, C_RESET);
+}
+
 static void print_install_header(const char *cmd) {
   printf("%sant %s%s v%s\n", C_BOLD, cmd, C_RESET, ANT_VERSION);
   fflush(stdout);
@@ -809,6 +814,7 @@ static void print_add_summary(pkg_context_t *ctx, const pkg_install_result_t *re
       C_DIM, C_RESET);
     print_elapsed(result->elapsed_ms);
     printf("%s]%s", C_DIM, C_RESET);
+    print_lifecycle_builds(result->lifecycle_builds);
     if (include_done_suffix) printf(" done");
     
     fputc('\n', stdout);
@@ -822,7 +828,9 @@ static void print_add_summary(pkg_context_t *ctx, const pkg_install_result_t *re
     C_DIM, C_RESET,
     C_DIM, C_RESET);
   print_elapsed(result->elapsed_ms);
-  printf("%s]%s\n", C_DIM, C_RESET);
+  printf("%s]%s", C_DIM, C_RESET);
+  print_lifecycle_builds(result->lifecycle_builds);
+  fputc('\n', stdout);
 }
 
 typedef struct {
@@ -1099,7 +1107,9 @@ static int cmd_add_global(const char *const *package_specs, int count) {
     printf("  %s(binaries linked to %s)%s\n", C_DIM, get_global_bin_dir(), C_RESET);
     printf("\n%s[%s", C_DIM, C_RESET);
     print_elapsed(result.elapsed_ms);
-    printf("%s]%s done\n", C_DIM, C_RESET);
+    printf("%s]%s", C_DIM, C_RESET);
+    print_lifecycle_builds(result.lifecycle_builds);
+    printf(" done\n");
   }
 
   pkg_free(ctx);
@@ -1219,7 +1229,9 @@ static int cmd_install(void) {
       }
       printf(" %s[%s", C_DIM, C_RESET);
       print_elapsed(result.elapsed_ms);
-      printf("%s]%s\n", C_DIM, C_RESET);
+      printf("%s]%s", C_DIM, C_RESET);
+      print_lifecycle_builds(result.lifecycle_builds);
+      fputc('\n', stdout);
     } else {
       printf("\n%sChecked%s %s%u%s installs across %s%u%s packages %s(no changes)%s %s[%s",
         C_DIM, C_RESET,
@@ -1228,7 +1240,9 @@ static int cmd_install(void) {
         C_DIM, C_RESET,
         C_DIM, C_RESET);
       print_elapsed(result.elapsed_ms);
-      printf("%s]%s\n", C_DIM, C_RESET);
+      printf("%s]%s", C_DIM, C_RESET);
+      print_lifecycle_builds(result.lifecycle_builds);
+      fputc('\n', stdout);
     }
   }
 
@@ -1321,7 +1335,9 @@ static int cmd_update(void) {
       }
       printf(" %s[%s", C_DIM, C_RESET);
       print_elapsed(result.elapsed_ms);
-      printf("%s]%s\n", C_DIM, C_RESET);
+      printf("%s]%s", C_DIM, C_RESET);
+      print_lifecycle_builds(result.lifecycle_builds);
+      fputc('\n', stdout);
     } else {
       printf("\n%sChecked%s %s%u%s installs across %s%u%s packages %s(no changes)%s %s[%s",
         C_DIM, C_RESET,
@@ -1330,7 +1346,9 @@ static int cmd_update(void) {
         C_DIM, C_RESET,
         C_DIM, C_RESET);
       print_elapsed(result.elapsed_ms);
-      printf("%s]%s\n", C_DIM, C_RESET);
+      printf("%s]%s", C_DIM, C_RESET);
+      print_lifecycle_builds(result.lifecycle_builds);
+      fputc('\n', stdout);
     }
   }
 
@@ -1703,7 +1721,9 @@ static int cmd_remove(const char *package_name) {
       result.packages_installed == 1 ? "" : "s",
       C_DIM, C_RESET);
     print_elapsed(result.elapsed_ms);
-    printf("%s]%s\n", C_DIM, C_RESET);
+    printf("%s]%s", C_DIM, C_RESET);
+    print_lifecycle_builds(result.lifecycle_builds);
+    fputc('\n', stdout);
   }
   
   printf("%s-%s Removed: %s%s%s\n", C_RED, C_RESET, C_BOLD, package_name, C_RESET);

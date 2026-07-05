@@ -137,6 +137,7 @@ typedef struct {
   uint32_t files_copied;
   uint32_t packages_installed;
   uint32_t packages_skipped;
+  uint32_t lifecycle_builds;
   uint64_t elapsed_ms;
 } pkg_install_result_t;
 

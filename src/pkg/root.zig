@@ -185,6 +185,7 @@ pub const InstallResult = extern struct {
   files_copied: u32,
   packages_installed: u32,
   packages_skipped: u32,
+  lifecycle_builds: u32,
   elapsed_ms: u64,
 };
 
@@ -286,6 +287,7 @@ pub const PkgContext = struct {
         .files_copied = 0,
         .packages_installed = 0,
         .packages_skipped = 0,
+        .lifecycle_builds = 0,
         .elapsed_ms = 0
       },
       .added_packages = .empty,
@@ -464,6 +466,7 @@ pub const PkgContext = struct {
       .files_copied = 0,
       .packages_installed = 0,
       .packages_skipped = 0,
+      .lifecycle_builds = 0,
       .elapsed_ms = 0,
     };
 
@@ -753,6 +756,7 @@ pub const PkgContext = struct {
       .files_copied = link_stats.files_copied,
       .packages_installed = link_stats.packages_installed,
       .packages_skipped = link_stats.packages_skipped,
+      .lifecycle_builds = 0,
       .elapsed_ms = @intCast(timer.untilNow(io).raw.toMilliseconds()),
     };
     trace.summary("lockfile install");
@@ -2172,10 +2176,11 @@ export fn pkg_resolve_and_install(
     .cache_hits = @intCast(interleaved.cache_hits),
     .cache_misses = @intCast(interleaved.tarballs_queued),
     .files_linked = link_stats.files_linked,
-    .files_copied = link_stats.files_copied,
-    .packages_installed = link_stats.packages_installed,
-    .packages_skipped = link_stats.packages_skipped,
-    .elapsed_ms = @intCast(timer.untilNow(io).raw.toMilliseconds()),
+      .files_copied = link_stats.files_copied,
+      .packages_installed = link_stats.packages_installed,
+      .packages_skipped = link_stats.packages_skipped,
+      .lifecycle_builds = 0,
+      .elapsed_ms = @intCast(timer.untilNow(io).raw.toMilliseconds()),
   };
 
   trace.summary("resolve+install");
@@ -2395,6 +2400,7 @@ fn ensureLifecycleNodeGypShim(ctx: *PkgContext, allocator: std.mem.Allocator, en
 }
 
 const ant_managed_node_gyp_version = "12.2.0";
+const lifecycle_output_tail_limit = 1024 * 1024;
 
 fn ensureAntManagedNodeGypBin(ctx: *PkgContext, allocator: std.mem.Allocator) !?[]u8 {
   const tool_root = try std.fs.path.join(allocator, &.{
@@ -2451,6 +2457,41 @@ fn ensureAntManagedNodeGypBin(ctx: *PkgContext, allocator: std.mem.Allocator) !?
 
   debug.log("prepared Ant-managed node-gyp {s}", .{ant_managed_node_gyp_version});
   return bin_dir;
+}
+
+fn replayLifecycleOutputFile(allocator: std.mem.Allocator, path: []const u8, label: []const u8) void {
+  var file = std.Io.Dir.cwd().openFile(io, path, .{}) catch return;
+  defer file.close(io);
+
+  const stat = file.stat(io) catch return;
+  if (stat.size == 0) return;
+
+  const read_len_u64 = @min(stat.size, lifecycle_output_tail_limit);
+  const read_len: usize = @intCast(read_len_u64);
+  const offset = stat.size - read_len_u64;
+  const bytes = allocator.alloc(u8, read_len) catch return;
+  defer allocator.free(bytes);
+
+  const n = file.readPositionalAll(io, bytes, offset) catch return;
+  if (n == 0) return;
+
+  const stderr = std.Io.File.stderr();
+  if (offset > 0) {
+    const msg = std.fmt.allocPrint(allocator, "\n[{s}: output truncated to last {d} bytes]\n", .{ label, read_len }) catch return;
+    defer allocator.free(msg);
+    stderr.writeStreamingAll(io, msg) catch {};
+  } else {
+    const msg = std.fmt.allocPrint(allocator, "\n[{s}]\n", .{label}) catch return;
+    defer allocator.free(msg);
+    stderr.writeStreamingAll(io, msg) catch {};
+  }
+  stderr.writeStreamingAll(io, bytes[0..n]) catch {};
+  if (bytes[n - 1] != '\n') stderr.writeStreamingAll(io, "\n") catch {};
+}
+
+fn replayLifecycleOutput(allocator: std.mem.Allocator, stdout_path: []const u8, stderr_path: []const u8) void {
+  replayLifecycleOutputFile(allocator, stdout_path, "stdout");
+  replayLifecycleOutputFile(allocator, stderr_path, "stderr");
 }
 
 fn runTrustedPostinstall(
@@ -2563,6 +2604,13 @@ fn runTrustedPostinstall(
   if (jobs.items.len == 0) return true;
   for (jobs.items) |job| debug.log("starting lifecycle scripts: {s}", .{job.pkg_name});
 
+  const output_dir = std.fmt.allocPrint(allocator, "{s}/lifecycle-output", .{ctx.cache_dir}) catch return false;
+  defer allocator.free(output_dir);
+  std.Io.Dir.cwd().createDirPath(io, output_dir) catch {
+    ctx.setError("Failed to prepare lifecycle output capture");
+    return false;
+  };
+
   var process_io_state: std.Io.Threaded = .init(allocator, .{});
   defer process_io_state.deinit();
   const process_io = process_io_state.io();
@@ -2570,9 +2618,9 @@ fn runTrustedPostinstall(
   var scripts_run: u32 = 0;
   var failed_count: u32 = 0;
   for (jobs.items, 0..) |*job, i| {
-    const msg = std.fmt.allocPrintSentinel(allocator, "{s}", .{job.pkg_name}, 0) catch continue;
-    ctx.reportProgress(.postinstall, @intCast(i), @intCast(jobs.items.len), msg);
-    for (job.commands.items) |cmd| {
+    const msg = std.fmt.allocPrintSentinel(allocator, "Building {s}", .{job.pkg_name}, 0) catch continue;
+    ctx.reportProgress(.postinstall, @intCast(i + 1), @intCast(jobs.items.len), msg);
+    for (job.commands.items, 0..) |cmd, j| {
       debug.log("running {s}: {s}", .{ cmd.name, job.pkg_name });
 
       const shell_argv: []const []const u8 = if (builtin.os.tag == .windows)
@@ -2580,44 +2628,91 @@ fn runTrustedPostinstall(
       else
         &[_][]const u8{ scriptShell(), "-c", cmd.script };
 
+      const output_nonce: i128 = @intCast(std.Io.Timestamp.now(io, .boot).toNanoseconds());
+      const stdout_path = std.fmt.allocPrint(allocator, "{s}/{d}-{d}-{d}.out", .{ output_dir, output_nonce, i, j }) catch {
+        if (ctx.last_error == null) ctx.setErrorFmt("Lifecycle script '{s}' failed for {s}: failed to capture output", .{ cmd.name, job.pkg_name });
+        job.failed = true;
+        break;
+      };
+      defer allocator.free(stdout_path);
+      const stderr_path = std.fmt.allocPrint(allocator, "{s}/{d}-{d}-{d}.err", .{ output_dir, output_nonce, i, j }) catch {
+        if (ctx.last_error == null) ctx.setErrorFmt("Lifecycle script '{s}' failed for {s}: failed to capture output", .{ cmd.name, job.pkg_name });
+        job.failed = true;
+        break;
+      };
+      defer allocator.free(stderr_path);
+
+      var stdout_file = std.Io.Dir.cwd().createFile(io, stdout_path, .{}) catch |err| {
+        if (ctx.last_error == null) ctx.setErrorFmt("Lifecycle script '{s}' failed for {s}: failed to capture stdout: {}", .{ cmd.name, job.pkg_name, err });
+        job.failed = true;
+        break;
+      };
+      var stderr_file = std.Io.Dir.cwd().createFile(io, stderr_path, .{}) catch |err| {
+        stdout_file.close(io);
+        if (ctx.last_error == null) ctx.setErrorFmt("Lifecycle script '{s}' failed for {s}: failed to capture stderr: {}", .{ cmd.name, job.pkg_name, err });
+        job.failed = true;
+        break;
+      };
+      var output_files_closed = false;
+      defer if (!output_files_closed) {
+        stdout_file.close(io);
+        stderr_file.close(io);
+      };
+      defer std.Io.Dir.cwd().deleteFile(io, stdout_path) catch {};
+      defer std.Io.Dir.cwd().deleteFile(io, stderr_path) catch {};
+
       var child = std.process.spawn(process_io, .{
         .argv = shell_argv,
         .cwd = .{ .path = job.pkg_dir },
         .environ_map = &env_map,
         .expand_arg0 = .no_expand,
         .stdin = .inherit,
-        .stdout = .inherit,
-        .stderr = .inherit,
+        .stdout = .{ .file = stdout_file },
+        .stderr = .{ .file = stderr_file },
       }) catch |err| {
+        stdout_file.close(io);
+        stderr_file.close(io);
+        output_files_closed = true;
         if (ctx.last_error == null) ctx.setErrorFmt("Lifecycle script '{s}' failed for {s}: failed to spawn: {}", .{ cmd.name, job.pkg_name, err });
         job.failed = true;
         break;
       };
       const term = child.wait(process_io) catch |err| {
+        stdout_file.close(io);
+        stderr_file.close(io);
+        output_files_closed = true;
         if (ctx.last_error == null) ctx.setErrorFmt("Lifecycle script '{s}' failed for {s}: failed to wait: {}", .{ cmd.name, job.pkg_name, err });
         job.failed = true;
         break;
       };
+      stdout_file.close(io);
+      stderr_file.close(io);
+      output_files_closed = true;
 
       switch (term) {
         .exited => |code| {
           if (code != 0) {
             debug.log("  {s} failed for {s}: exit code {d}", .{ cmd.name, job.pkg_name, code });
+            replayLifecycleOutput(allocator, stdout_path, stderr_path);
             if (ctx.last_error == null) {
               ctx.setErrorFmt("Lifecycle script '{s}' failed for {s}: exit code {d}", .{ cmd.name, job.pkg_name, code });
             }
             job.failed = true;
             break;
+          } else if (ctx.options.verbose) {
+            replayLifecycleOutput(allocator, stdout_path, stderr_path);
           }
         },
         .signal => |sig| {
           job.failed = true;
+          replayLifecycleOutput(allocator, stdout_path, stderr_path);
           if (ctx.last_error == null) ctx.setErrorFmt("Lifecycle script '{s}' killed by signal {d}: {s}", .{ cmd.name, @intFromEnum(sig), job.pkg_name });
           debug.log("  {s} killed by signal {d}: {s}", .{ cmd.name, @intFromEnum(sig), job.pkg_name });
           break;
         },
         else => {
           job.failed = true;
+          replayLifecycleOutput(allocator, stdout_path, stderr_path);
           if (ctx.last_error == null) ctx.setErrorFmt("Lifecycle script '{s}' failed for {s}", .{ cmd.name, job.pkg_name });
           break;
         },
@@ -2630,6 +2725,7 @@ fn runTrustedPostinstall(
       const marker_path = std.fmt.allocPrint(allocator, "{s}/.postinstall", .{job.pkg_dir}) catch continue;
       defer allocator.free(marker_path);
       writeLifecycleMarker(allocator, marker_path, job.commands.items);
+      ctx.last_install_result.lifecycle_builds += 1;
       scripts_run += @intCast(job.commands.items.len);
     }
   }
