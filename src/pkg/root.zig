@@ -2176,11 +2176,11 @@ export fn pkg_resolve_and_install(
     .cache_hits = @intCast(interleaved.cache_hits),
     .cache_misses = @intCast(interleaved.tarballs_queued),
     .files_linked = link_stats.files_linked,
-      .files_copied = link_stats.files_copied,
-      .packages_installed = link_stats.packages_installed,
-      .packages_skipped = link_stats.packages_skipped,
-      .lifecycle_builds = 0,
-      .elapsed_ms = @intCast(timer.untilNow(io).raw.toMilliseconds()),
+    .files_copied = link_stats.files_copied,
+    .packages_installed = link_stats.packages_installed,
+    .packages_skipped = link_stats.packages_skipped,
+    .lifecycle_builds = 0,
+    .elapsed_ms = @intCast(timer.untilNow(io).raw.toMilliseconds()),
   };
 
   trace.summary("resolve+install");

@@ -780,15 +780,32 @@ static void prompt_with_default(const char *prompt, const char *def, char *buf, 
   }
 }
 
-static void print_direct_installed_packages(pkg_context_t *ctx) {
+static bool package_matches_specs(const char *pkg_name, const char *const *specs, int spec_count) {
+  if (!pkg_name || !specs || spec_count <= 0) return true;
+
+  for (int i = 0; i < spec_count; i++) {
+    char spec_name[512];
+    if (package_name_from_spec(specs[i], spec_name, sizeof(spec_name)) == 0) continue;
+    if (strcmp(pkg_name, spec_name) == 0) return true;
+  }
+  return false;
+}
+
+static void print_direct_installed_packages(pkg_context_t *ctx, const char *const *specs, int spec_count) {
   if (!ctx) return;
 
-  fputc('\n', stdout);
+  bool printed_header = false;
 
   uint32_t added_count = pkg_get_added_count(ctx);
   for (uint32_t i = 0; i < added_count; i++) {
     pkg_added_package_t pkg;
     if (pkg_get_added_package(ctx, i, &pkg) != PKG_OK || !pkg.direct) continue;
+    if (!package_matches_specs(pkg.name, specs, spec_count)) continue;
+
+    if (!printed_header) {
+      fputc('\n', stdout);
+      printed_header = true;
+    }
 
     int bin_count = pkg_list_package_bins("node_modules", pkg.name, NULL, NULL);
     printf("%sinstalled%s %s%s@%s%s",
@@ -802,11 +819,41 @@ static void print_direct_installed_packages(pkg_context_t *ctx) {
   }
 }
 
-static void print_add_summary(pkg_context_t *ctx, const pkg_install_result_t *result, bool include_done_suffix) {
+static void print_pending_lifecycle_scripts(pkg_context_t *ctx) {
+  if (pkg_discover_lifecycle_scripts(ctx, "node_modules") != PKG_OK) return;
+
+  uint32_t script_count = pkg_get_lifecycle_script_count(ctx);
+  if (script_count == 0) return;
+
+  printf("\n%s%u%s package%s need%s to run lifecycle scripts:\n",
+    C_YELLOW, script_count, C_RESET,
+    script_count == 1 ? "" : "s",
+    script_count == 1 ? "s" : "");
+
+  for (uint32_t i = 0; i < script_count; i++) {
+    pkg_lifecycle_script_t script;
+    if (pkg_get_lifecycle_script(ctx, i, &script) == PKG_OK) {
+      printf("  %s•%s %s%s%s %s(%s)%s\n",
+        C_DIM, C_RESET,
+        C_CYAN, script.name, C_RESET,
+        C_DIM, script.script, C_RESET);
+    }
+  }
+
+  printf("\nRun: %sant trust <pkg>%s or %sant trust --all%s\n", C_DIM, C_RESET, C_DIM, C_RESET);
+}
+
+static void print_add_summary(
+  pkg_context_t *ctx,
+  const pkg_install_result_t *result,
+  bool include_done_suffix,
+  const char *const *specs,
+  int spec_count
+) {
   if (!ctx || !result) return;
 
   if (result->packages_installed > 0) {
-    print_direct_installed_packages(ctx);
+    print_direct_installed_packages(ctx, specs, spec_count);
 
     printf("\n%s%u%s package%s installed %s[%s",
       C_GREEN, result->packages_installed, C_RESET,
@@ -1492,15 +1539,15 @@ static int cmd_update_many(const char *const *package_specs, int count) {
         free_normalized_specs(normalized);
         return EXIT_FAILURE;
       }
-      free((void *)deps_specs);
-      free((void *)dev_specs);
-      free_normalized_specs(normalized);
       pkg_install_result_t result;
       if (pkg_get_install_result(ctx, &result) == PKG_OK) {
-        print_add_summary(ctx, &result, true);
+        print_add_summary(ctx, &result, true, package_specs, count);
       }
 
       pkg_free(ctx);
+      free((void *)deps_specs);
+      free((void *)dev_specs);
+      free_normalized_specs(normalized);
       return EXIT_SUCCESS;
     }
 
@@ -1528,7 +1575,7 @@ static int cmd_update_many(const char *const *package_specs, int count) {
 
   pkg_install_result_t result;
   if (pkg_get_install_result(ctx, &result) == PKG_OK) {
-    print_add_summary(ctx, &result, true);
+    print_add_summary(ctx, &result, true, package_specs, count);
   }
 
   pkg_free(ctx);
@@ -1622,8 +1669,9 @@ static int cmd_add(const char *const *package_specs, int count, bool dev) {
       }
       pkg_install_result_t result;
       if (pkg_get_install_result(ctx, &result) == PKG_OK) {
-        print_add_summary(ctx, &result, false);
+        print_add_summary(ctx, &result, false, normalized.specs, count);
       }
+      print_pending_lifecycle_scripts(ctx);
       pkg_free(ctx);
       free_normalized_specs(normalized);
       return EXIT_SUCCESS;
@@ -1653,8 +1701,9 @@ static int cmd_add(const char *const *package_specs, int count, bool dev) {
 
   pkg_install_result_t result;
   if (pkg_get_install_result(ctx, &result) == PKG_OK) {
-    print_add_summary(ctx, &result, false);
+    print_add_summary(ctx, &result, false, normalized.specs, count);
   }
+  print_pending_lifecycle_scripts(ctx);
 
   pkg_free(ctx);
   free_normalized_specs(normalized);
@@ -1739,10 +1788,11 @@ static int cmd_trust(const char **pkgs, int count, bool all) {
   clock_gettime(CLOCK_MONOTONIC, &start_time);
 
   pkg_cli_config_t config = pkg_config_load();
+  progress_t progress;
   pkg_options_t opts = pkg_options_make(
     config.default_registry,
-    NULL,
-    NULL
+    pkg_verbose ? NULL : progress_callback,
+    pkg_verbose ? NULL : &progress
   );
   char trust_cache_dir[4096];
   pkg_options_apply_local_store(&opts, config, trust_cache_dir, sizeof(trust_cache_dir));
@@ -1834,8 +1884,10 @@ static int cmd_trust(const char **pkgs, int count, bool all) {
     printf("Running lifecycle scripts for %s%u%s package%s...\n",
       C_GREEN, to_run_count, C_RESET,
       to_run_count == 1 ? "" : "s");
-    
+
+    if (!pkg_verbose) progress_start(&progress, "⚙️  Building");
     pkg_error_t run_err = pkg_run_postinstall(ctx, "node_modules", to_run, to_run_count);
+    if (!pkg_verbose) progress_stop(&progress);
     if (run_err != PKG_OK) {
       print_pkg_error(ctx);
       free((void *)to_run);
