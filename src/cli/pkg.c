@@ -1269,7 +1269,7 @@ static int cmd_install(void) {
   pkg_install_result_t result;
   if (pkg_get_install_result(ctx, &result) == PKG_OK) {
     if (result.packages_installed > 0) {
-      print_added_packages(ctx);
+      if (result.packages_installed >= result.package_count) print_added_packages(ctx);
       printf("%s%u%s package%s installed", 
         C_GREEN, result.packages_installed, C_RESET,
         result.packages_installed == 1 ? "" : "s");
@@ -1375,7 +1375,7 @@ static int cmd_update(void) {
   pkg_install_result_t result;
   if (pkg_get_install_result(ctx, &result) == PKG_OK) {
     if (result.packages_installed > 0) {
-      print_added_packages(ctx);
+      if (result.packages_installed >= result.package_count) print_added_packages(ctx);
       printf("%s%u%s package%s installed", 
         C_GREEN, result.packages_installed, C_RESET,
         result.packages_installed == 1 ? "" : "s");

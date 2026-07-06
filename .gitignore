@@ -25,7 +25,6 @@
 /src/pkg/.zig-cache
 /src/strip/target
 
-/test262
 /javascript-zoo
 /game-of-life
 
