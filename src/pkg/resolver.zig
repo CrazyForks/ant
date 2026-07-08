@@ -18,6 +18,19 @@ fn isAntsLandRegistry(registry_url: []const u8) bool {
   return std.mem.eql(u8, host, "npm.ants.land");
 }
 
+fn httpUrlHost(url: []const u8) ?[]const u8 {
+  const without_scheme = if (std.mem.startsWith(u8, url, "https://"))
+    url["https://".len..]
+  else if (std.mem.startsWith(u8, url, "http://"))
+    url["http://".len..]
+  else
+    return null;
+
+  const host_end = std.mem.indexOfAny(u8, without_scheme, "/?#") orelse without_scheme.len;
+  if (host_end == 0) return null;
+  return without_scheme[0..host_end];
+}
+
 pub const ResolveError = error{
   InvalidPackageJson,
   NetworkError,
@@ -1654,7 +1667,9 @@ pub const Resolver = struct {
       }
     }
 
-    var metadata = try self.fetchMetadata(name);
+    var metadata = try self.fetchMetadataForTarballUrl(name, tarball_url);
+    defer metadata.deinit();
+    
     const version_info = self.selectVersionByTarballUrl(&metadata, tarball_url) orelse return error.NoMatchingVersion;
     if (!version_info.matchesPlatform()) return error.PlatformMismatch;
 
@@ -2224,6 +2239,39 @@ pub const Resolver = struct {
     };
 
     return self.fetchFromNetwork(name);
+  }
+
+  fn fetchMetadataForTarballUrl(self: *Resolver, name: []const u8, tarball_url: []const u8) !PackageMetadata {
+    const tarball_host = httpUrlHost(tarball_url) orelse return error.NoMatchingVersion;
+
+    if (self.cache_db) |db| if (!self.force_refresh) {
+      if (try self.loadFromDiskCacheUncached(db, tarball_host, name, "tarball registry, disk cache")) |metadata| return metadata;
+    };
+
+    debug.log("  metadata: {s} (tarball registry fetch: {s})", .{ name, tarball_host });
+    const json_data = if (std.mem.eql(u8, tarball_host, self.http.registry_host))
+      try self.http.fetchMetadata(name, self.allocator)
+    else blk: {
+      const tarball_http = try fetcher.Fetcher.init(self.cache_allocator, tarball_host);
+      defer tarball_http.deinit();
+      break :blk try tarball_http.fetchMetadata(name, self.allocator);
+    };
+    defer self.allocator.free(json_data);
+
+    if (self.cache_db) |db| {
+      db.insertMetadata(tarball_host, name, json_data) catch {};
+    }
+
+    return PackageMetadata.parseFromJson(self.cache_allocator, json_data);
+  }
+
+  fn loadFromDiskCacheUncached(self: *Resolver, db: *cache.CacheDB, registry_host: []const u8, name: []const u8, label: []const u8) !?PackageMetadata {
+    const json_data = db.lookupMetadata(registry_host, name, self.allocator) orelse return null;
+    defer self.allocator.free(json_data);
+
+    const metadata = PackageMetadata.parseFromJson(self.cache_allocator, json_data) catch return null;
+    debug.log("  metadata: {s} ({s})", .{ name, label });
+    return metadata;
   }
 
   fn loadFromDiskCache(self: *Resolver, db: *cache.CacheDB, registry_host: []const u8, name: []const u8, label: []const u8) !?PackageMetadata {
