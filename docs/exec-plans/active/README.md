@@ -8,6 +8,8 @@ Store in-progress execution plans here.
 
 ## Active
 
+- [Dynamic Property Performance](dynamic-property-perf.md)
+  - [Dynamic Property Performance Extras](dynamic-property-perf-extras.md)
 - [Silver Recursive JIT Performance](silver-recursive-jit-perf.md)
 
 Recommended sections:
