@@ -52,9 +52,11 @@ function bench(name, fn, expected) {
 }
 
 const object = { value: 7 };
+const missing = {};
 
 console.log("GET_FIELD_OPT benchmark: " + iterations + " iterations x " + rounds + " rounds");
 bench("optional present", n => loopOptionalPresent(object, n), n => n * 7);
+bench("optional missing", n => loopOptionalNullish(missing, n), n => n);
 bench("optional null", n => loopOptionalNullish(null, n), n => n);
 bench("optional undefined", n => loopOptionalNullish(undefined, n), n => n);
 bench("normal field", n => loopField(object, n), n => n * 7);
