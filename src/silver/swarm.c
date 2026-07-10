@@ -1660,6 +1660,16 @@ static bool jit_emit_inline_body(
         break;
       }
 
+      case OP_NIP: {
+        if (isp < 2) return false;
+        MIR_append_insn(ctx, jit_func,
+          MIR_new_insn(ctx, MIR_MOV,
+            MIR_new_reg_op(ctx, inl_vs[isp - 2]),
+            MIR_new_reg_op(ctx, inl_vs[isp - 1])));
+        isp--;
+        break;
+      }
+
       case OP_INSERT2: {
         if (isp < 2) return false;
         char tn[32]; snprintf(tn, sizeof(tn), "inl%d_ins2t", id);
@@ -3838,6 +3848,22 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
           MIR_new_insn(ctx, MIR_MOV,
             MIR_new_reg_op(ctx, db),
             MIR_new_reg_op(ctx, rb)));
+        break;
+      }
+
+      case OP_NIP: {
+        if (vs.sp < 2) { ok = false; break; }
+        int top_idx = vs.sp - 1;
+        int dst_idx = vs.sp - 2;
+        vstack_ensure_boxed(&vs, top_idx, ctx, jit_func, r_d_slot);
+        MIR_append_insn(ctx, jit_func,
+          MIR_new_insn(ctx, MIR_MOV,
+            MIR_new_reg_op(ctx, vs.regs[dst_idx]),
+            MIR_new_reg_op(ctx, vs.regs[top_idx])));
+        vs.sp--;
+        vs.slot_type[dst_idx] = SLOT_BOXED;
+        vs.known_func[dst_idx] = NULL;
+        if (vs.has_const) vs.has_const[dst_idx] = false;
         break;
       }
 
