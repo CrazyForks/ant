@@ -27,6 +27,7 @@
 
 /javascript-zoo
 /game-of-life
+/anteater.sh
 
 node_modules
 !/tests/node_modules

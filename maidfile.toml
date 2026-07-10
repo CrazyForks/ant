@@ -1,7 +1,3 @@
-[env]
-CC = "ccache clang"
-CXX = "ccache clang++"
-
 [tasks.build]
 path = "build"
 script = "meson compile"
@@ -52,16 +48,7 @@ script = [
 ]
 
 [tasks.shell]
-script = '''
-nix develop --command zsh -lc '
-  unset NIX_ENFORCE_NO_NATIVE
-  export PATH="$NIX_CC/bin:$(dirname "$(command -v ld.lld)"):$PATH"
-  export CC="$NIX_CC/bin/clang"
-  export CXX="$NIX_CC/bin/clang++"
-  export LD="$NIX_CC/bin/ld"
-  exec zsh
-'
-'''
+script = "nix develop --command zsh"
 
 [tasks.install]
 script = ["maid build -q", '''

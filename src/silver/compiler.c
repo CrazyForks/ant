@@ -427,9 +427,11 @@ static int add_atom(sv_compiler_t *c, const char *str, uint32_t len) {
   return c->atom_count++;
 }
 
+// TODO: make it a X-macro in opcode.h
 static inline bool sv_op_has_ic_slot(sv_op_t op) {
   return op == OP_GET_GLOBAL || op == OP_GET_GLOBAL_UNDEF ||
-         op == OP_GET_FIELD || op == OP_GET_FIELD2 || op == OP_PUT_FIELD;
+         op == OP_GET_FIELD || op == OP_GET_FIELD2 ||
+         op == OP_GET_FIELD_OPT || op == OP_PUT_FIELD;
 }
 
 static uint16_t alloc_ic_idx(sv_compiler_t *c) {
@@ -6278,8 +6280,7 @@ void sv_disasm(ant_t *js, sv_func_t *func, const char *label) {
         fprintf(stderr, " [%.*s]", (int)func->atoms[idx].len, func->atoms[idx].str);
       else
         fprintf(stderr, " a%u", idx);
-      if ((op == OP_GET_GLOBAL || op == OP_GET_GLOBAL_UNDEF ||
-           op == OP_GET_FIELD || op == OP_GET_FIELD2 || op == OP_PUT_FIELD) && size >= 7)
+      if (sv_op_has_ic_slot((sv_op_t)op) && size >= 7)
         fprintf(stderr, " ic[%u]", sv_get_u16(func->code + pc + 5));
       break;
     }

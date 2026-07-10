@@ -14,7 +14,6 @@
 , zig ? null
 , importNpmLock
 , overrideCC
-, apple-sdk_15 ? null
 , darwin ? null
 , callPackage
 , gitRev ? "unknown"
@@ -29,7 +28,7 @@ let
       overrideCC llvmPackages_21.stdenv (
         llvmPackages_21.stdenv.cc.override { bintools = llvmPackages_21.bintools; }
       )
-    else llvmPackages_21.stdenv;
+    else stdenv;
   antStdenv = ccacheStdenv.override {
     stdenv = antBaseStdenv;
     extraConfig = ''
@@ -90,8 +89,6 @@ antStdenv.mkDerivation (finalAttrs: {
     curl
     zigPkg
   ] ++ lib.optionals stdenv.isDarwin [ darwin.sigtool ];
-
-  buildInputs = lib.optionals stdenv.isDarwin [ apple-sdk_15 ];
 
   postUnpack = ''
     chmod -R u+w "$sourceRoot/vendor"

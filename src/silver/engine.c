@@ -1048,7 +1048,7 @@ ant_value_t sv_execute_frame(sv_vm_t *vm, sv_func_t *func, ant_value_t this, ant
   L_DEFINE_FIELD:  { sv_op_define_field(vm, js, func, ip);          NEXT(5); }
   L_GET_LENGTH:    { VM_CHECK(sv_op_get_length(vm, js));            NEXT(1); }
 
-  L_GET_FIELD_OPT:  { VM_CHECK(sv_op_get_field_opt(vm, js, func, ip));  NEXT(5); }
+  L_GET_FIELD_OPT:  { VM_CHECK(sv_op_get_field_opt(vm, js, func, ip));  NEXT(7); }
   L_GET_ELEM_OPT:   { VM_CHECK(sv_op_get_elem_opt(vm, js, func, ip));   NEXT(1); }
 
   L_GET_PRIVATE:      { VM_CHECK(sv_op_get_private(vm, js));       NEXT(1); }
