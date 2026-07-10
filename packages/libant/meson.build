@@ -11,11 +11,53 @@ project('libant', ['c', 'cpp'], default_options: [
 ], subproject_dir: 'vendor')
 
 python = find_program('python3')
+fs = import('fs')
 is_static = true
 
 use_lto = get_option('lto')
 src_root = meson.project_source_root() / '../..'
 include = include_directories('../../include')
+sandbox_backend_include = include_directories(
+  '../../src/sandbox/backends',
+  '../../src/sandbox/backends/shared/include',
+)
+
+sandbox_shared_sources = files(run_command(
+  python, files('meson/sources.py'), src_root / 'sources.json',
+  'sandbox_backend:shared', src_root,
+  check: true
+).stdout().strip().split())
+
+sandbox_backend_sources = []
+darwin_hvf_supported = host_machine.system() == 'darwin' and host_machine.cpu_family() == 'aarch64'
+if host_machine.system() == 'darwin'
+  sandbox_backend_sources += files(run_command(
+    python, files('meson/sources.py'), src_root / 'sources.json',
+    'sandbox_backend:darwin', src_root,
+    check: true
+  ).stdout().strip().split())
+  if darwin_hvf_supported
+    sandbox_backend_sources += files(run_command(
+      python, files('meson/sources.py'), src_root / 'sources.json',
+      'sandbox_backend:darwin_hvf', src_root,
+      check: true
+    ).stdout().strip().split())
+    sandbox_backend_sources += sandbox_shared_sources
+  endif
+elif host_machine.system() == 'linux'
+  sandbox_backend_sources += files(run_command(
+    python, files('meson/sources.py'), src_root / 'sources.json',
+    'sandbox_backend:linux', src_root,
+    check: true
+  ).stdout().strip().split())
+  sandbox_backend_sources += sandbox_shared_sources
+elif host_machine.system() == 'windows'
+  sandbox_backend_sources += files(run_command(
+    python, files('meson/sources.py'), src_root / 'sources.json',
+    'sandbox_backend:windows', src_root,
+    check: true
+  ).stdout().strip().split())
+endif
 
 subdir('meson')
 
@@ -40,16 +82,16 @@ lib_sources = files(run_command(
 
 libant_core = static_library(
   'ant_core',
-  lib_sources + [builtin_bundle_h, snapshot_h, messages_h, theme_h],
-  include_directories: include,
+  lib_sources + sandbox_backend_sources + [builtin_bundle_h, snapshot_h, messages_h, theme_h],
+  include_directories: [include, sandbox_backend_include],
   dependencies: ant_deps,
 )
 
 if use_lto
   libant_core_lto = static_library(
     'ant_core_lto',
-    lib_sources + [builtin_bundle_h, snapshot_h, messages_h, theme_h],
-    include_directories: include,
+    lib_sources + sandbox_backend_sources + [builtin_bundle_h, snapshot_h, messages_h, theme_h],
+    include_directories: [include, sandbox_backend_include],
     dependencies: ant_deps,
     c_args: ['-flto'],
   )
@@ -58,7 +100,7 @@ endif
 pkg = import('pkgconfig')
 
 if host_machine.system() == 'darwin'
-  pkg_libs = ['-framework Security', '-framework CoreFoundation', '-lpthread']
+  pkg_libs = ['-framework Security', '-framework CoreFoundation', '-framework Hypervisor', '-lpthread']
 elif host_machine.system() == 'linux'
   pkg_libs = ['-lpthread', '-ldl', '-lm']
 elif host_machine.system() == 'windows'

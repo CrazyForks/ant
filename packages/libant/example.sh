@@ -14,7 +14,7 @@ fi
 
 case "$(uname -s)" in
   Darwin)
-    LIBS="-framework Security -framework CoreFoundation -lpthread"
+    LIBS="-framework Security -framework CoreFoundation -framework Hypervisor -lpthread"
     CFLAGS="${CFLAGS:-} -mmacosx-version-min=15.0"
     LDFLAGS="${LDFLAGS:-} -mmacosx-version-min=15.0"
     ;;

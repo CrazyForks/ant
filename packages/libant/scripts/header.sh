@@ -33,12 +33,22 @@ HEADERS=(
   "pool.h:$INCLUDE_DIR/pool.h"
   "minicoro.h:$VENDOR_DIR/minicoro/minicoro.h"
   "esm/loader.h:$INCLUDE_DIR/esm/loader.h"
+  "esm/library.h:$INCLUDE_DIR/esm/library.h"
   "sugar.h:$INCLUDE_DIR/sugar.h"
   "descriptors.h:$INCLUDE_DIR/descriptors.h"
   "internal.h:$INCLUDE_DIR/internal.h"
+  "gc.h:$INCLUDE_DIR/gc.h"
+  "gc/roots.h:$INCLUDE_DIR/gc/roots.h"
   "gc/objects.h:$INCLUDE_DIR/gc/objects.h"
   "gc/modules.h:$INCLUDE_DIR/gc/modules.h"
   "runtime.h:$INCLUDE_DIR/runtime.h"
+  "snapshot.h:$INCLUDE_DIR/snapshot.h"
+  "streams/codec.h:$INCLUDE_DIR/streams/codec.h"
+  "streams/compression.h:$INCLUDE_DIR/streams/compression.h"
+  "streams/queuing.h:$INCLUDE_DIR/streams/queuing.h"
+  "streams/readable.h:$INCLUDE_DIR/streams/readable.h"
+  "streams/transform.h:$INCLUDE_DIR/streams/transform.h"
+  "streams/writable.h:$INCLUDE_DIR/streams/writable.h"
   "modules/symbol.h:$INCLUDE_DIR/modules/symbol.h"
   "modules/timer.h:$INCLUDE_DIR/modules/timer.h"
   "silver/vm.h:$INCLUDE_DIR/silver/vm.h"
@@ -138,7 +148,7 @@ cat > "$OUTPUT" << EOF
  * 
  * This is an auto-generated amalgamated header containing all public APIs.
  * Link with libant.a and required system libraries:
- *   macOS:   -framework Security -framework CoreFoundation -lpthread
+ *   macOS:   -framework Security -framework CoreFoundation -framework Hypervisor -lpthread
  *   Linux:   -lpthread -ldl -lm
  *   Windows: -lws2_32 -lrpcrt4 -lsecur32 -lntdll -lcrypt32 -luserenv
  */
@@ -167,6 +177,9 @@ for entry in "${HEADERS[@]}"; do
   fi
   
   echo "/* === $name === */" >> "$OUTPUT"
+  if [ "$name" = "internal.h" ]; then
+    echo "struct sv_ast;" >> "$OUTPUT"
+  fi
   
   emit_header_file "$path"
   

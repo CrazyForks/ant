@@ -6,8 +6,7 @@ set -e
 cd "$ROOT_DIR"
 meson subprojects download
 
-if [ ! -d "$SCRIPT_DIR/vendor" ]; then
-  cp -r "$ROOT_DIR/vendor" "$SCRIPT_DIR/vendor"
-fi
+mkdir -p "$SCRIPT_DIR/vendor"
+rsync -a --exclude='.git/' "$ROOT_DIR/vendor/" "$SCRIPT_DIR/vendor/"
 
 mkdir -p "$BUILD_DIR"
