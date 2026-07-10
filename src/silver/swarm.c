@@ -6578,6 +6578,63 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
         break;
       }
 
+      case OP_GET_ELEM_OPT: {
+        vstack_ensure_boxed(&vs, vs.sp - 1, ctx, jit_func, r_d_slot);
+        vstack_ensure_boxed(&vs, vs.sp - 2, ctx, jit_func, r_d_slot);
+        MIR_reg_t key = vstack_pop(&vs);
+        MIR_reg_t obj = vstack_pop(&vs);
+        MIR_reg_t dst = vstack_push(&vs);
+        MIR_label_t nullish = MIR_new_label(ctx);
+        MIR_label_t no_err = MIR_new_label(ctx);
+        MIR_append_insn(ctx, jit_func,
+          MIR_new_insn(ctx, MIR_BEQ,
+            MIR_new_label_op(ctx, nullish),
+            MIR_new_reg_op(ctx, obj),
+            MIR_new_uint_op(ctx, mkval(T_NULL, 0))));
+        MIR_append_insn(ctx, jit_func,
+          MIR_new_insn(ctx, MIR_BEQ,
+            MIR_new_label_op(ctx, nullish),
+            MIR_new_reg_op(ctx, obj),
+            MIR_new_uint_op(ctx, mkval(T_UNDEF, 0))));
+        MIR_append_insn(ctx, jit_func,
+          MIR_new_call_insn(ctx, 9,
+            MIR_new_ref_op(ctx, ge_proto),
+            MIR_new_ref_op(ctx, imp_get_elem),
+            MIR_new_reg_op(ctx, dst),
+            MIR_new_reg_op(ctx, r_vm),
+            MIR_new_reg_op(ctx, r_js),
+            MIR_new_reg_op(ctx, obj),
+            MIR_new_reg_op(ctx, key),
+            MIR_new_uint_op(ctx, (uint64_t)(uintptr_t)func),
+            MIR_new_int_op(ctx, (int64_t)bc_off)));
+        MIR_append_insn(ctx, jit_func,
+          MIR_new_insn(ctx, MIR_URSH,
+            MIR_new_reg_op(ctx, r_bool),
+            MIR_new_reg_op(ctx, dst),
+            MIR_new_int_op(ctx, NANBOX_TYPE_SHIFT)));
+        MIR_append_insn(ctx, jit_func,
+          MIR_new_insn(ctx, MIR_BNE,
+            MIR_new_label_op(ctx, no_err),
+            MIR_new_reg_op(ctx, r_bool),
+            MIR_new_uint_op(ctx, JIT_ERR_TAG)));
+        if (jit_try_depth > 0) {
+          jit_try_entry_t *h = &jit_try_stack[jit_try_depth - 1];
+          MIR_append_insn(ctx, jit_func,
+            MIR_new_insn(ctx, MIR_MOV,
+              MIR_new_reg_op(ctx, vs.regs[h->saved_sp]),
+              MIR_new_reg_op(ctx, dst)));
+          MIR_append_insn(ctx, jit_func,
+            MIR_new_insn(ctx, MIR_JMP,
+              MIR_new_label_op(ctx, h->catch_label)));
+        } else {
+          JIT_EMIT_EXIT_RET(MIR_new_reg_op(ctx, dst));
+        }
+        MIR_append_insn(ctx, jit_func, nullish);
+        mir_load_imm(ctx, jit_func, dst, mkval(T_UNDEF, 0));
+        MIR_append_insn(ctx, jit_func, no_err);
+        break;
+      }
+
       case OP_GET_ELEM2: {
         vstack_ensure_boxed(&vs, vs.sp - 1, ctx, jit_func, r_d_slot);
         vstack_ensure_boxed(&vs, vs.sp - 2, ctx, jit_func, r_d_slot);
