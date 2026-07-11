@@ -53,6 +53,7 @@ void ant_kvm_install_wakeup_signal(void);
 void *ant_kvm_deadline_thread(void *opaque);
 void ant_kvm_set_result(ant_sandbox_vm_result_t *result, ant_sandbox_vm_result_kind_t kind, int code);
 void ant_kvm_classify_result(ant_hvf_vm_t *vm, ant_sandbox_vm_result_t *result, int rc);
+int ant_kvm_session_send(void *opaque, const void *data, size_t len);
 
 int ant_kvm_ioctl(int fd, unsigned long req, void *arg, const char *op);
 int ant_kvm_find_symbol(const char *path, const char *name, uint64_t *value_out);

@@ -34,6 +34,12 @@ uint64_t ant_kvm_cpu_time_ns(ant_hvf_vm_t *vm) {
   return base + (current >= start ? current - start : 0);
 }
 
+int ant_kvm_session_send(void *opaque, const void *data, size_t len) {
+  if (!opaque) return -EINVAL;
+  ant_kvm_session_t *session = opaque;
+  return ant_hvf_vsock_queue_frame(&session->vm, data, len);
+}
+
 void *ant_kvm_deadline_thread(void *opaque) {
   ant_kvm_deadline_t *deadline = opaque;
   const struct timespec tick = { .tv_sec = 0, .tv_nsec = 1000000 };

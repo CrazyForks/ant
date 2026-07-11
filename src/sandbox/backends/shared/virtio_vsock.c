@@ -176,6 +176,7 @@ int ant_hvf_vsock_queue_frame(ant_hvf_vm_t *vm, const void *data, size_t len) {
 
 void ant_hvf_vsock_clear_frames(ant_hvf_vm_t *vm) {
   if (!vm) return;
+  if (vm->vsock_lock_init) pthread_mutex_lock(&vm->vsock_lock);
   ant_vsock_outgoing_frame_t *frame = vm->vsock.outgoing_head;
   while (frame) {
     ant_vsock_outgoing_frame_t *next = frame->next;
@@ -186,6 +187,7 @@ void ant_hvf_vsock_clear_frames(ant_hvf_vm_t *vm) {
   vm->vsock.outgoing_head = NULL;
   vm->vsock.outgoing_tail = NULL;
   atomic_store_explicit(&vm->vsock_wake_pending, false, memory_order_release);
+  if (vm->vsock_lock_init) pthread_mutex_unlock(&vm->vsock_lock);
 }
 
 int ant_hvf_vsock_maybe_send_request(ant_hvf_vm_t *vm) {
@@ -605,7 +607,7 @@ int ant_hvf_virtio_vsock_notify(ant_hvf_vm_t *vm, unsigned queue) {
       dev->connected = false;
       dev->response_sent = false;
       atomic_store_explicit(&dev->request_sent, false, memory_order_release);
-      dev->request_off = 0;
+      ant_hvf_vsock_clear_frames(vm);
       dev->transport_error = !dev->exit_received;
     } else if (hdr.op == ANT_VIRTIO_VSOCK_OP_SHUTDOWN) {
       rc = ant_hvf_vsock_send_packet(vm, ANT_VIRTIO_VSOCK_OP_SHUTDOWN, NULL, 0);

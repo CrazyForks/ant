@@ -904,7 +904,7 @@ static void sandbox_host_deliver_message(sandbox_state_t *state, const char *pay
     }
 
     *link = waiter->next;
-    ant_value_t value = waiter->iterator ? js_iter_result(js, false, message) : message;
+    ant_value_t value = waiter->iterator ? js_iter_result(js, true, message) : message;
     js_resolve_promise(js, waiter->promise, value);
     free(waiter->type);
     free(waiter);
@@ -928,7 +928,7 @@ static void sandbox_finish_waiters(sandbox_state_t *state) {
   while (waiter) {
     sandbox_message_waiter_t *next = waiter->next;
     if (waiter->iterator)
-      js_resolve_promise(js, waiter->promise, js_iter_result(js, true, js_mkundef()));
+      js_resolve_promise(js, waiter->promise, js_iter_result(js, false, js_mkundef()));
     else
       js_reject_promise(js, waiter->promise,
                         js_mkerr_typed(js, JS_ERR_TYPE, "Sandbox message channel closed"));
@@ -1282,7 +1282,7 @@ static ant_value_t sandbox_wait_for_message(
   ant_value_t promise = js_mkpromise(js);
   if (!state || state->closed) {
     if (iterator)
-      js_resolve_promise(js, promise, js_iter_result(js, true, js_mkundef()));
+      js_resolve_promise(js, promise, js_iter_result(js, false, js_mkundef()));
     else
       js_reject_promise(
         js, promise,
@@ -1292,7 +1292,7 @@ static ant_value_t sandbox_wait_for_message(
   }
   if (!state->running) {
     if (iterator)
-      js_resolve_promise(js, promise, js_iter_result(js, true, js_mkundef()));
+      js_resolve_promise(js, promise, js_iter_result(js, false, js_mkundef()));
     else
       js_reject_promise(js, promise, js_mkerr_typed(js, JS_ERR_TYPE, "Sandbox message channel requires a running entry"));
     return promise;

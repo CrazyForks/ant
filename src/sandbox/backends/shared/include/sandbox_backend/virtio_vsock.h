@@ -50,9 +50,6 @@ typedef struct ant_vsock_outgoing_frame {
 
 typedef struct {
   ant_hvf_virtio_device_t virtio;
-  const void *request_data;
-  size_t request_len;
-  size_t request_off;
   bool connected;
   bool response_sent;
   atomic_bool request_sent;

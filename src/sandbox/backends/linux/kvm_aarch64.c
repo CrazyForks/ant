@@ -1307,7 +1307,10 @@ static int ant_kvm_session_execute(void *opaque, const ant_sandbox_vm_request_t 
   vm->frame_handler = request->frame_handler;
   vm->frame_handler_user = request->frame_handler_user;
   int queue_rc = ant_hvf_vsock_queue_frame(vm, request->request_data, request->request_len);
-  if (queue_rc != 0) return queue_rc;
+  if (queue_rc != 0) {
+    ant_kvm_classify_result(vm, request->result, queue_rc);
+    return queue_rc;
+  }
 
   const uint8_t *frame = request->request_data;
   bool close_request = 
@@ -1341,12 +1344,6 @@ static int ant_kvm_session_execute(void *opaque, const ant_sandbox_vm_request_t 
   vm->frame_handler_user = NULL;
   
   return rc;
-}
-
-static int ant_kvm_session_send(void *opaque, const void *data, size_t len) {
-  if (!opaque) return -EINVAL;
-  ant_kvm_session_t *session = opaque;
-  return ant_hvf_vsock_queue_frame(&session->vm, data, len);
 }
 
 static int ant_kvm_session_stats(void *opaque, ant_sandbox_vm_stats_t *stats) {
