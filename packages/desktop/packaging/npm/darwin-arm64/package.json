@@ -1,0 +1,38 @@
+{
+  "name": "ant-desktop-darwin-arm64",
+  "version": "0.0.1",
+  "description": "Ant Desktop native runtime for macOS on Apple Silicon",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/theMackabu/ant.git",
+    "directory": "packages/desktop/packaging/npm/darwin-arm64"
+  },
+  "type": "module",
+  "main": "index.cjs",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "index.cjs",
+    "install.cjs",
+    "package.cjs",
+    "runtime.lock.json",
+    "artifacts/ant-desktop-darwin-arm64.tar.gz",
+    "artifacts/ant-desktop-darwin-arm64.tar.gz.sha256",
+    "README.md"
+  ],
+  "scripts": {
+    "postinstall": "node install.cjs",
+    "prepack": "node ../../../scripts/package-platform.cjs"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "name": "ant-desktop",
+  "version": "0.0.1",
+  "description": "Build native desktop applications with Ant",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/theMackabu/ant.git",
+    "directory": "packages/desktop"
+  },
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "bin": {
+    "ant-desktop": "app/bin/ant-desktop.js"
+  },
+  "scripts": {
+    "build": "ant scripts/build.js",
+    "package": "ant scripts/package-platform.cjs",
+    "example": "ant app/bin/ant-desktop.js dev --app-dir tests/examples",
+    "example:package": "ant app/bin/ant-desktop.js package --app-dir tests/examples --overwrite"
+  },
+  "files": [
+    "app/bin/",
+    "config.js",
+    "index.js",
+    "platforms.json",
+    "README.md"
+  ],
+  "optionalDependencies": {
+    "ant-desktop-darwin-arm64": "0.0.1"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
