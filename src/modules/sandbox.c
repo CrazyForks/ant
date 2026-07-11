@@ -59,21 +59,27 @@ typedef struct sandbox_state {
   bool close_requested;
   bool async_initialized;
   bool mutex_initialized;
+  
   pthread_t worker;
   pthread_mutex_t mutex;
   uv_async_t async;
+  
   ant_t *js;
   ant_value_t self;
   ant_value_t run_promise;
   ant_value_t close_promise;
+  
   bool has_run_promise;
   bool has_close_promise;
   uint8_t *run_request;
   size_t run_request_len;
   int run_rc;
+  
   ant_sandbox_vm_result_t run_result;
   struct sandbox_message_node *message_head;
   struct sandbox_message_node *message_tail;
+  struct sandbox_message_waiter *waiter_head;
+  struct sandbox_message_waiter *waiter_tail;
   struct sandbox_state *next_active;
   struct sandbox_state *prev_active;
 } sandbox_state_t;
@@ -83,6 +89,13 @@ typedef struct sandbox_message_node {
   size_t len;
   struct sandbox_message_node *next;
 } sandbox_message_node_t;
+
+typedef struct sandbox_message_waiter {
+  ant_value_t promise;
+  char *type;
+  bool iterator;
+  struct sandbox_message_waiter *next;
+} sandbox_message_waiter_t;
 
 static sandbox_state_t *g_active_sandboxes = NULL;
 
@@ -318,6 +331,17 @@ static void sandbox_free_messages(sandbox_state_t *state) {
   if (state) state->message_head = state->message_tail = NULL;
 }
 
+static void sandbox_free_waiters(sandbox_state_t *state) {
+  sandbox_message_waiter_t *waiter = state ? state->waiter_head : NULL;
+  while (waiter) {
+    sandbox_message_waiter_t *next = waiter->next;
+    free(waiter->type);
+    free(waiter);
+    waiter = next;
+  }
+  if (state) state->waiter_head = state->waiter_tail = NULL;
+}
+
 static void sandbox_update_stats(sandbox_state_t *state) {
   if (!state || !state->session) return;
   ant_sandbox_vm_stats_t current;
@@ -339,6 +363,7 @@ static void sandbox_state_destroy(sandbox_state_t *state) {
   state->session = NULL;
   ant_sandbox_launch_options_cleanup(&state->launch);
   sandbox_free_messages(state);
+  sandbox_free_waiters(state);
   free(state->run_request);
   if (state->mutex_initialized) pthread_mutex_destroy(&state->mutex);
   free(state);
@@ -861,11 +886,56 @@ static void sandbox_host_deliver_message(sandbox_state_t *state, const char *pay
   ant_value_t encoded = js_mkstr(js, payload, payload_len);
   ant_value_t message = json_parse_value(js, encoded);
   if (is_err(message)) return;
+
+  sandbox_message_waiter_t **link = &state->waiter_head;
+  while (*link) {
+    sandbox_message_waiter_t *waiter = *link;
+    bool matches = waiter->type == NULL;
+    if (waiter->type) {
+      ant_value_t type = is_object_type(message) ? js_get(js, message, "type") : js_mkundef();
+      if (vtype(type) == T_STR) {
+        const char *value = js_getstr(js, type, NULL);
+        matches = value && strcmp(value, waiter->type) == 0;
+      }
+    }
+    if (!matches) {
+      link = &waiter->next;
+      continue;
+    }
+
+    *link = waiter->next;
+    ant_value_t value = waiter->iterator ? js_iter_result(js, false, message) : message;
+    js_resolve_promise(js, waiter->promise, value);
+    free(waiter->type);
+    free(waiter);
+  }
+  state->waiter_tail = NULL;
+  for (sandbox_message_waiter_t *waiter = state->waiter_head; waiter; waiter = waiter->next)
+    state->waiter_tail = waiter;
+
   ant_value_t handler = js_get(js, state->self, "onmessage");
   if (!is_callable(handler)) handler = js_get(js, state->self, "_messageHandler");
   if (!is_callable(handler)) return;
   ant_value_t args[1] = { message };
   sv_vm_call(js->vm, js, handler, state->self, args, 1, NULL, false);
+}
+
+static void sandbox_finish_waiters(sandbox_state_t *state) {
+  if (!state || !state->js) return;
+  ant_t *js = state->js;
+  sandbox_message_waiter_t *waiter = state->waiter_head;
+  state->waiter_head = state->waiter_tail = NULL;
+  while (waiter) {
+    sandbox_message_waiter_t *next = waiter->next;
+    if (waiter->iterator)
+      js_resolve_promise(js, waiter->promise, js_iter_result(js, true, js_mkundef()));
+    else
+      js_reject_promise(js, waiter->promise,
+                        js_mkerr_typed(js, JS_ERR_TYPE, "Sandbox message channel closed"));
+    free(waiter->type);
+    free(waiter);
+    waiter = next;
+  }
 }
 
 static bool sandbox_async_capture_frame(uint8_t type, const void *payload, size_t payload_len, void *user) {
@@ -947,6 +1017,7 @@ static void sandbox_async_cb(uv_async_t *handle) {
   state->run_request = NULL;
   state->run_request_len = 0;
   state->running = false;
+  sandbox_finish_waiters(state);
 
   if (state->has_run_promise) {
     if (ant_sandbox_vm_result_is_infrastructure_failure(&state->run_result) || state->run_rc != 0)
@@ -1142,6 +1213,7 @@ static ant_value_t sandbox_close(ant_t *js, ant_value_t *args, int nargs) {
     return promise;
   }
   if (!state->session) {
+    sandbox_finish_waiters(state);
     ant_sandbox_launch_options_cleanup(&state->launch);
     js_resolve_promise(js, promise, js_mkundef());
     return promise;
@@ -1154,6 +1226,7 @@ static ant_value_t sandbox_close(ant_t *js, ant_value_t *args, int nargs) {
     sandbox_update_stats(state);
     ant_sandbox_vm_session_destroy(state->session);
     state->session = NULL;
+    sandbox_finish_waiters(state);
     ant_sandbox_launch_options_cleanup(&state->launch);
     js_reject_promise(js, promise, js_mkerr_typed(js, JS_ERR_TYPE, "failed to build sandbox close request"));
     return promise;
@@ -1174,6 +1247,7 @@ static ant_value_t sandbox_close(ant_t *js, ant_value_t *args, int nargs) {
   ant_sandbox_vm_session_destroy(state->session);
   
   state->session = NULL;
+  sandbox_finish_waiters(state);
   ant_sandbox_launch_options_cleanup(&state->launch);
 
   if (rc == 0) js_resolve_promise(js, promise, js_mkundef());
@@ -1200,6 +1274,73 @@ static ant_value_t sandbox_send(ant_t *js, ant_value_t *args, int nargs) {
   free(frame);
   if (rc != 0) return js_mkerr(js, "failed to send sandbox message");
   return js_mkundef();
+}
+
+static ant_value_t sandbox_wait_for_message(
+  ant_t *js, sandbox_state_t *state, const char *type, bool iterator
+) {
+  ant_value_t promise = js_mkpromise(js);
+  if (!state || state->closed) {
+    if (iterator)
+      js_resolve_promise(js, promise, js_iter_result(js, true, js_mkundef()));
+    else
+      js_reject_promise(
+        js, promise,
+        js_mkerr_typed(js, JS_ERR_TYPE, "Sandbox message channel is closed")
+      );
+    return promise;
+  }
+  if (!state->running) {
+    if (iterator)
+      js_resolve_promise(js, promise, js_iter_result(js, true, js_mkundef()));
+    else
+      js_reject_promise(js, promise, js_mkerr_typed(js, JS_ERR_TYPE, "Sandbox message channel requires a running entry"));
+    return promise;
+  }
+
+  sandbox_message_waiter_t *waiter = calloc(1, sizeof(*waiter));
+  if (!waiter) {
+    js_reject_promise(js, promise, js_mkerr(js, "out of memory"));
+    return promise;
+  }
+  if (type) {
+    waiter->type = strdup(type);
+    if (!waiter->type) {
+      free(waiter);
+      js_reject_promise(js, promise, js_mkerr(js, "out of memory"));
+      return promise;
+    }
+  }
+  waiter->promise = promise;
+  waiter->iterator = iterator;
+  if (state->waiter_tail) state->waiter_tail->next = waiter;
+  else state->waiter_head = waiter;
+  state->waiter_tail = waiter;
+  sandbox_add_active(state);
+  return promise;
+}
+
+static ant_value_t sandbox_receive(ant_t *js, ant_value_t *args, int nargs) {
+  (void)args; (void)nargs;
+  return sandbox_wait_for_message(js, sandbox_get_state(js->this_val), NULL, false);
+}
+
+static ant_value_t sandbox_once(ant_t *js, ant_value_t *args, int nargs) {
+  sandbox_state_t *state = sandbox_get_state(js->this_val);
+  if (nargs < 1 || vtype(args[0]) != T_STR)
+    return sandbox_rejected(js, js_mkerr_typed(js, JS_ERR_TYPE,
+      "Sandbox.once(type) requires a message type string"));
+  const char *type = js_getstr(js, args[0], NULL);
+  if (!type) return sandbox_rejected(js, js_mkerr(js, "out of memory"));
+  return sandbox_wait_for_message(js, state, type, false);
+}
+
+static ant_value_t sandbox_messages_next(ant_t *js, ant_value_t *args, int nargs) {
+  return sandbox_wait_for_message(js, sandbox_get_state(js->this_val), NULL, true);
+}
+
+static ant_value_t sandbox_messages_getter(ant_t *js, ant_value_t *args, int nargs) {
+  return js->this_val;
 }
 
 static ant_value_t sandbox_stats(ant_t *js, ant_value_t *args, int nargs) {
@@ -1258,6 +1399,8 @@ static ant_value_t sandbox_terminate(ant_t *js, ant_value_t *args, int nargs) {
     state->session = NULL;
   }  ant_sandbox_launch_options_cleanup(&state->launch);
 
+  sandbox_finish_waiters(state);
+
   if (rc == 0) js_resolve_promise(js, promise, js_mkundef()); else {
     ant_sandbox_vm_result_t result = {
       .kind = rc == -ENOSYS ? ANT_SANDBOX_VM_RESULT_BACKEND_UNAVAILABLE : ANT_SANDBOX_VM_RESULT_CANCELED,
@@ -1274,6 +1417,8 @@ void gc_mark_sandbox(ant_t *js, gc_mark_fn mark) {
     mark(js, state->self);
     if (state->has_run_promise) mark(js, state->run_promise);
     if (state->has_close_promise) mark(js, state->close_promise);
+    for (sandbox_message_waiter_t *waiter = state->waiter_head; waiter; waiter = waiter->next)
+      mark(js, waiter->promise);
   }
   if (g_guest_port.js == js && is_object_type(g_guest_port.obj)) mark(js, g_guest_port.obj);
 }
@@ -1284,10 +1429,15 @@ ant_value_t sandbox_library(ant_t *js) {
     js_set(js, g_sandbox_proto, "run", js_mkfun_arity(sandbox_run, 1));
     js_set(js, g_sandbox_proto, "eval", js_mkfun_arity(sandbox_eval, 1));
     js_set(js, g_sandbox_proto, "send", js_mkfun_arity(sandbox_send, 1));
+    js_set(js, g_sandbox_proto, "receive", js_mkfun(sandbox_receive));
+    js_set(js, g_sandbox_proto, "once", js_mkfun_arity(sandbox_once, 1));
+    js_set(js, g_sandbox_proto, "next", js_mkfun(sandbox_messages_next));
     js_set(js, g_sandbox_proto, "stats", js_mkfun(sandbox_stats));
     js_set(js, g_sandbox_proto, "on", js_mkfun_arity(sandbox_on, 2));
     js_set(js, g_sandbox_proto, "close", js_mkfun(sandbox_close));
     js_set(js, g_sandbox_proto, "terminate", js_mkfun(sandbox_terminate));
+    js_set_getter_desc(js, g_sandbox_proto, "messages", 8, js_mkfun(sandbox_messages_getter), JS_DESC_C);
+    js_set_sym(js, g_sandbox_proto, get_asyncIterator_sym(), js_mkfun(sym_this_cb));
     js_set_sym(js, g_sandbox_proto, get_toStringTag_sym(), js_mkstr(js, "Sandbox", 7));
     g_sandbox_ctor = js_make_ctor(js, sandbox_ctor, g_sandbox_proto, "Sandbox", 7);
     gc_register_root(&g_sandbox_proto);

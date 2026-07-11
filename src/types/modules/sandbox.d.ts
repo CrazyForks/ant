@@ -29,6 +29,9 @@ declare module 'ant:sandbox' {
     onmessage?: MessageHandler;
     on(event: 'message', handler: MessageHandler): this;
     send(value: unknown): void;
+    receive<T = unknown>(): Promise<T>;
+    once<T = unknown>(type: string): Promise<T>;
+    readonly messages: AsyncIterable<unknown>;
     stats(): SandboxStats;
     run(entry: string, argv?: string[]): Promise<number>;
     eval(source: string): Promise<unknown>;
