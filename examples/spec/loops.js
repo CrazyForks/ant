@@ -42,6 +42,15 @@ let extCount = 0;
 for (; k < 5; k++) extCount++;
 test('for loop external init', extCount, 5);
 
+let hasMaxByteLength;
+for (let i = 0, options = ('maxByteLength' in ArrayBuffer.prototype)
+  ? { maxByteLength: 1 }
+  : undefined; i < 1; i++) {
+  hasMaxByteLength = options !== undefined;
+}
+test('for initializer parenthesized in expression', hasMaxByteLength,
+  'maxByteLength' in ArrayBuffer.prototype);
+
 let countdown = 0;
 for (let i = 5; i > 0; i--) countdown += i;
 test('for loop decrement', countdown, 15);

@@ -19,6 +19,11 @@
 ant_value_t g_map_iter_proto = 0;
 ant_value_t g_set_iter_proto = 0;
 
+static bool can_be_held_weakly(ant_value_t value) {
+  if (is_object_type(value) || vtype(value) == T_CFUNC) return true;
+  return vtype(value) == T_SYMBOL && js_sym_key(value) == NULL;
+}
+
 typedef struct {
   unsigned char stack[32];
   unsigned char *bytes;
@@ -971,7 +976,7 @@ static ant_value_t weakmap_set(ant_t *js, ant_value_t *args, int nargs) {
   weakmap_entry_t **wm_ptr = get_weakmap_from_obj(this_val);
   if (!wm_ptr) return js_mkerr(js, "Invalid WeakMap object");
   
-  if (!is_object_type(args[0]))
+  if (!can_be_held_weakly(args[0]))
     return js_mkerr(js, "WeakMap key must be an object");
   
   ant_value_t key_obj = args[0];
@@ -1001,7 +1006,7 @@ static ant_value_t weakmap_get(ant_t *js, ant_value_t *args, int nargs) {
   ant_value_t this_val = js->this_val;
   weakmap_entry_t **wm_ptr = get_weakmap_from_obj(this_val);
   if (!wm_ptr) return js_mkundef();
-  if (!is_object_type(args[0])) return js_mkundef();
+  if (!can_be_held_weakly(args[0])) return js_mkundef();
   
   ant_value_t key_obj = args[0];
   weakmap_entry_t *entry;
@@ -1015,7 +1020,7 @@ static ant_value_t weakmap_has(ant_t *js, ant_value_t *args, int nargs) {
   ant_value_t this_val = js->this_val;
   weakmap_entry_t **wm_ptr = get_weakmap_from_obj(this_val);
   if (!wm_ptr) return js_mkerr_typed(js, JS_ERR_TYPE, "Invalid WeakMap object");
-  if (!is_object_type(args[0])) return js_false;
+  if (!can_be_held_weakly(args[0])) return js_false;
   
   ant_value_t key_obj = args[0];
   weakmap_entry_t *entry;
@@ -1030,7 +1035,7 @@ static ant_value_t weakmap_upsert(ant_t *js, ant_value_t *args, int nargs) {
   weakmap_entry_t **wm_ptr = get_weakmap_from_obj(this_val);
   if (!wm_ptr) return js_mkerr(js, "Invalid WeakMap object");
 
-  if (!is_object_type(args[0]))
+  if (!can_be_held_weakly(args[0]))
     return js_mkerr(js, "WeakMap key must be an object");
 
   ant_value_t update_fn = args[1];
@@ -1079,7 +1084,7 @@ static ant_value_t weakmap_delete(ant_t *js, ant_value_t *args, int nargs) {
   ant_value_t this_val = js->this_val;
   weakmap_entry_t **wm_ptr = get_weakmap_from_obj(this_val);
   if (!wm_ptr) return js_false;
-  if (!is_object_type(args[0])) return js_false;
+  if (!can_be_held_weakly(args[0])) return js_false;
   
   ant_value_t key_obj = args[0];
   weakmap_entry_t *entry;
@@ -1099,7 +1104,7 @@ static ant_value_t weakset_add(ant_t *js, ant_value_t *args, int nargs) {
   weakset_entry_t **ws_ptr = get_weakset_from_obj(this_val);
   if (!ws_ptr) return js_mkerr(js, "Invalid WeakSet object");
   
-  if (!is_object_type(args[0]))
+  if (!can_be_held_weakly(args[0]))
     return js_mkerr(js, "WeakSet value must be an object");
   
   ant_value_t value_obj = args[0];
@@ -1123,7 +1128,7 @@ static ant_value_t weakset_has(ant_t *js, ant_value_t *args, int nargs) {
   ant_value_t this_val = js->this_val;
   weakset_entry_t **ws_ptr = get_weakset_from_obj(this_val);
   if (!ws_ptr) return js_mkerr_typed(js, JS_ERR_TYPE, "Invalid WeakSet object");
-  if (!is_object_type(args[0])) return js_false;
+  if (!can_be_held_weakly(args[0])) return js_false;
   
   ant_value_t value_obj = args[0];
   weakset_entry_t *entry;
@@ -1137,7 +1142,7 @@ static ant_value_t weakset_delete(ant_t *js, ant_value_t *args, int nargs) {
   ant_value_t this_val = js->this_val;
   weakset_entry_t **ws_ptr = get_weakset_from_obj(this_val);
   if (!ws_ptr) return js_false;
-  if (!is_object_type(args[0])) return js_false;
+  if (!can_be_held_weakly(args[0])) return js_false;
   
   ant_value_t value_obj = args[0];
   weakset_entry_t *entry;
@@ -1152,7 +1157,7 @@ static ant_value_t weakset_delete(ant_t *js, ant_value_t *args, int nargs) {
 }
 
 static ant_value_t builtin_WeakRef(ant_t *js, ant_value_t *args, int nargs) {
-  if (nargs < 1 || !is_object_type(args[0])) {
+  if (nargs < 1 || !can_be_held_weakly(args[0])) {
     return js_mkerr(js, "WeakRef target must be an object");
   }
   
@@ -1431,7 +1436,7 @@ static ant_value_t weakmap_init_from_iterable(ant_t *js, ant_value_t wm_obj, wea
 
     ant_value_t key = js_arr_get(js, entry, 0);
     ant_value_t value = js_arr_get(js, entry, 1);
-    if (!is_object_type(key)) {
+    if (!can_be_held_weakly(key)) {
       result = js_mkerr(js, "WeakMap key must be an object");
       goto close_iter;
     }
@@ -1483,7 +1488,7 @@ static ant_value_t weakset_init_from_iterable(ant_t *js, ant_value_t ws_obj, wea
       continue;
     }
     
-    if (!is_object_type(value)) {
+    if (!can_be_held_weakly(value)) {
       result = js_mkerr(js, "WeakSet value must be an object");
       goto close_iter;
     }

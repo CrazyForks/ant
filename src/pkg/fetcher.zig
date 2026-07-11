@@ -541,7 +541,8 @@ const Http2Client = struct {
       _ = uv.uv_run(self.loop, uv.RUN_ONCE);
       try self.flush();
     }
-    
+
+    defer self.resetRequests();
     self.last_response_status_code = req.status_code;
     if (req.has_error or req.status_code != 200) return error.ResponseError;
     return try allocator.dupe(u8, req.response_body.items);

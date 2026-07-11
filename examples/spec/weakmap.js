@@ -22,4 +22,16 @@ wm.set(key3, 'test');
 wm.set(key3, 'updated');
 test('weakmap overwrite', wm.get(key3), 'updated');
 
+const nativeFunction = Array.prototype.push;
+wm.set(nativeFunction, 'native function');
+test('weakmap native function key', wm.get(nativeFunction), 'native function');
+
+const symbol = Symbol('weak key');
+wm.set(symbol, 'symbol');
+test('weakmap non-registered symbol key', wm.get(symbol), 'symbol');
+
+const ws = new WeakSet([nativeFunction, symbol]);
+test('weakset native function value', ws.has(nativeFunction), true);
+test('weakset non-registered symbol value', ws.has(symbol), true);
+
 summary();
