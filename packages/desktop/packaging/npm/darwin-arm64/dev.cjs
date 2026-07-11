@@ -2,11 +2,14 @@
 
 const crypto = require('node:crypto');
 const fs = require('node:fs');
+const http = require('node:http');
+const https = require('node:https');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const { buildRenderer } = require('./renderer.cjs');
 
-const { applicationName, bundleIdentifier, infoPlist, isInside, resourceDestination } = require('./package.cjs');
+const { applicationName, bundleIdentifier, infoPlist, isInside, matchesInclude } = require('./package.cjs');
 
 function replaceSymlink(target, link, type) {
   fs.rmSync(link, { recursive: true, force: true });
@@ -101,9 +104,6 @@ function createDevApp(layout, entry, options = {}) {
     }
     icon = `${name}.icns`;
   }
-  const extraResources = (options.extraResources || []).map(value =>
-    resourceDestination(resources, typeof value === 'string' ? { from: value } : value)
-  );
 
   fs.mkdirSync(macos, { recursive: true });
   fs.mkdirSync(resources, { recursive: true });
@@ -111,10 +111,6 @@ function createDevApp(layout, entry, options = {}) {
   cloneFile(layout.host, path.join(macos, 'Ant Chromium Host'));
   ensureRuntimeFrameworks(hostBundle, contents);
   replaceSymlink(appRoot, path.join(resources, 'app'), 'dir');
-  for (const resource of extraResources) {
-    fs.mkdirSync(path.dirname(resource.destination), { recursive: true });
-    replaceSymlink(resource.source, resource.destination, fs.statSync(resource.source).isDirectory() ? 'dir' : 'file');
-  }
   if (options.icon) {
     replaceSymlink(path.resolve(options.icon), path.join(resources, icon), 'file');
   }
@@ -133,22 +129,69 @@ function createDevApp(layout, entry, options = {}) {
   return { appRoot, executable, name, output };
 }
 
-function dev(layout, entry, options = {}) {
-  const developmentApp = createDevApp(layout, entry, options);
-  const rendererRoot = path.resolve(options.rendererDir || path.join(developmentApp.appRoot, 'renderer'));
-  if (!fs.statSync(rendererRoot, { throwIfNoEntry: false })?.isDirectory()) {
-    throw new Error(`Renderer directory does not exist: ${rendererRoot} (pass --renderer-dir)`);
+function delay(milliseconds) {
+  return new Promise(resolve => setTimeout(resolve, milliseconds));
+}
+
+function devServerReady(value) {
+  return new Promise(resolve => {
+    let url;
+    try {
+      url = new URL(value);
+    } catch {
+      resolve(false);
+      return;
+    }
+    const client = url.protocol === 'https:' ? https : http;
+    const request = client.get(url, response => {
+      response.resume();
+      resolve(true);
+    });
+    request.setTimeout(500, () => request.destroy());
+    request.once('error', () => resolve(false));
+  });
+}
+
+async function waitForDevServer(process, url, timeout = 30_000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (process.exitCode !== null || process.signalCode) {
+      throw new Error(`Renderer dev server exited before ${url} became available`);
+    }
+    if (await devServerReady(url)) return;
+    await delay(100);
   }
+  throw new Error(`Timed out waiting for renderer dev server at ${url}`);
+}
+
+async function dev(layout, entry, options = {}) {
+  const developmentApp = createDevApp(layout, entry, options);
+  const devServerOptions = options.rendererDevServer;
+  const rendererRoot = devServerOptions ? undefined : path.resolve(options.rendererDir || path.join(developmentApp.appRoot, 'renderer'));
+  if (rendererRoot && !fs.statSync(rendererRoot, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new Error(`Renderer directory does not exist: ${rendererRoot} (set renderer.watchDir or renderer.devServer)`);
+  }
+  if (!devServerOptions) buildRenderer(options.rendererBuildCommand, developmentApp.appRoot);
   let child;
+  let rendererServer;
   let restartTimer;
+  let rendererBuildTimer;
+  let applicationWatcher;
+  let rendererWatcher;
   let restarting = false;
   let stopping = false;
   let rendererChangeAt = 0;
+  let ignoreRendererChangesUntil = 0;
 
   const launch = () => {
     child = spawn(developmentApp.executable, options.args || [], {
       cwd: developmentApp.appRoot,
-      env: { ...process.env, ...options.env, ANT_DESKTOP_DEV: '1' },
+      env: {
+        ...process.env,
+        ...options.env,
+        ANT_DESKTOP_DEV: '1',
+        ...(devServerOptions ? { ANT_DESKTOP_RENDERER_URL: devServerOptions.url } : {})
+      },
       stdio: 'inherit'
     });
     child.once('exit', (code, signal) => {
@@ -177,18 +220,35 @@ function dev(layout, entry, options = {}) {
     }, 100);
   };
 
-  const rendererWatcher = fs.watch(rendererRoot, { recursive: true }, () => {
-    rendererChangeAt = Date.now();
-    if (child?.exitCode === null) child.kill('SIGUSR1');
-  });
-  const applicationWatcher = fs.watch(developmentApp.appRoot, { recursive: true }, (_event, filename) => {
+  if (rendererRoot) {
+    rendererWatcher = fs.watch(rendererRoot, { recursive: true }, () => {
+      if (Date.now() < ignoreRendererChangesUntil) return;
+      rendererChangeAt = Date.now();
+      clearTimeout(rendererBuildTimer);
+      rendererBuildTimer = setTimeout(() => {
+        rendererBuildTimer = undefined;
+        try {
+          buildRenderer(options.rendererBuildCommand, developmentApp.appRoot);
+        } catch (error) {
+          process.stderr.write(`ant-desktop dev: ${error.message}\n`);
+          return;
+        }
+        rendererChangeAt = Date.now();
+        ignoreRendererChangesUntil = rendererChangeAt + 250;
+        if (child?.exitCode === null) child.kill('SIGUSR1');
+      }, 100);
+    });
+  }
+  applicationWatcher = fs.watch(developmentApp.appRoot, { recursive: true }, (_event, filename) => {
     if (stopping) return;
     if (!filename) return;
     const changed = path.resolve(developmentApp.appRoot, filename);
-    if (filename.split(path.sep).some(part => part === '.git' || part === 'node_modules' || part === 'dist')) return;
-    if (isInside(rendererRoot, changed) || Date.now() - rendererChangeAt < 250) {
+    if (filename.split(path.sep).some(part => part === '.git' || part === 'node_modules')) return;
+    if (rendererRoot && (isInside(rendererRoot, changed) || Date.now() - rendererChangeAt < 250)) {
       return;
     }
+    const applicationEntry = path.resolve(entry);
+    if (changed !== applicationEntry && !matchesInclude(filename, options.include || [])) return;
     restart();
   });
 
@@ -196,20 +256,42 @@ function dev(layout, entry, options = {}) {
     if (stopping) return;
     stopping = true;
     clearTimeout(restartTimer);
-    rendererWatcher.close();
-    applicationWatcher.close();
+    clearTimeout(rendererBuildTimer);
+    rendererWatcher?.close();
+    applicationWatcher?.close();
     if (child?.exitCode === null) child.kill('SIGTERM');
+    if (rendererServer?.exitCode === null) rendererServer.kill('SIGTERM');
   };
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
+  if (devServerOptions) {
+    rendererServer = spawn(devServerOptions.command, [], {
+      cwd: developmentApp.appRoot,
+      env: { ...process.env, ...options.env },
+      shell: true,
+      stdio: 'inherit'
+    });
+    try {
+      await waitForDevServer(rendererServer, devServerOptions.url);
+    } catch (error) {
+      stop();
+      throw error;
+    }
+    rendererServer.once('exit', (code, signal) => {
+      if (stopping) return;
+      process.stderr.write(`ant-desktop dev: renderer dev server exited (${signal || code})\n`);
+      stop();
+    });
+  }
   launch();
   process.stdout.write(`Ant Desktop dev app: ${developmentApp.output}\n`);
   return {
     ...developmentApp,
     applicationWatcher,
     rendererWatcher,
+    rendererServer,
     stop
   };
 }
 
-module.exports = { createDevApp, dev };
+module.exports = { createDevApp, dev, devServerReady, waitForDevServer };

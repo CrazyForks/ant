@@ -16,27 +16,47 @@ function resolveFrom(root, value) {
   return value === undefined ? undefined : path.resolve(root, value);
 }
 
-function extraResources(config, root, filename) {
-  const values = config.extraResources;
+function renderer(config, root, filename) {
+  const value = config.renderer;
+  if (value === undefined) return undefined;
+  if (!value || Array.isArray(value) || typeof value !== 'object') {
+    throw new Error(`${filename}: renderer must be an object`);
+  }
+  const devServer = value.devServer;
+  if (devServer !== undefined && (!devServer || Array.isArray(devServer) || typeof devServer !== 'object')) {
+    throw new Error(`${filename}: renderer.devServer must be an object`);
+  }
+  const result = {
+    watchDir: resolveFrom(root, optionalString(value, 'watchDir', `${filename}: renderer`)),
+    buildCommand: optionalString(value, 'buildCommand', `${filename}: renderer`),
+    devServer:
+      devServer === undefined
+        ? undefined
+        : {
+            command: optionalString(devServer, 'command', `${filename}: renderer.devServer`),
+            url: optionalString(devServer, 'url', `${filename}: renderer.devServer`)
+          }
+  };
+  if (result.devServer && (!result.devServer.command || !result.devServer.url)) {
+    throw new Error(`${filename}: renderer.devServer requires command and url`);
+  }
+  if (result.watchDir && result.devServer) {
+    throw new Error(`${filename}: renderer.watchDir and renderer.devServer are alternatives`);
+  }
+  return result;
+}
+
+function include(config, filename) {
+  const values = config.include;
   if (values === undefined) return [];
   if (!Array.isArray(values)) {
-    throw new Error(`${filename}: extraResources must be an array`);
+    throw new Error(`${filename}: include must be an array`);
   }
   return values.map((value, index) => {
-    if (typeof value === 'string' && value.trim()) {
-      return { from: path.resolve(root, value) };
+    if (typeof value !== 'string' || !value.trim()) {
+      throw new Error(`${filename}: include[${index}] must be a non-empty glob string`);
     }
-    if (!value || Array.isArray(value) || typeof value !== 'object') {
-      throw new Error(`${filename}: extraResources[${index}] must be a path or object`);
-    }
-    const from = optionalString(value, 'from', `${filename}: extraResources[${index}]`);
-    if (!from) {
-      throw new Error(`${filename}: extraResources[${index}].from is required`);
-    }
-    return {
-      from: path.resolve(root, from),
-      to: optionalString(value, 'to', `${filename}: extraResources[${index}]`),
-    };
+    return value;
   });
 }
 
@@ -65,13 +85,13 @@ export function loadConfig(configuredPath, required = Boolean(configuredPath)) {
     filename,
     root,
     main: resolveFrom(root, main),
-    renderer: resolveFrom(root, optionalString(config, 'renderer', filename)),
+    renderer: renderer(config, root, filename),
     icon: resolveFrom(root, optionalString(config, 'icon', filename)),
     output: resolveFrom(root, optionalString(config, 'output', filename)),
     name: optionalString(config, 'name', filename),
     identifier: optionalString(config, 'identifier', filename),
     version: optionalString(config, 'version', filename),
-    extraResources: extraResources(config, root, filename),
+    include: include(config, filename)
   };
 }
 
@@ -80,19 +100,22 @@ export function optionsFromConfig(config, command) {
 
   const options = {
     appDir: config.root,
-    extraResources: config.extraResources,
+    include: config.include,
     identifier: config.identifier,
     name: config.name,
     version: config.version
   };
 
   if (command === 'dev') {
-    options.rendererDir = config.renderer;
+    options.rendererDir = config.renderer?.watchDir;
+    options.rendererBuildCommand = config.renderer?.buildCommand;
+    options.rendererDevServer = config.renderer?.devServer;
   }
 
   if (command === 'package') {
     options.icon = config.icon;
     options.out = config.output;
+    options.rendererBuildCommand = config.renderer?.buildCommand;
   }
 
   return options;

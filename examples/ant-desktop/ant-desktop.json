@@ -1,0 +1,15 @@
+{
+  "name": "Ant Desktop Example",
+  "version": "0.0.1",
+  "main": "src/main.js",
+  "renderer": {
+    "buildCommand": "ant renderer:build",
+    "devServer": {
+      "command": "ant renderer:dev",
+      "url": "http://localhost:5173"
+    }
+  },
+  "include": ["src/*.js", "src/menu/*", "dist/**"],
+  "identifier": "dev.themackabu.ant-desktop-example",
+  "output": "dist/Ant Desktop Example.app"
+}

@@ -33,6 +33,7 @@
     "index.cjs",
     "install.cjs",
     "package.cjs",
+    "renderer.cjs",
     "runtime.lock.json",
     "artifacts/ant-desktop-darwin-arm64.tar.gz",
     "artifacts/ant-desktop-darwin-arm64.tar.gz.sha256",

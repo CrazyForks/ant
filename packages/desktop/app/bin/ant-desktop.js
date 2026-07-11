@@ -5,9 +5,7 @@ import path from 'node:path';
 import * as desktop from '../../index.js';
 import { CONFIG_NAME, loadConfig, optionsFromConfig } from '../../config.js';
 
-const { version } = JSON.parse(
-  fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8')
-);
+const { version } = JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
 
 function usage() {
   process.stdout.write(`Usage:
@@ -16,7 +14,7 @@ function usage() {
   ant-desktop package [main.js] [options]
 
 Project manifest:
-  ${CONFIG_NAME} supplies main, renderer, name, identifier, version, icon, and output.
+  ${CONFIG_NAME} supplies main, renderer, include, name, identifier, version, icon, and output.
 
 Options:
   --config <path>           Project manifest path (default: ${CONFIG_NAME})
@@ -107,7 +105,7 @@ async function main() {
   if (argv[0] === 'dev') {
     const request = commandRequest('dev', argv.slice(1));
     if (request.help) return usage();
-    desktop.dev(request.entry, request.options);
+    await desktop.dev(request.entry, request.options);
     return;
   }
 

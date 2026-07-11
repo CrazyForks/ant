@@ -2,16 +2,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BrowserWindow } from 'ant:desktop';
 
-export const rendererEntry = path.join(
-  path.dirname(fileURLToPath(import.meta.url)),
-  'renderer',
-  'index.html'
-);
+export const rendererEntry = path.join(path.dirname(fileURLToPath(import.meta.url)), '../', 'dist', 'index.html');
 
-const preloadEntry = path.join(
-  path.dirname(fileURLToPath(import.meta.url)),
-  'preload.js'
-);
+const preloadEntry = path.join(path.dirname(fileURLToPath(import.meta.url)), 'preload.js');
 
 export function createMainWindow() {
   const window = new BrowserWindow({
@@ -21,7 +14,6 @@ export function createMainWindow() {
     titleBarStyle: 'hiddenInset',
     titleBarOverlay: { height: 48 },
     trafficLightPosition: { x: 16, y: 15 },
-    backgroundColor: '#202124',
     webPreferences: {
       preload: preloadEntry,
       sandbox: false,
@@ -35,12 +27,7 @@ export function createMainWindow() {
     }
   });
 
-  for (const event of [
-    'navigation-start',
-    'navigation-commit',
-    'ready',
-    'renderer-crash'
-  ]) {
+  for (const event of ['navigation-start', 'navigation-commit', 'ready', 'renderer-crash']) {
     window.on(event, value => {
       console.log(`window:${value.type}`, value.detail ?? '');
     });

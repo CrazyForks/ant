@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { buildRenderer } = require('./renderer.cjs');
 
 function xml(value) {
   return String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&apos;');
@@ -79,28 +80,97 @@ function writeUnsigned(buffer, offset, value, bytes) {
   }
 }
 
-function archiveEntries(root, excluded) {
-  const entries = [];
+function includeExpression(value) {
+  if (typeof value !== 'string' || !value.trim() || path.isAbsolute(value)) {
+    throw new Error(`Include pattern must be a relative glob: ${value}`);
+  }
+  const normalized = value.replaceAll('\\', '/');
+  if (normalized.split('/').some(part => !part || part === '.' || part === '..')) {
+    throw new Error(`Include pattern must stay inside the application directory: ${value}`);
+  }
+  let expression = '^';
+  for (let index = 0; index < normalized.length; index++) {
+    const character = normalized[index];
+    if (character === '*' && normalized[index + 1] === '*') {
+      index++;
+      if (normalized[index + 1] === '/') {
+        index++;
+        expression += '(?:.*/)?';
+      } else {
+        expression += '.*';
+      }
+    } else if (character === '*') {
+      expression += '[^/]*';
+    } else if (character === '?') {
+      expression += '[^/]';
+    } else {
+      expression += character.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
+    }
+  }
+  return { pattern: value, expression: new RegExp(`${expression}$`) };
+}
+
+function matchesInclude(relative, patterns) {
+  const normalized = relative.split(path.sep).join('/');
+  return patterns.some(value => includeExpression(value).expression.test(normalized));
+}
+
+function includedSources(root, values, excluded = []) {
+  if (!Array.isArray(values)) throw new TypeError('include must be an array');
+  const patterns = values.map(includeExpression);
+  const matches = new Array(patterns.length).fill(0);
+  const included = [];
   const visit = current => {
     const resolved = path.resolve(current);
     if (excluded.some(value => isInside(value, resolved))) return;
     const stat = fs.lstatSync(current);
-    const relative = path.relative(root, current).split(path.sep).join('/');
     if (stat.isDirectory()) {
       for (const name of fs.readdirSync(current).sort()) visit(path.join(current, name));
+      return;
+    }
+    const destination = path.relative(root, current).split(path.sep).join('/');
+    let selected = false;
+    patterns.forEach((pattern, index) => {
+      if (!pattern.expression.test(destination)) return;
+      matches[index]++;
+      selected = true;
+    });
+    if (selected) included.push({ source: current, destination, stat });
+  };
+  visit(root);
+  const missing = patterns.find((_pattern, index) => matches[index] === 0);
+  if (missing) throw new Error(`Include pattern matched no files: ${missing.pattern}`);
+  return included;
+}
+
+function archiveEntries(included, excluded = []) {
+  const entries = [];
+  const destinations = new Set();
+  const visit = (current, destination) => {
+    const resolved = path.resolve(current);
+    if (excluded.some(value => isInside(value, resolved))) return;
+    const stat = fs.lstatSync(current);
+    if (stat.isDirectory()) {
+      for (const name of fs.readdirSync(current).sort()) {
+        visit(path.join(current, name), destination ? `${destination}/${name}` : name);
+      }
       return;
     }
     if (!stat.isFile() && !stat.isSymbolicLink()) {
       throw new Error(`Application archive cannot contain this file type: ${current}`);
     }
-    entries.push({ current, relative, stat });
+    if (destinations.has(destination)) {
+      throw new Error(`Multiple bundle entries target ${destination}`);
+    }
+    destinations.add(destination);
+    entries.push({ current, relative: destination, stat });
   };
-  visit(root);
+  for (const entry of included) visit(entry.source, entry.destination);
   return entries;
 }
 
-function writeApplicationArchive(root, destination, excluded) {
-  const entries = archiveEntries(root, excluded);
+function writeApplicationArchive(included, destination, excluded) {
+  const entries = archiveEntries(included, excluded);
   const fd = fs.openSync(destination, 'w');
   try {
     const count = Buffer.alloc(4);
@@ -125,23 +195,12 @@ function writeApplicationArchive(root, destination, excluded) {
   }
 }
 
-function resourceDestination(resources, value) {
-  const source = path.resolve(value.from);
-  if (!fs.existsSync(source)) {
-    throw new Error(`Extra resource does not exist: ${source}`);
+function bundledEntryPath(included, sourceEntry) {
+  const entry = included.find(value => path.resolve(value.source) === sourceEntry);
+  if (!entry) {
+    throw new Error('Application entry is not included');
   }
-  const relative = value.to || path.basename(source);
-  if (path.isAbsolute(relative) || relative.split(/[\\/]/).includes('..')) {
-    throw new Error(`Extra resource destination must stay inside Resources: ${relative}`);
-  }
-  if (relative.split(/[\\/]/)[0] === 'app.ant') {
-    throw new Error('Extra resources cannot replace the app.ant archive');
-  }
-  const destination = path.resolve(resources, relative);
-  if (!isInside(resources, destination) || destination === resources) {
-    throw new Error(`Invalid extra resource destination: ${relative}`);
-  }
-  return { source, destination };
+  return entry.destination;
 }
 
 function isEnglishFrameworkResource(candidate) {
@@ -180,7 +239,6 @@ function packageApp(layout, entry, options = {}) {
   if (!isInside(appRoot, sourceEntry)) {
     throw new Error('Application entry must be inside --app-dir');
   }
-
   const name = applicationName(options.name || path.basename(sourceEntry, path.extname(sourceEntry)));
   const executable = name;
   const identifier = bundleIdentifier(name, options.identifier);
@@ -200,6 +258,7 @@ function packageApp(layout, entry, options = {}) {
     icon = `${name}.icns`;
   }
 
+  buildRenderer(options.rendererBuildCommand, appRoot);
   const hostBundle = path.resolve(layout.host, '../../..');
   const hostFrameworks = path.join(hostBundle, 'Contents', 'Frameworks');
   const temporary = `${output}.tmp-${process.pid}-${Date.now()}`;
@@ -207,12 +266,10 @@ function packageApp(layout, entry, options = {}) {
   const macos = path.join(contents, 'MacOS');
   const frameworks = path.join(contents, 'Frameworks');
   const resources = path.join(contents, 'Resources');
-  const relativeEntry = path.relative(appRoot, sourceEntry);
   const archive = 'app.ant';
-  const extraResources = (options.extraResources || []).map(value =>
-    resourceDestination(resources, typeof value === 'string' ? { from: value } : value)
-  );
-  const excluded = [output, temporary, ...extraResources.map(value => value.source)];
+  const excluded = [output, temporary];
+  const included = includedSources(appRoot, options.include || [], excluded);
+  const bundledEntry = bundledEntryPath(included, sourceEntry);
 
   fs.mkdirSync(path.dirname(output), { recursive: true });
   fs.rmSync(temporary, { recursive: true, force: true });
@@ -227,11 +284,7 @@ function packageApp(layout, entry, options = {}) {
     for (const entry of fs.readdirSync(hostFrameworks)) {
       copyTree(path.join(hostFrameworks, entry), path.join(frameworks, entry), [], isEnglishFrameworkResource);
     }
-    writeApplicationArchive(appRoot, path.join(resources, archive), excluded);
-    for (const resource of extraResources) {
-      fs.mkdirSync(path.dirname(resource.destination), { recursive: true });
-      copyTree(resource.source, resource.destination, []);
-    }
+    writeApplicationArchive(included, path.join(resources, archive), excluded);
     if (options.icon) fs.copyFileSync(path.resolve(options.icon), path.join(resources, icon));
     fs.writeFileSync(
       path.join(contents, 'Info.plist'),
@@ -240,7 +293,7 @@ function packageApp(layout, entry, options = {}) {
         executable,
         identifier,
         version,
-        entry: relativeEntry.split(path.sep).join('/'),
+        entry: bundledEntry,
         icon,
         archive
       })
@@ -262,6 +315,8 @@ module.exports = {
   isInside,
   packageApp,
   applicationName,
-  resourceDestination,
+  includedSources,
+  bundledEntryPath,
+  matchesInclude,
   writeApplicationArchive
 };

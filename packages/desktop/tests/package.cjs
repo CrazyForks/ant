@@ -19,7 +19,8 @@ try {
   fs.mkdirSync(hostFrameworks, { recursive: true });
   fs.writeFileSync(entry, 'console.log("packaged");\n');
   fs.writeFileSync(path.join(appRoot, 'page.html'), '<h1>Packaged</h1>\n');
-  const extra = path.join(root, 'model.bin');
+  const extra = path.join(appRoot, 'assets', 'model.bin');
+  fs.mkdirSync(path.dirname(extra), { recursive: true });
   fs.writeFileSync(extra, 'model-data\n');
   fs.writeFileSync(executable, '#!/bin/sh\n');
   fs.writeFileSync(host, '#!/bin/sh\n');
@@ -38,19 +39,21 @@ try {
     name: 'PackageTest',
     out: output,
     version: '1.2.3',
-    extraResources: [{ from: extra, to: 'models/model.bin' }]
+    rendererBuildCommand: '/bin/mkdir -p renderer/dist && /usr/bin/touch renderer/dist/index.html',
+    include: ['main.js', 'renderer/dist/**', 'assets/*']
   });
 
   assert.equal(result.format, 'app');
   assert.equal(result.path, output);
+  assert.ok(fs.existsSync(path.join(appRoot, 'renderer', 'dist', 'index.html')));
   assert.ok(fs.statSync(path.join(output, 'Contents', 'MacOS', 'PackageTest')).mode & 0o100);
   const archive = path.join(output, 'Contents', 'Resources', 'app.ant');
   assert.equal(fs.readFileSync(archive).subarray(0, 8).toString(), 'ANTAPP01');
+  const archiveContents = fs.readFileSync(archive);
+  assert.ok(archiveContents.includes(Buffer.from('renderer/dist/index.html')));
+  assert.ok(archiveContents.includes(Buffer.from('assets/model.bin')));
+  assert.ok(!archiveContents.includes(Buffer.from('page.html')));
   assert.ok(!fs.existsSync(path.join(output, 'Contents', 'Resources', 'app')));
-  assert.equal(
-    fs.readFileSync(path.join(output, 'Contents', 'Resources', 'models', 'model.bin'), 'utf8'),
-    'model-data\n'
-  );
   assert.ok(fs.existsSync(path.join(output, 'Contents', 'Frameworks', 'Fake.framework', 'Versions', 'A', 'Resources', 'en.lproj', 'locale.pak')));
   assert.ok(!fs.existsSync(path.join(output, 'Contents', 'Frameworks', 'Fake.framework', 'Versions', 'A', 'Resources', 'fr.lproj')));
   assert.ok(fs.existsSync(path.join(output, 'Contents', 'MacOS', 'Ant Chromium Host')));

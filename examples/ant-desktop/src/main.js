@@ -10,6 +10,10 @@ const mainWindow = createMainWindow();
 registerIpc(mainWindow);
 app.setApplicationMenu(createApplicationMenu(mainWindow));
 
-await mainWindow.loadFile(rendererEntry);
+if (process.env.ANT_DESKTOP_RENDERER_URL) {
+  await mainWindow.loadURL(process.env.ANT_DESKTOP_RENDERER_URL);
+} else {
+  await mainWindow.loadFile(rendererEntry);
+}
 
 console.log('ant desktop started');

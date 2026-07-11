@@ -2,6 +2,7 @@
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const { once } = require('node:events');
@@ -12,6 +13,19 @@ const {
 } = require('../packaging/npm/darwin-arm64/dev.cjs');
 
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'ant-desktop-dev-'));
+const shellQuote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
+
+async function availablePort() {
+  const server = http.createServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const port = server.address().port;
+  await new Promise(resolve => server.close(resolve));
+  return port;
+}
+
 async function main() {
   const appRoot = path.join(temporary, 'source');
   const entry = path.join(appRoot, 'main.js');
@@ -94,14 +108,45 @@ async function main() {
 
   const exitProgram = path.join(temporary, 'exit.cjs');
   fs.writeFileSync(exitProgram, 'process.exit(0);\n');
-  const supervisor = dev({ executable: process.execPath, host }, entry, {
+  const supervisor = await dev({ executable: process.execPath, host }, entry, {
     args: [exitProgram],
     cacheDir: path.join(temporary, 'supervisor-cache'),
-    name: 'Dev Example'
+    name: 'Dev Example',
+    rendererBuildCommand: '/usr/bin/touch renderer-built'
   });
   await Promise.all([
     once(supervisor.applicationWatcher, 'close'),
     once(supervisor.rendererWatcher, 'close')
+  ]);
+  assert.ok(fs.existsSync(path.join(appRoot, 'renderer-built')));
+
+  const port = await availablePort();
+  const rendererUrl = `http://127.0.0.1:${port}`;
+  const serverProgram = path.join(temporary, 'renderer-server.cjs');
+  const environmentProgram = path.join(temporary, 'renderer-environment.cjs');
+  fs.writeFileSync(serverProgram, `
+    const http = require('node:http');
+    const server = http.createServer((_request, response) => response.end('vite'));
+    server.listen(Number(process.argv[2]), '127.0.0.1');
+    process.once('SIGTERM', () => server.close(() => process.exit(0)));
+  `);
+  fs.writeFileSync(environmentProgram, `
+    process.exit(process.env.ANT_DESKTOP_RENDERER_URL === process.argv[2] ? 0 : 1);
+  `);
+  const serverSupervisor = await dev({ executable: process.execPath, host }, entry, {
+    args: [environmentProgram, rendererUrl],
+    cacheDir: path.join(temporary, 'server-supervisor-cache'),
+    include: ['main.js'],
+    name: 'Dev Server Example',
+    rendererDevServer: {
+      command: `${shellQuote(process.execPath)} ${shellQuote(serverProgram)} ${port}`,
+      url: rendererUrl
+    }
+  });
+  assert.equal(serverSupervisor.rendererWatcher, undefined);
+  await Promise.all([
+    once(serverSupervisor.applicationWatcher, 'close'),
+    once(serverSupervisor.rendererServer, 'exit')
   ]);
   console.log('desktop-dev-bundle-ok');
 }
