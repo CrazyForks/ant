@@ -9,7 +9,7 @@
       "url": "http://localhost:5173"
     }
   },
-  "include": ["src/*.js", "src/menu/*", "dist/**"],
+  "include": ["src/*.ts", "src/menu/*", "dist/**"],
   "identifier": "dev.themackabu.ant-desktop-example",
-  "output": "dist/Ant Desktop Example.app"
+  "output": "dist/app/Ant Desktop Example.app"
 }

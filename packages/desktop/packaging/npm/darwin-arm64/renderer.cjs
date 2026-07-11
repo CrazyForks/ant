@@ -4,7 +4,7 @@ const { spawnSync } = require('node:child_process');
 
 function buildRenderer(command, cwd) {
   if (!command) return;
-  const result = spawnSync(command, [], {
+  const result = spawnSync(command, {
     cwd,
     env: process.env,
     shell: true,

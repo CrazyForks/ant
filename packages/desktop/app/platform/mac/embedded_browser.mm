@@ -12,6 +12,7 @@
 #include "cef_callbacks.h"
 #include "include/cef_browser.h"
 #include "include/cef_client.h"
+#include "include/cef_context_menu_handler.h"
 #include "include/cef_display_handler.h"
 #include "include/cef_drag_handler.h"
 #include "include/cef_life_span_handler.h"
@@ -58,6 +59,7 @@ void Emit(void *window, const char *type, int code, const CefString &detail = Ce
 }
 
 class EmbeddedClient final : public CefClient,
+                             public CefContextMenuHandler,
                              public CefLifeSpanHandler,
                              public CefLoadHandler,
                              public CefDisplayHandler,
@@ -67,6 +69,9 @@ class EmbeddedClient final : public CefClient,
 public:
   EmbeddedClient(void *window, NSView *parent) : window_(window), parent_(parent) {}
 
+  CefRefPtr<CefContextMenuHandler> GetContextMenuHandler() override {
+    return this;
+  }
   CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override {
     return this;
   }
@@ -96,6 +101,11 @@ public:
     ant_desktop_cef_dispatch_ipc(window_, values->GetInt(0), (uint64_t)values->GetDouble(1), channel.data(),
                                  channel.size(), payload.data(), payload.size());
     return true;
+  }
+
+  void OnBeforeContextMenu(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
+                           CefRefPtr<CefContextMenuParams> params, CefRefPtr<CefMenuModel> model) override {
+    model->Clear();
   }
 
   void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
