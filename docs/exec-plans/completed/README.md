@@ -10,5 +10,6 @@ can reuse the decision history.
 
 ## Plans
 
+- [Static c-ares Release Portability](static-cares-release-portability.md)
 - [tlsuv WebSocket Buffered Read](tlsuv-websocket-buffered-read.md)
 - [Watch Supervisor](watch-supervisor.md)
