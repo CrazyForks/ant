@@ -10,6 +10,7 @@ Store in-progress execution plans here.
 
 - [Dynamic Property Performance](dynamic-property-perf.md)
   - [Dynamic Property Performance Extras](dynamic-property-perf-extras.md)
+- [Large AST Workload Performance](large-ast-workload-perf.md)
 - [Silver Recursive JIT Performance](silver-recursive-jit-perf.md)
 
 Recommended sections:
