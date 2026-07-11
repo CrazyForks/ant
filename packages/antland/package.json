@@ -1,6 +1,6 @@
 {
   "name": "antland",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "description": "ants.land package manager for npm, yarn, pnpm and bun",
   "repository": {
     "type": "git",
