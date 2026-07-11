@@ -98,8 +98,10 @@ void ant_sandbox_vm_session_destroy(ant_sandbox_vm_session_t *session);
 void ant_sandbox_vm_result_clear(ant_sandbox_vm_result_t *result);
 
 bool ant_sandbox_vm_supported(void);
+bool ant_sandbox_vm_helper_is_process(const char *argv0);
 bool ant_sandbox_vm_result_is_infrastructure_failure(const ant_sandbox_vm_result_t *result);
 
+int ant_sandbox_vm_helper_process_main(void);
 int ant_sandbox_vm_start(const ant_sandbox_vm_config_t *config);
 int ant_sandbox_vm_session_cancel(ant_sandbox_vm_session_t *session);
 int ant_sandbox_vm_session_execute(ant_sandbox_vm_session_t *session, const ant_sandbox_vm_request_t *request);

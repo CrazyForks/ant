@@ -7,6 +7,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdatomic.h>
 #include <stdint.h>
 
 #define ANT_VIRTIO_VSOCK_F_STREAM 0x1u
@@ -54,7 +55,7 @@ typedef struct {
   size_t request_off;
   bool connected;
   bool response_sent;
-  bool request_sent;
+  atomic_bool request_sent;
   ant_vsock_outgoing_frame_t *outgoing_head;
   ant_vsock_outgoing_frame_t *outgoing_tail;
   bool protocol_error;

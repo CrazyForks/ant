@@ -115,7 +115,10 @@ int ant_hvf_send_msi(ant_hvf_vm_t *vm, uint64_t addr, uint32_t data) {
 #endif
 
 void ant_hvf_wake_vcpu(ant_hvf_vm_t *vm) {
-  if (vm && vm->vcpu_thread_valid) pthread_kill(vm->vcpu_thread, SIGUSR1);
+  if (vm && atomic_load_explicit(&vm->vcpu_thread_valid, memory_order_acquire)) {
+    if (vm->run) __atomic_store_n(&vm->run->immediate_exit, 1, __ATOMIC_RELEASE);
+    pthread_kill(vm->vcpu_thread, SIGUSR1);
+  }
 }
 
 static size_t ant_hvf_uart_limit(ant_hvf_vm_t *vm) {

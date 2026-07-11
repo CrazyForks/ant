@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <sys/types.h>
 #include <pthread.h>
+#include <stdatomic.h>
 
 struct ant_sandbox_vm_session {
   const ant_sandbox_vm_backend_t *backend;
@@ -18,6 +19,7 @@ struct ant_sandbox_vm_session {
   bool helper;
   pthread_mutex_t helper_cmd_mutex;
   bool helper_cmd_mutex_init;
+  atomic_bool helper_cancel_requested;
 };
 
 int ant_sandbox_vm_helper_create(

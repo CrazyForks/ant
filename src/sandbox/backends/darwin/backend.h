@@ -30,6 +30,7 @@
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -103,7 +104,10 @@ struct ant_hvf_vm {
   
   unsigned int timeout_ms;
   unsigned int boot_timeout_ms;
-  bool timed_out;
+  atomic_bool timed_out;
+  atomic_bool canceled;
+  atomic_bool vcpu_running;
+  atomic_bool vsock_wake_pending;
   
   uint32_t rtc_load_value;
   time_t rtc_load_host;

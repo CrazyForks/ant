@@ -167,8 +167,10 @@ int ant_hvf_vsock_queue_frame(ant_hvf_vm_t *vm, const void *data, size_t len) {
   if (vm->vsock.outgoing_tail) vm->vsock.outgoing_tail->next = frame;
   else vm->vsock.outgoing_head = frame;
   vm->vsock.outgoing_tail = frame;
+  atomic_store_explicit(&vm->vsock_wake_pending, true, memory_order_release);
   if (vm->vsock_lock_init) pthread_mutex_unlock(&vm->vsock_lock);
-  if (vm->vsock.connected) ant_hvf_wake_vcpu(vm);
+  if (atomic_load_explicit(&vm->vcpu_running, memory_order_acquire))
+    ant_hvf_wake_vcpu(vm);
   return 0;
 }
 
@@ -183,6 +185,7 @@ void ant_hvf_vsock_clear_frames(ant_hvf_vm_t *vm) {
   }
   vm->vsock.outgoing_head = NULL;
   vm->vsock.outgoing_tail = NULL;
+  atomic_store_explicit(&vm->vsock_wake_pending, false, memory_order_release);
 }
 
 int ant_hvf_vsock_maybe_send_request(ant_hvf_vm_t *vm) {
@@ -190,6 +193,8 @@ int ant_hvf_vsock_maybe_send_request(ant_hvf_vm_t *vm) {
   if (vm->vsock_lock_init) pthread_mutex_lock(&vm->vsock_lock);
   ant_vsock_outgoing_frame_t *frame = dev->outgoing_head;
   if (!dev->connected || !frame) {
+    if (!frame)
+      atomic_store_explicit(&vm->vsock_wake_pending, false, memory_order_release);
     if (vm->vsock_lock_init) pthread_mutex_unlock(&vm->vsock_lock);
     return 0;
   }
@@ -228,10 +233,15 @@ int ant_hvf_vsock_maybe_send_request(ant_hvf_vm_t *vm) {
     frame->off += chunk;
   }
 
-  bool first = !dev->request_sent;
-  dev->request_sent = true;
+  bool first = !atomic_load_explicit(&dev->request_sent, memory_order_acquire);
+  atomic_store_explicit(&dev->request_sent, true, memory_order_release);
   dev->outgoing_head = frame->next;
   if (!dev->outgoing_head) dev->outgoing_tail = NULL;
+  atomic_store_explicit(
+    &vm->vsock_wake_pending,
+    dev->outgoing_head != NULL,
+    memory_order_release
+  );
   size_t sent_len = frame->len;
   free(frame->data);
   free(frame);
@@ -594,7 +604,7 @@ int ant_hvf_virtio_vsock_notify(ant_hvf_vm_t *vm, unsigned queue) {
     } else if (hdr.op == ANT_VIRTIO_VSOCK_OP_RST) {
       dev->connected = false;
       dev->response_sent = false;
-      dev->request_sent = false;
+      atomic_store_explicit(&dev->request_sent, false, memory_order_release);
       dev->request_off = 0;
       dev->transport_error = !dev->exit_received;
     } else if (hdr.op == ANT_VIRTIO_VSOCK_OP_SHUTDOWN) {

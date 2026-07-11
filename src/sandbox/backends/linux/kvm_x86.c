@@ -187,7 +187,7 @@ static int ant_kvm_run_guest(ant_hvf_vm_t *vm, unsigned int timeout_ms, bool tim
   
   bool have_deadline = timeout_ms > 0 && clock_gettime(CLOCK_MONOTONIC, &deadline.start) == 0;
   vm->vcpu_thread = pthread_self();
-  vm->vcpu_thread_valid = true;
+  atomic_store_explicit(&vm->vcpu_thread_valid, true, memory_order_release);
   atomic_store_explicit(&vm->timeout_disarmed, false, memory_order_release);
 
   if (have_deadline && pthread_create(&deadline_thread, NULL, ant_kvm_deadline_thread, &deadline) == 0) {
@@ -205,7 +205,8 @@ static int ant_kvm_run_guest(ant_hvf_vm_t *vm, unsigned int timeout_ms, bool tim
       rc = -ETIMEDOUT;
       break;
     }
-    if (timeout_until_request_sent && vm->vsock.request_sent) {
+    if (timeout_until_request_sent &&
+        atomic_load_explicit(&vm->vsock.request_sent, memory_order_acquire)) {
       atomic_store_explicit(&vm->timeout_disarmed, true, memory_order_release);
     }
     if (!deadline_thread_started && have_deadline &&
@@ -222,7 +223,14 @@ static int ant_kvm_run_guest(ant_hvf_vm_t *vm, unsigned int timeout_ms, bool tim
     rc = ant_hvf_virtio_net_drain_rx_if_wake(vm);
     if (rc != 0) break;
 
+    __atomic_store_n(&vm->run->immediate_exit, 0, __ATOMIC_RELEASE);
+    atomic_store_explicit(&vm->vcpu_running, true, memory_order_release);
+    if (atomic_exchange_explicit(&vm->vsock_wake_pending, false, memory_order_acq_rel)) {
+      atomic_store_explicit(&vm->vcpu_running, false, memory_order_release);
+      continue;
+    }
     rc = ioctl(vm->vcpu_fd, KVM_RUN, 0);
+    atomic_store_explicit(&vm->vcpu_running, false, memory_order_release);
     if (rc < 0) {
       if (errno == EINTR) {
         if (atomic_load_explicit(&vm->canceled, memory_order_acquire)) {
@@ -280,7 +288,7 @@ static int ant_kvm_run_guest(ant_hvf_vm_t *vm, unsigned int timeout_ms, bool tim
 done:
   atomic_store_explicit(&deadline.stop, true, memory_order_release);
   if (deadline_thread_started) pthread_join(deadline_thread, NULL);
-  vm->vcpu_thread_valid = false;
+  atomic_store_explicit(&vm->vcpu_thread_valid, false, memory_order_release);
   return rc;
 }
 
@@ -609,7 +617,7 @@ static int ant_kvm_session_execute(void *opaque, const ant_sandbox_vm_request_t 
   ant_kvm_session_t *session = opaque;
   ant_hvf_vm_t *vm = &session->vm;
 
-  vm->vsock.request_sent = false;
+  atomic_store_explicit(&vm->vsock.request_sent, false, memory_order_release);
   vm->vsock.exit_received = false;
   vm->vsock.exit_code = 0;
   vm->vsock.protocol_error = false;

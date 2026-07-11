@@ -195,7 +195,9 @@ struct ant_hvf_vm {
   uint32_t pci_addr;
   
   pthread_t vcpu_thread;
-  bool vcpu_thread_valid;
+  atomic_bool vcpu_thread_valid;
+  atomic_bool vcpu_running;
+  atomic_bool vsock_wake_pending;
   
   ant_hvf_virtio_device_t blk;
   ant_hvf_virtio_device_t net;

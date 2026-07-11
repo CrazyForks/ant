@@ -107,8 +107,9 @@ void *ant_hvf_timeout_thread(void *arg) {
   };
 
   while (nanosleep(&sleep_for, &sleep_for) != 0 && errno == EINTR) {}
-  if (timeout->until_request_sent && timeout->vm->vsock.request_sent) return NULL;
-  timeout->vm->timed_out = true;
+  if (timeout->until_request_sent &&
+      atomic_load_explicit(&timeout->vm->vsock.request_sent, memory_order_acquire)) return NULL;
+  atomic_store_explicit(&timeout->vm->timed_out, true, memory_order_release);
   hv_vcpus_exit(&timeout->vm->vcpu, 1);
   
   return NULL;
@@ -134,7 +135,13 @@ int ant_hvf_run(ant_hvf_vm_t *vm, unsigned int timeout_ms, bool timeout_until_re
     rc = ant_hvf_virtio_net_drain_rx_if_wake(vm);
     if (rc != 0) goto done;
 
+    atomic_store_explicit(&vm->vcpu_running, true, memory_order_release);
+    if (atomic_exchange_explicit(&vm->vsock_wake_pending, false, memory_order_acq_rel)) {
+      atomic_store_explicit(&vm->vcpu_running, false, memory_order_release);
+      continue;
+    }
     rc = ant_hvf_check(hv_vcpu_run(vm->vcpu), "hv_vcpu_run");
+    atomic_store_explicit(&vm->vcpu_running, false, memory_order_release);
     if (rc != 0) goto done;
 
     vm->last_exit_reason = vm->vcpu_exit->reason;
@@ -174,7 +181,10 @@ int ant_hvf_run(ant_hvf_vm_t *vm, unsigned int timeout_ms, bool timeout_until_re
       rc = ant_hvf_raise_vtimer(vm, "vtimer activated");
       if (rc != 0) goto done;
     } else if (vm->vcpu_exit->reason == HV_EXIT_REASON_CANCELED) {
-      if (vm->timed_out) {
+      if (atomic_load_explicit(&vm->canceled, memory_order_acquire)) {
+        rc = -ECANCELED;
+        goto done;
+      } else if (atomic_load_explicit(&vm->timed_out, memory_order_acquire)) {
         uint64_t pc = 0;
         uint64_t cntv_ctl = 0;
         uint64_t cntv_cval = 0;
@@ -211,7 +221,7 @@ int ant_hvf_run(ant_hvf_vm_t *vm, unsigned int timeout_ms, bool timeout_until_re
 
 done:
   if (timeout_thread_started) {
-    if (!vm->timed_out) pthread_cancel(timeout_thread);
+    if (!atomic_load_explicit(&vm->timed_out, memory_order_acquire)) pthread_cancel(timeout_thread);
     pthread_join(timeout_thread, NULL);
   }
   return rc;
@@ -559,12 +569,13 @@ static int ant_hvf_session_execute(void *opaque, const ant_sandbox_vm_request_t 
   ant_hvf_session_t *session = opaque;
   ant_hvf_vm_t *vm = &session->vm;
 
-  vm->vsock.request_sent = false;
+  atomic_store_explicit(&vm->vsock.request_sent, false, memory_order_release);
   vm->vsock.exit_received = false;
   vm->vsock.exit_code = 0;
   vm->vsock.protocol_error = false;
   vm->vsock.transport_error = false;
-  vm->timed_out = false;
+  atomic_store_explicit(&vm->timed_out, false, memory_order_release);
+  atomic_store_explicit(&vm->canceled, false, memory_order_release);
   
   vm->frame_handler = request->frame_handler;
   vm->frame_handler_user = request->frame_handler_user;
@@ -609,6 +620,14 @@ static int ant_hvf_session_send(void *opaque, const void *data, size_t len) {
   if (!opaque) return -EINVAL;
   ant_hvf_session_t *session = opaque;
   return ant_hvf_vsock_queue_frame(&session->vm, data, len);
+}
+
+static int ant_hvf_session_cancel(void *opaque) {
+  if (!opaque) return -EINVAL;
+  ant_hvf_session_t *session = opaque;
+  atomic_store_explicit(&session->vm.canceled, true, memory_order_release);
+  ant_hvf_wake_vcpu(&session->vm);
+  return 0;
 }
 
 static void ant_hvf_session_destroy(void *opaque) {
@@ -657,5 +676,6 @@ const ant_sandbox_vm_backend_t ant_sandbox_vm_darwin_backend = {
   .create_session = ant_hvf_session_create,
   .execute_session = ant_hvf_session_execute,
   .send_session = ant_hvf_session_send,
+  .cancel_session = ant_hvf_session_cancel,
   .destroy_session = ant_hvf_session_destroy,
 };
