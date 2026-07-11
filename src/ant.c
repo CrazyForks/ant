@@ -4978,7 +4978,7 @@ ant_value_t do_string_op(ant_t *js, uint8_t op, ant_value_t l, ant_value_t r) {
     uint16_t right_depth = (vtype(r) == T_STR && str_is_heap_rope(r)) ? rope_depth(r) : 0;
     unsigned int new_depth = (unsigned int)(left_depth > right_depth ? left_depth : right_depth) + 1u;
     
-    if (new_depth >= ROPE_MAX_DEPTH || total_len >= ROPE_FLATTEN_THRESHOLD) {
+    if (new_depth >= ROPE_MAX_DEPTH) {
       ant_value_t flat_l = l, flat_r = r;
       if (str_is_heap_rope(l)) flat_l = rope_flatten(js, l);
       if (is_err(flat_l)) return flat_l;

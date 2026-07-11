@@ -63,6 +63,7 @@
 #define JS_ERR_NO_STACK  (1 << 8)
 #define JS_TPFLG(t)      (1u << (t))
 
+#define ROPE_MAX_DEPTH        4096
 #define MAX_STRINGIFY_DEPTH   64
 #define MAX_PROTO_CHAIN_DEPTH 256
 #define MAX_MULTIREF_OBJS     128
@@ -70,9 +71,6 @@
 
 #define PROTO_WALK_F_OBJECT_ONLY (1u << 0)
 #define PROTO_WALK_F_LOOKUP      (1u << 1)
-
-#define ROPE_MAX_DEPTH         4096
-#define ROPE_FLATTEN_THRESHOLD (512 * 1024)
 
 #define STR_BUILDER_TAIL_CAP 256u
 #define STR_HEAP_TAG_MASK    0x3ULL
