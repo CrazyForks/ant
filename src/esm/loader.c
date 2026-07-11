@@ -1807,6 +1807,20 @@ ant_value_t js_esm_import_sync_cstr_from(
   return ns;
 }
 
+static ant_value_t esm_module_not_found_error(
+  ant_t *js,
+  const char *specifier
+) {
+  static const char code[] = "MODULE_NOT_FOUND";
+  ant_value_t props = js_mkobj(js);
+  js_set(js, props, "code", js_mkstr(js, code, sizeof(code) - 1));
+  
+  return js_mkerr_props(
+    js, JS_ERR_GENERIC, props, 
+    "Cannot resolve module: %s", specifier
+  );
+}
+
 ant_value_t js_esm_import_sync_cstr_from_require(
   ant_t *js,
   const char *specifier,
@@ -1857,7 +1871,7 @@ ant_value_t js_esm_import_sync_cstr_from_require(
   if (!base_path || !base_path[0]) base_path = esm_default_base_path(js);
   char *resolved_path = esm_resolve(spec_copy, base_path, esm_resolve_path_require);
   if (!resolved_path) {
-    ant_value_t err = js_mkerr(js, "Cannot resolve module: %s", spec_copy);
+    ant_value_t err = esm_module_not_found_error(js, spec_copy);
     free(spec_copy);
     return err;
   }
@@ -2047,11 +2061,13 @@ ant_value_t js_esm_resolve_specifier_require(ant_t *js, ant_value_t specifier, c
 
   if (!base_path || !base_path[0]) base_path = esm_default_base_path(js);
   char *resolved_path = esm_resolve(spec_copy, base_path, esm_resolve_path_require);
-  free(spec_copy);
 
   if (!resolved_path) {
-    return js_mkerr(js, "Cannot resolve module");
+    ant_value_t err = esm_module_not_found_error(js, spec_copy);
+    free(spec_copy);
+    return err;
   }
+  free(spec_copy);
 
   if (esm_is_url(resolved_path)) {
     ant_value_t result = js_mkstr(js, resolved_path, strlen(resolved_path));
