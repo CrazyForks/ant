@@ -116,7 +116,6 @@ typedef struct {
   ant_shape_t *shared_shape;
 } sv_obj_site_cache_t;
 
-#define SV_CALL_NATIVE_CTOR_ALLOCATES (1u << 5)
 #define SV_GF_IC_AUX_WARMUP_MASK      ((uintptr_t)0xFFu)
 #define SV_GF_IC_AUX_MISS_MASK        ((uintptr_t)0xFF00u)
 #define SV_GF_IC_AUX_ACTIVE_BIT       ((uintptr_t)0x10000u)
@@ -365,8 +364,7 @@ static inline sv_closure_t *js_func_closure(ant_value_t func) {
 static inline bool sv_native_ctor_allocates_receiver(ant_value_t func) {
   if (vtype(func) != T_FUNC) return false;
   sv_closure_t *closure = js_func_closure(func);
-  return closure &&
-    (closure->call_flags & SV_CALL_NATIVE_CTOR_ALLOCATES) != 0;
+  return closure && (closure->call_flags & JS_NATIVE_CTOR) != 0;
 }
 
 static inline ant_value_t js_func_obj(ant_value_t func) {

@@ -62,6 +62,7 @@
 
 #define JS_ERR_NO_STACK  (1 << 8)
 #define JS_TPFLG(t)      (1u << (t))
+#define JS_NATIVE_CTOR   (1u << 5)
 
 #define ROPE_MAX_DEPTH        4096
 #define MAX_STRINGIFY_DEPTH   64
@@ -746,7 +747,7 @@ static inline ant_value_t js_make_ctor(ant_t *js, ant_cfunc_t fn, ant_value_t pr
   js_mkprop_fast(js, obj, "name", 4, js_mkstr(js, name, nlen));
   js_set_descriptor(js, obj, "name", 4, 0);
 
-  ant_value_t fn_val = js_obj_to_func_ex(obj, SV_CALL_NATIVE_CTOR_ALLOCATES);
+  ant_value_t fn_val = js_obj_to_func_ex(obj, JS_NATIVE_CTOR);
   js_set(js, proto, "constructor", fn_val);
   js_set_descriptor(js, proto, "constructor", 11, JS_DESC_W | JS_DESC_C);
 
