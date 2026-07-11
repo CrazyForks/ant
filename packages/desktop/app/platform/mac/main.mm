@@ -133,8 +133,21 @@ int main(int argc, char **argv) {
     }
 
     [pump pump];
+    id termination_observer = [NSNotificationCenter.defaultCenter
+      addObserverForName:NSApplicationWillTerminateNotification
+                  object:NSApp
+                   queue:NSOperationQueue.mainQueue
+              usingBlock:^(NSNotification *notification) {
+                (void)notification;
+                for (ant_desktop_window_state_t *window = ant_desktop_window_first(); window;) {
+                  ant_desktop_window_state_t *next = window->next;
+                  ant_desktop_emit_window_event(window, "quit", "", 0, 0);
+                  window = next;
+                }
+              }];
     [NSApp run];
 
+    [NSNotificationCenter.defaultCenter removeObserver:termination_observer];
     ant_desktop_platform_shutdown_all_windows();
     development_reload = nil;
     pump = nil;

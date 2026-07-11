@@ -68,9 +68,6 @@ ant_value_t DesktopBrowserWindowCtor(ant_t *js, ant_value_t *args, int nargs) {
   NSString *border_color = OptionString(js, options, "borderColor");
   double border_width = MAX(0, OptionNumber(js, options, "borderWidth", 0));
   double corner_radius = MAX(0, OptionNumber(js, options, "cornerRadius", 10));
-  ant_value_t title_bar_overlay = is_object_type(options) ? js_get(js, options, "titleBarOverlay") : js_mkundef();
-  BOOL overlay_enabled =
-    is_object_type(title_bar_overlay) || (vtype(title_bar_overlay) == T_BOOL && js_truthy(js, title_bar_overlay));
   NSString *capability_error = nil;
   NSString *capability_manifest = CapabilityManifest(js, options, &capability_error);
   if (!capability_manifest) { return js_mkerr(js, "%s", capability_error.UTF8String); }
@@ -94,7 +91,7 @@ ant_value_t DesktopBrowserWindowCtor(ant_t *js, ant_value_t *args, int nargs) {
   if (resizable) style |= NSWindowStyleMaskResizable;
   BOOL inline_titlebar = [title_bar_style isEqualToString:@"hidden"] ||
                          [title_bar_style isEqualToString:@"hiddenInset"] ||
-                         [title_bar_style isEqualToString:@"customButtonsOnHover"] || overlay_enabled;
+                         [title_bar_style isEqualToString:@"customButtonsOnHover"];
   if (inline_titlebar) style |= NSWindowStyleMaskFullSizeContentView;
   AntDesktopNSWindow *window = [[AntDesktopNSWindow alloc] initWithContentRect:NSMakeRect(0, 0, width, height)
                                                                      styleMask:style

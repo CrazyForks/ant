@@ -7,10 +7,19 @@
 #include "../../ipc/control.h"
 #include "../core/window_state.h"
 
+typedef struct ant_desktop_window_bounds {
+  double x;
+  double y;
+  double width;
+  double height;
+} ant_desktop_window_bounds_t;
+
 bool ant_desktop_platform_send_control(ant_desktop_window_state_t *window,
                                        const ant_desktop_control_message_t *message);
 
 bool ant_desktop_platform_browser_running(ant_desktop_window_state_t *window);
+bool ant_desktop_platform_get_bounds(ant_desktop_window_state_t *window, ant_desktop_window_bounds_t *bounds);
+bool ant_desktop_platform_get_path(const char *name, char *path, size_t capacity);
 void ant_desktop_platform_close(ant_desktop_window_state_t *window);
 void ant_desktop_platform_show(ant_desktop_window_state_t *window);
 void ant_desktop_platform_hide(ant_desktop_window_state_t *window);

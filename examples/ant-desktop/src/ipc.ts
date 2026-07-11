@@ -1,4 +1,4 @@
-import { ipcMain } from 'ant:desktop';
+import { ipcMain, type BrowserWindow } from 'ant:desktop';
 
 const darkTheme = {
   background: '#202124',
@@ -18,7 +18,7 @@ const lightTheme = {
   accent: '#1a73e8'
 };
 
-export function registerIpc(mainWindow) {
+export function registerIpc(mainWindow: BrowserWindow) {
   let useLightTheme = false;
 
   ipcMain.handle('app:get-runtime-info', event => ({
@@ -32,6 +32,6 @@ export function registerIpc(mainWindow) {
   });
 
   ipcMain.on('page:ready', (_event, value) => {
-    console.log(`Renderer ready: ${value.title}`);
+    console.log(`renderer ready: ${value.title}`);
   });
 }

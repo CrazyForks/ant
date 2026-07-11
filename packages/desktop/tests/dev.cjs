@@ -7,10 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { once } = require('node:events');
 
-const {
-  createDevApp,
-  dev
-} = require('../packaging/npm/darwin-arm64/dev.cjs');
+const { createDevApp, dev } = require('../packaging/npm/darwin-arm64/dev.cjs');
 
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'ant-desktop-dev-'));
 const shellQuote = value => `'${String(value).replaceAll("'", "'\\''")}'`;
@@ -24,6 +21,20 @@ async function availablePort() {
   const port = server.address().port;
   await new Promise(resolve => server.close(resolve));
   return port;
+}
+
+async function waitForProcessExit(pid, timeout = 5_000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if (error.code === 'ESRCH') return;
+      throw error;
+    }
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.fail(`process ${pid} survived renderer server shutdown`);
 }
 
 async function main() {
@@ -58,14 +69,8 @@ async function main() {
   assert.equal(fs.readFileSync(result.executable, 'utf8'), 'native');
   const developmentFrameworks = path.join(result.output, 'Contents', 'Frameworks');
   assert.ok(fs.lstatSync(developmentFrameworks).isDirectory());
-  assert.equal(
-    fs.readlinkSync(path.join(developmentFrameworks, 'Fake.framework', 'Versions', 'Current')),
-    'A'
-  );
-  assert.equal(
-    fs.readFileSync(path.join(developmentFrameworks, 'Fake.framework', 'Fake'), 'utf8'),
-    'framework'
-  );
+  assert.equal(fs.readlinkSync(path.join(developmentFrameworks, 'Fake.framework', 'Versions', 'Current')), 'A');
+  assert.equal(fs.readFileSync(path.join(developmentFrameworks, 'Fake.framework', 'Fake'), 'utf8'), 'framework');
   const cacheSentinel = path.join(developmentFrameworks, 'cache-sentinel');
   fs.writeFileSync(cacheSentinel, 'preserved');
   createDevApp({ executable, host }, entry, {
@@ -82,25 +87,19 @@ async function main() {
     name: 'Dev Example'
   });
   assert.equal(fs.existsSync(cacheSentinel), false);
-  assert.equal(
-    fs.realpathSync(path.join(result.output, 'Contents', 'Resources', 'app')),
-    fs.realpathSync(appRoot)
-  );
-  const plist = fs.readFileSync(
-    path.join(result.output, 'Contents', 'Info.plist'),
-    'utf8'
-  );
+  assert.equal(fs.realpathSync(path.join(result.output, 'Contents', 'Resources', 'app')), fs.realpathSync(appRoot));
+  const plist = fs.readFileSync(path.join(result.output, 'Contents', 'Info.plist'), 'utf8');
   assert.match(plist, /<string>Dev Example<\/string>/);
   assert.match(plist, /<string>Dev Example\.icns<\/string>/);
   assert.match(plist, /<string>app\/main\.js<\/string>/);
-  assert.equal(
-    fs.realpathSync(path.join(result.output, 'Contents', 'Resources', 'Dev Example.icns')),
-    fs.realpathSync(icon)
-  );
+  assert.equal(fs.realpathSync(path.join(result.output, 'Contents', 'Resources', 'Dev Example.icns')), fs.realpathSync(icon));
 
-  fs.writeFileSync(path.join(appRoot, 'package.json'), JSON.stringify({
-    productName: 'Ignored Package Name'
-  }));
+  fs.writeFileSync(
+    path.join(appRoot, 'package.json'),
+    JSON.stringify({
+      productName: 'Ignored Package Name'
+    })
+  );
   const fallback = createDevApp({ executable, host }, entry, {
     cacheDir: path.join(temporary, 'fallback-cache')
   });
@@ -114,46 +113,60 @@ async function main() {
     name: 'Dev Example',
     rendererBuildCommand: '/usr/bin/touch renderer-built'
   });
-  await Promise.all([
-    once(supervisor.applicationWatcher, 'close'),
-    once(supervisor.rendererWatcher, 'close')
-  ]);
+  await Promise.all([once(supervisor.applicationWatcher, 'close'), once(supervisor.rendererWatcher, 'close')]);
   assert.ok(fs.existsSync(path.join(appRoot, 'renderer-built')));
 
   const port = await availablePort();
   const rendererUrl = `http://127.0.0.1:${port}`;
   const serverProgram = path.join(temporary, 'renderer-server.cjs');
+  const serverParentProgram = path.join(temporary, 'renderer-server-parent.cjs');
+  const serverPidFile = path.join(temporary, 'renderer-server.pid');
   const environmentProgram = path.join(temporary, 'renderer-environment.cjs');
-  fs.writeFileSync(serverProgram, `
+  fs.writeFileSync(
+    serverProgram,
+    `
+    const fs = require('node:fs');
     const http = require('node:http');
     const server = http.createServer((_request, response) => response.end('vite'));
-    server.listen(Number(process.argv[2]), '127.0.0.1');
+    server.listen(Number(process.argv[2]), '127.0.0.1', () => fs.writeFileSync(process.argv[3], String(process.pid)));
     process.once('SIGTERM', () => server.close(() => process.exit(0)));
-  `);
-  fs.writeFileSync(environmentProgram, `
+  `
+  );
+  fs.writeFileSync(
+    serverParentProgram,
+    `
+    const { spawn } = require('node:child_process');
+    const child = spawn(process.execPath, process.argv.slice(2), { stdio: 'inherit' });
+    child.once('exit', (code, signal) => process.exitCode = signal ? 1 : code);
+  `
+  );
+  fs.writeFileSync(
+    environmentProgram,
+    `
     process.exit(process.env.ANT_DESKTOP_RENDERER_URL === process.argv[2] ? 0 : 1);
-  `);
+  `
+  );
   const serverSupervisor = await dev({ executable: process.execPath, host }, entry, {
     args: [environmentProgram, rendererUrl],
     cacheDir: path.join(temporary, 'server-supervisor-cache'),
     include: ['main.js'],
     name: 'Dev Server Example',
     rendererDevServer: {
-      command: `${shellQuote(process.execPath)} ${shellQuote(serverProgram)} ${port}`,
+      command: `${shellQuote(process.execPath)} ${shellQuote(serverParentProgram)} ${shellQuote(serverProgram)} ${port} ${shellQuote(serverPidFile)}`,
       url: rendererUrl
     }
   });
   assert.equal(serverSupervisor.rendererWatcher, undefined);
-  await Promise.all([
-    once(serverSupervisor.applicationWatcher, 'close'),
-    once(serverSupervisor.rendererServer, 'exit')
-  ]);
+  await Promise.all([once(serverSupervisor.applicationWatcher, 'close'), once(serverSupervisor.rendererServer, 'exit')]);
+  await waitForProcessExit(Number(fs.readFileSync(serverPidFile, 'utf8')));
   console.log('desktop-dev-bundle-ok');
 }
 
-main().finally(() => {
-  fs.rmSync(temporary, { recursive: true, force: true });
-}).catch(error => {
-  console.error(error);
-  process.exitCode = 1;
-});
+main()
+  .finally(() => {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  })
+  .catch(error => {
+    console.error(error);
+    process.exitCode = 1;
+  });

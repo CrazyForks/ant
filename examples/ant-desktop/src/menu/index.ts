@@ -1,7 +1,7 @@
-import { Menu, MenuItem } from 'ant:desktop';
+import { Menu, MenuItem, type BrowserWindow } from 'ant:desktop';
 import { template } from './template.json';
 
-export function createApplicationMenu(mainWindow) {
+export function createApplicationMenu(mainWindow: BrowserWindow) {
   const menu = Menu.buildFromTemplate(template);
 
   menu.append(

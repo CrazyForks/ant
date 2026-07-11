@@ -31,6 +31,19 @@ static ant_desktop_window_state_t *RequireWindow(ant_t *js) {
   return ant_desktop_window_from_value(js, js_getthis(js));
 }
 
+ant_value_t DesktopBrowserWindowGetBounds(ant_t *js, ant_value_t *args, int nargs) {
+  ant_desktop_window_state_t *window = RequireWindow(js);
+  if (!window) return js_mkerr(js, "invalid BrowserWindow receiver");
+  ant_desktop_window_bounds_t bounds;
+  if (!ant_desktop_platform_get_bounds(window, &bounds)) return js_mkerr(js, "BrowserWindow is closed");
+  ant_value_t result = js_mkobj(js);
+  js_set(js, result, "x", js_mknum(bounds.x));
+  js_set(js, result, "y", js_mknum(bounds.y));
+  js_set(js, result, "width", js_mknum(bounds.width));
+  js_set(js, result, "height", js_mknum(bounds.height));
+  return result;
+}
+
 ant_value_t DesktopBrowserWindowClose(ant_t *js, ant_value_t *args, int nargs) {
   ant_desktop_window_state_t *window = RequireWindow(js);
   if (!window) return js_mkerr(js, "invalid BrowserWindow receiver");

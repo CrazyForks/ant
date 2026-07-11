@@ -261,6 +261,14 @@ The `ant:desktop` module exports:
 the current runtime. The desktop-specific entries are also available as
 `process.versions['ant-desktop']` and `process.versions.chrome`.
 
+`app.getPath(name)` returns a native filesystem location. Supported names are
+`home`, `temp`, `appData`, `userData`, `desktop`, `documents`, `downloads`,
+`resources`, and `exe`. `userData` is the application-specific directory under
+Application Support.
+
 `BrowserWindow` supports loading local files and URLs, window visibility and
 state controls, application events, custom title bars, application menus, and
-Chromium developer tools.
+Chromium developer tools. `window.getBounds()` returns the current
+`{ x, y, width, height }`; `move` and `resize` events report geometry changes,
+while `quit` fires before application termination so the final bounds can be
+persisted.

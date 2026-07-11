@@ -6,7 +6,7 @@ const http = require('node:http');
 const https = require('node:https');
 const os = require('node:os');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { execFileSync, spawn } = require('node:child_process');
 const { buildRenderer } = require('./renderer.cjs');
 
 const { applicationName, bundleIdentifier, infoPlist, isInside, matchesInclude } = require('./package.cjs');
@@ -131,6 +131,35 @@ function createDevApp(layout, entry, options = {}) {
 
 function delay(milliseconds) {
   return new Promise(resolve => setTimeout(resolve, milliseconds));
+}
+
+function terminateProcessTree(child) {
+  if (!child?.pid) return;
+  const children = new Map();
+  try {
+    const processes = execFileSync('/bin/ps', ['-axo', 'pid=,ppid='], { encoding: 'utf8' });
+    for (const line of processes.trim().split('\n')) {
+      const [pid, parentPid] = line.trim().split(/\s+/).map(Number);
+      if (!children.has(parentPid)) children.set(parentPid, []);
+      children.get(parentPid).push(pid);
+    }
+  } catch {
+    // the direct child is still safe to terminate if process inspection fails
+  }
+
+  const pids = [];
+  const collect = pid => {
+    for (const descendant of children.get(pid) || []) collect(descendant);
+    pids.push(pid);
+  };
+  collect(child.pid);
+  for (const pid of pids) {
+    try {
+      process.kill(pid, 'SIGTERM');
+    } catch (error) {
+      if (error.code !== 'ESRCH') throw error;
+    }
+  }
 }
 
 function devServerReady(value) {
@@ -260,7 +289,7 @@ async function dev(layout, entry, options = {}) {
     rendererWatcher?.close();
     applicationWatcher?.close();
     if (child?.exitCode === null) child.kill('SIGTERM');
-    if (rendererServer?.exitCode === null) rendererServer.kill('SIGTERM');
+    terminateProcessTree(rendererServer);
   };
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);

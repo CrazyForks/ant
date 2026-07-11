@@ -19,6 +19,7 @@
   },
   "type": "module",
   "main": "index.js",
+  "types": "desktop.d.ts",
   "exports": {
     ".": "./index.js"
   },
@@ -36,6 +37,7 @@
   "files": [
     "app/bin/",
     "config.js",
+    "desktop.d.ts",
     "index.js",
     "platforms.json",
     "README.md"

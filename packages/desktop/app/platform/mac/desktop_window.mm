@@ -7,6 +7,37 @@ const char *ant_desktop_platform_resources_path(void) {
   return NSBundle.mainBundle.resourcePath.fileSystemRepresentation;
 }
 
+static NSString *SearchPath(NSSearchPathDirectory directory) {
+  return [NSFileManager.defaultManager URLsForDirectory:directory inDomains:NSUserDomainMask].firstObject.path;
+}
+
+static NSString *ApplicationName(void) {
+  NSBundle *bundle = NSBundle.mainBundle;
+  return [bundle objectForInfoDictionaryKey:@"CFBundleDisplayName"] ?: [bundle objectForInfoDictionaryKey:@"CFBundleName"] ?:
+                                                                   NSProcessInfo.processInfo.processName;
+}
+
+bool ant_desktop_platform_get_path(const char *name, char *path, size_t capacity) {
+  NSString *key = [NSString stringWithUTF8String:name];
+  NSString *value = nil;
+  if ([key isEqualToString:@"home"]) value = NSHomeDirectory();
+  else if ([key isEqualToString:@"temp"]) value = NSTemporaryDirectory();
+  else if ([key isEqualToString:@"appData"]) value = SearchPath(NSApplicationSupportDirectory);
+  else if ([key isEqualToString:@"userData"])
+    value = [SearchPath(NSApplicationSupportDirectory) stringByAppendingPathComponent:ApplicationName()];
+  else if ([key isEqualToString:@"desktop"]) value = SearchPath(NSDesktopDirectory);
+  else if ([key isEqualToString:@"documents"]) value = SearchPath(NSDocumentDirectory);
+  else if ([key isEqualToString:@"downloads"]) value = SearchPath(NSDownloadsDirectory);
+  else if ([key isEqualToString:@"resources"]) value = NSBundle.mainBundle.resourcePath;
+  else if ([key isEqualToString:@"exe"]) value = NSBundle.mainBundle.executablePath;
+  if (!value) return false;
+  const char *bytes = value.fileSystemRepresentation;
+  size_t length = strlen(bytes);
+  if (length >= capacity) return false;
+  memcpy(path, bytes, length + 1);
+  return true;
+}
+
 @implementation AntDesktopNSWindow
 - (BOOL)canBecomeKeyWindow {
   return self.focusableOption;
@@ -17,6 +48,16 @@ const char *ant_desktop_platform_resources_path(void) {
 @end
 
 @implementation AntDesktopWindow
+
+- (void)windowDidMove:(NSNotification *)notification {
+  (void)notification;
+  ant_desktop_emit_window_event(self.state, "move", "", 0, 0);
+}
+
+- (void)windowDidResize:(NSNotification *)notification {
+  (void)notification;
+  ant_desktop_emit_window_event(self.state, "resize", "", 0, 0);
+}
 
 - (void)windowWillClose:(NSNotification *)notification {
   (void)notification;
@@ -47,6 +88,20 @@ bool ant_desktop_platform_send_control(ant_desktop_window_state_t *state, const 
 
 bool ant_desktop_platform_browser_running(ant_desktop_window_state_t *state) {
   return MacWindowForState(state).hostTask.running;
+}
+
+bool ant_desktop_platform_get_bounds(ant_desktop_window_state_t *state, ant_desktop_window_bounds_t *bounds) {
+  NSWindow *window = MacWindowForState(state).window;
+  if (!window || !bounds) return false;
+  NSScreen *screen = window.screen ?: NSScreen.mainScreen;
+  NSRect frame = window.frame;
+  NSRect content = [window contentRectForFrameRect:frame];
+  NSRect visible = screen.visibleFrame;
+  bounds->x = frame.origin.x - visible.origin.x;
+  bounds->y = NSMaxY(visible) - NSMaxY(frame);
+  bounds->width = content.size.width;
+  bounds->height = content.size.height;
+  return true;
 }
 
 void ant_desktop_platform_close(ant_desktop_window_state_t *state) {

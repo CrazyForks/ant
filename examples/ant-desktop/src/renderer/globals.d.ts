@@ -17,4 +17,4 @@ interface DesktopApi {
 
 declare const Ant: AntRendererApi;
 declare const desktop: DesktopApi;
-declare const preloadReady: boolean;
+declare var preloadReady: boolean;
