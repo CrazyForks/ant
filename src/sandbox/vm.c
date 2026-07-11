@@ -102,6 +102,7 @@ int ant_sandbox_vm_start(const ant_sandbox_vm_config_t *config) {
 int ant_sandbox_vm_session_create(const ant_sandbox_vm_config_t *config, ant_sandbox_vm_session_t **session_out) {
   if (!config || !session_out) return -EINVAL;
   *session_out = NULL;
+  uint64_t created_at_ns = sandbox_vm_monotonic_ns();
   ant_sandbox_vm_result_clear(config->result);
 
   const ant_sandbox_vm_backend_t *backend = ant_sandbox_vm_default_backend();
@@ -115,7 +116,7 @@ int ant_sandbox_vm_session_create(const ant_sandbox_vm_config_t *config, ant_san
 
 #if defined(__APPLE__) && !defined(_WIN32)
   int helper_rc = ant_sandbox_vm_helper_create(backend, config, session_out);
-  if (helper_rc == 0 && *session_out) (*session_out)->created_at_ns = sandbox_vm_monotonic_ns();
+  if (helper_rc == 0 && *session_out) (*session_out)->created_at_ns = created_at_ns;
   return helper_rc;
 #endif
 
@@ -132,7 +133,7 @@ int ant_sandbox_vm_session_create(const ant_sandbox_vm_config_t *config, ant_san
   }
 
   session->backend = backend;
-  session->created_at_ns = sandbox_vm_monotonic_ns();
+  session->created_at_ns = created_at_ns;
   *session_out = session;
   return 0;
 }

@@ -253,6 +253,7 @@ static void sandbox_fill_result_from_rc(ant_sandbox_vm_result_t *result, int rc)
   if (rc == -ENOSYS) result->kind = ANT_SANDBOX_VM_RESULT_BACKEND_UNAVAILABLE;
   else if (rc == -EINVAL) result->kind = ANT_SANDBOX_VM_RESULT_CONFIG_ERROR;
   else if (rc == -ETIMEDOUT) result->kind = ANT_SANDBOX_VM_RESULT_TIMEOUT;
+  else if (rc == ANT_SANDBOX_CPU_TIME_LIMIT_CODE) result->kind = ANT_SANDBOX_VM_RESULT_CPU_TIME_LIMIT;
   else result->kind = ANT_SANDBOX_VM_RESULT_VM_ERROR;
   result->code = rc;
 }
@@ -281,6 +282,9 @@ static void sandbox_print_vm_failure(const ant_sandbox_vm_result_t *result, int 
     case ANT_SANDBOX_VM_RESULT_TIMEOUT:
       fprintf(stderr, "sandbox: VM timed out\n");
       break;
+    case ANT_SANDBOX_VM_RESULT_CPU_TIME_LIMIT:
+      fprintf(stderr, "sandbox: VM exceeded its CPU time budget\n");
+      break;
     case ANT_SANDBOX_VM_RESULT_KERNEL_PANIC:
       // the backend prints the panic summary and console tail
       break;
@@ -289,6 +293,9 @@ static void sandbox_print_vm_failure(const ant_sandbox_vm_result_t *result, int 
       break;
     case ANT_SANDBOX_VM_RESULT_TRANSPORT_ERROR:
       fprintf(stderr, "sandbox: transport error (%d)\n", result->code);
+      break;
+    case ANT_SANDBOX_VM_RESULT_CANCELED:
+      fprintf(stderr, "sandbox: VM canceled\n");
       break;
     case ANT_SANDBOX_VM_RESULT_VM_ERROR:
     case ANT_SANDBOX_VM_RESULT_NONE:

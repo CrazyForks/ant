@@ -8,6 +8,7 @@
 #define ANT_SANDBOX_DEFAULT_BOOT_TIMEOUT_MS 10000u
 #define ANT_SANDBOX_MIN_MEMORY_SIZE (64ull * 1024ull * 1024ull)
 #define ANT_SANDBOX_DEFAULT_MEMORY_SIZE (256ull * 1024ull * 1024ull)
+#define ANT_SANDBOX_CPU_TIME_LIMIT_CODE (-1001)
 typedef struct ant_sandbox_vm_session ant_sandbox_vm_session_t;
 
 typedef struct {

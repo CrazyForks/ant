@@ -216,7 +216,7 @@ static int ant_kvm_run_guest(ant_hvf_vm_t *vm, unsigned int timeout_ms, bool tim
     rc = ant_hvf_vsock_maybe_send_request(vm);
     if (rc != 0 && rc != -EAGAIN) break;
     if (atomic_load_explicit(&vm->cpu_timed_out, memory_order_acquire)) {
-      rc = -EDQUOT;
+      rc = ANT_SANDBOX_CPU_TIME_LIMIT_CODE;
       break;
     }
     if (atomic_load_explicit(&vm->canceled, memory_order_acquire)) {
@@ -256,7 +256,7 @@ static int ant_kvm_run_guest(ant_hvf_vm_t *vm, unsigned int timeout_ms, bool tim
     if (rc < 0) {
       if (errno == EINTR) {
         if (atomic_load_explicit(&vm->cpu_timed_out, memory_order_acquire)) {
-          rc = -EDQUOT;
+          rc = ANT_SANDBOX_CPU_TIME_LIMIT_CODE;
           break;
         }
         if (atomic_load_explicit(&vm->canceled, memory_order_acquire)) {

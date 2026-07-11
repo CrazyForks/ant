@@ -84,8 +84,10 @@ void ant_kvm_classify_result(ant_hvf_vm_t *vm, ant_sandbox_vm_result_t *result, 
     ant_kvm_set_result(result, ANT_SANDBOX_VM_RESULT_KERNEL_PANIC, rc ? rc : -EFAULT);
   else if (rc == -ENOSYS)
     ant_kvm_set_result(result, ANT_SANDBOX_VM_RESULT_BACKEND_UNAVAILABLE, rc);
-  else if (rc == -EDQUOT || (vm && atomic_load_explicit(&vm->cpu_timed_out, memory_order_acquire)))
-    ant_kvm_set_result(result, ANT_SANDBOX_VM_RESULT_CPU_TIME_LIMIT, rc ? rc : -EDQUOT);
+  else if (rc == ANT_SANDBOX_CPU_TIME_LIMIT_CODE ||
+           (vm && atomic_load_explicit(&vm->cpu_timed_out, memory_order_acquire)))
+    ant_kvm_set_result(result, ANT_SANDBOX_VM_RESULT_CPU_TIME_LIMIT,
+                       rc ? rc : ANT_SANDBOX_CPU_TIME_LIMIT_CODE);
   else if (rc == -ETIMEDOUT)
     ant_kvm_set_result(result, ANT_SANDBOX_VM_RESULT_TIMEOUT, rc);
   else if (rc == -ECANCELED || (vm && atomic_load_explicit(&vm->canceled, memory_order_acquire)))

@@ -707,7 +707,7 @@ static void sandbox_fill_result_from_rc(ant_sandbox_vm_result_t *result, int rc)
   if (rc == -ENOSYS) result->kind = ANT_SANDBOX_VM_RESULT_BACKEND_UNAVAILABLE;
   else if (rc == -EINVAL) result->kind = ANT_SANDBOX_VM_RESULT_CONFIG_ERROR;
   else if (rc == -ETIMEDOUT) result->kind = ANT_SANDBOX_VM_RESULT_TIMEOUT;
-  else if (rc == -EDQUOT) result->kind = ANT_SANDBOX_VM_RESULT_CPU_TIME_LIMIT;
+  else if (rc == ANT_SANDBOX_CPU_TIME_LIMIT_CODE) result->kind = ANT_SANDBOX_VM_RESULT_CPU_TIME_LIMIT;
   else result->kind = ANT_SANDBOX_VM_RESULT_VM_ERROR;
   result->code = rc;
 }
