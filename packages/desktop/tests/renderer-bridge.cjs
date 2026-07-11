@@ -3,14 +3,12 @@
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 
-const {
-  rendererBridgeSource
-} = require('../scripts/embed-renderer-bridge.cjs');
+const { rendererBridgeSource } = require('../scripts/embed-renderer-bridge.cjs');
 
 const context = vm.createContext({
   atob,
   btoa,
-  DOMException,
+  DOMException
 });
 const factory = vm.runInContext(rendererBridgeSource().toString('utf8'), context);
 assert.equal(typeof factory, 'function');
@@ -46,6 +44,10 @@ bridge.dispatch(1, 1, 2, 'echo', bridge.encode({ value: 42 })).then(() => {
   });
   assert.equal(context.ant, undefined);
   assert.equal(typeof context.Ant.ipc.send, 'function');
+  assert.equal(typeof context.Ant.versions.desktop, 'string');
+  assert.equal(typeof context.Ant.versions.ant, 'string');
+  assert.equal(context.Ant.versions.chrome, '150.0.7871.115');
+  assert.ok(Object.isFrozen(context.Ant.versions));
   context.Ant.ipc.send('test', { value: 42 });
   assert.equal(messages.length, 1);
   console.log('desktop-renderer-bridge-ok');

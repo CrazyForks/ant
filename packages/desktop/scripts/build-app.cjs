@@ -6,6 +6,7 @@ const path = require('node:path');
 
 const { execute } = require('./lib/command.cjs');
 const { embedRendererBridge } = require('./embed-renderer-bridge.cjs');
+const { readRuntimeLock } = require('./lib/runtime-lock.cjs');
 
 const desktopRoot = path.resolve(__dirname, '..');
 const repositoryRoot = path.resolve(desktopRoot, '../..');
@@ -32,6 +33,10 @@ const sources = [
 ];
 
 function buildApp() {
+  const desktopVersion = JSON.parse(
+    fs.readFileSync(path.join(desktopRoot, 'package.json'), 'utf8')
+  ).version;
+  const runtime = readRuntimeLock();
   if (!fs.existsSync(path.join(libant, 'libant.a')) || !fs.existsSync(path.join(libant, 'ant.h'))) {
     execute(path.join(repositoryRoot, 'packages', 'libant', 'build.sh'), []);
   }
@@ -73,6 +78,8 @@ function buildApp() {
         `-I${path.join(repositoryRoot, 'include')}`,
         `-I${generated}`,
         `-DANT_DESKTOP_DEFAULT_HOST="${host}"`,
+        `-DANT_DESKTOP_VERSION="${desktopVersion}"`,
+        `-DANT_DESKTOP_CHROMIUM_VERSION="${runtime.chromiumVersion}"`,
         source,
         '-c',
         '-o',

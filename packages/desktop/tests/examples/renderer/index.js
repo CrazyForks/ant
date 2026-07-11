@@ -14,7 +14,7 @@ async function toggleTheme() {
 document.querySelector('#toggle-theme').addEventListener('click', toggleTheme);
 
 const info = await Ant.ipc.invoke('app:get-runtime-info');
-version.textContent = `Ant ${info.ant}`;
-details.textContent = JSON.stringify(info);
+version.textContent = `Ant ${Ant.versions.ant} | Desktop ${Ant.versions.desktop}`;
+details.textContent = `Chrome ${Ant.versions.chrome}`;
 
 Ant.ipc.send('page:ready', { title: document.title });

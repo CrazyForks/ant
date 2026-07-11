@@ -40,7 +40,7 @@ const createRendererBridge = bindings => {
   });
 
   Object.defineProperty(globalThis, 'Ant', {
-    value: Object.freeze({ ipc }),
+    value: Object.freeze({ ipc, versions }),
     enumerable: false,
     configurable: false
   });

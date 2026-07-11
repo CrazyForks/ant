@@ -1,6 +1,6 @@
 {
   "name": "ant-desktop",
-  "version": "0.0.1",
+  "version": "0.1.0-rc.1",
   "description": "Build native desktop applications with Ant",
   "license": "MIT",
   "repository": {
@@ -19,7 +19,8 @@
   "scripts": {
     "build": "ant scripts/build.js",
     "package": "ant scripts/package-platform.cjs",
-    "example": "ant app/bin/ant-desktop.js dev --app-dir tests/examples",
+    "release": "node scripts/publish.js",
+    "example:start": "ant app/bin/ant-desktop.js dev --app-dir tests/examples",
     "example:package": "ant app/bin/ant-desktop.js package --app-dir tests/examples --overwrite"
   },
   "files": [
@@ -30,7 +31,7 @@
     "README.md"
   ],
   "optionalDependencies": {
-    "ant-desktop-darwin-arm64": "0.0.1"
+    "ant-desktop-darwin-arm64": "0.1.0-rc.1"
   },
   "publishConfig": {
     "access": "public"

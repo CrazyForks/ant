@@ -66,7 +66,7 @@ await window.loadFile(renderer);
 ```
 
 The renderer uses normal browser JavaScript. Granted IPC channels are available
-through `Ant.ipc`:
+through `Ant.ipc`, and runtime component versions are exposed as `Ant.versions`:
 
 ```html
 <!doctype html>
@@ -76,7 +76,7 @@ through `Ant.ipc`:
     <title>My App</title>
     <script type="module">
       const version = await Ant.ipc.invoke('app:version');
-      document.querySelector('main').textContent = `Ant ${version}`;
+      document.querySelector('main').textContent = `Ant ${version} · Desktop ${Ant.versions.desktop}`;
     </script>
   </head>
   <body>
@@ -179,6 +179,11 @@ The `ant:desktop` module exports:
 - `ipcMain`
 - `Menu`
 - `MenuItem`
+- `versions`
+
+`versions` reports the Ant Desktop, Ant, and Chrome versions included in
+the current runtime. The desktop-specific entries are also available as
+`process.versions['ant-desktop']` and `process.versions.chrome`.
 
 `BrowserWindow` supports loading local files and URLs, window visibility and
 state controls, application events, custom title bars, application menus, and

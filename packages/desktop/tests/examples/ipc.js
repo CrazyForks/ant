@@ -22,7 +22,6 @@ export function registerIpc(mainWindow) {
   let useLightTheme = false;
 
   ipcMain.handle('app:get-runtime-info', event => ({
-    ant: Ant.version,
     platform: process.platform,
     rendererIsWindow: event.sender === mainWindow.webContents
   }));

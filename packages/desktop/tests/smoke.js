@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'ant:desktop';
+import { app, BrowserWindow, ipcMain, versions } from 'ant:desktop';
 
 if (typeof BrowserWindow !== 'function') {
   throw new Error('BrowserWindow export is unavailable');
@@ -13,6 +13,18 @@ if ('_readyPromise' in app) {
 }
 if (typeof app.resourcesPath !== 'string' || !app.resourcesPath) {
   throw new Error('app.resourcesPath is unavailable');
+}
+for (const name of ['ant', 'desktop', 'chrome']) {
+  if (typeof versions[name] !== 'string' || !versions[name]) {
+    throw new Error(`versions.${name} is unavailable`);
+  }
+}
+if (process.versions['ant-desktop'] !== versions.desktop ||
+    process.versions.chrome !== versions.chrome) {
+  throw new Error('desktop component versions are missing from process.versions');
+}
+if (app.versions !== versions) {
+  throw new Error('app.versions does not reference the exported version set');
 }
 for (const name of [
   '__antDesktopWindowObjects',

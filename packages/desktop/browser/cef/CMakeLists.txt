@@ -23,6 +23,8 @@ add_custom_command(
   OUTPUT "${IPC_BRIDGE_HEADER}"
   COMMAND "${NODE_EXECUTABLE}" "${IPC_BRIDGE_EMBEDDER}" "${IPC_BRIDGE_HEADER}"
   DEPENDS ${IPC_BRIDGE_SOURCES} "${IPC_BRIDGE_EMBEDDER}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../package.json"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../packaging/npm/darwin-arm64/runtime.lock.json"
   VERBATIM
 )
 add_custom_target(ant_desktop_ipc_bridge DEPENDS "${IPC_BRIDGE_HEADER}")

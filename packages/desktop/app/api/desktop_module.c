@@ -5,6 +5,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef ANT_DESKTOP_VERSION
+#define ANT_DESKTOP_VERSION "unknown"
+#endif
+#ifndef ANT_DESKTOP_CHROMIUM_VERSION
+#define ANT_DESKTOP_CHROMIUM_VERSION "unknown"
+#endif
+
+static void SetVersion(ant_t *js, ant_value_t versions, const char *name, const char *value) {
+  js_set(js, versions, name, js_mkstr(js, value, strlen(value)));
+}
+
 static void DesktopStateFinalize(ant_t *js, ant_object_t *object) {
   ant_value_t value = js_obj_from_ptr(object);
   ant_desktop_state_t *state = ant_desktop_state_from(value);
@@ -30,6 +41,19 @@ ant_value_t DesktopLibrary(ant_t *js) {
   js_set(js, app, "getApplicationMenu", js_mkfun(DesktopGetApplicationMenu));
   const char *resources_path = ant_desktop_platform_resources_path();
   js_set(js, app, "resourcesPath", js_mkstr(js, resources_path, strlen(resources_path)));
+
+  ant_value_t versions = js_mkobj(js);
+  SetVersion(js, versions, "ant", ANT_VERSION);
+  SetVersion(js, versions, "desktop", ANT_DESKTOP_VERSION);
+  SetVersion(js, versions, "chrome", ANT_DESKTOP_CHROMIUM_VERSION);
+  js_set(js, app, "versions", versions);
+
+  ant_value_t process = js_get(js, js_glob(js), "process");
+  ant_value_t process_versions = js_get(js, process, "versions");
+  if (is_object_type(process_versions)) {
+    SetVersion(js, process_versions, "ant-desktop", ANT_DESKTOP_VERSION);
+    SetVersion(js, process_versions, "chrome", ANT_DESKTOP_CHROMIUM_VERSION);
+  }
 
   state->ipc_handlers = js_mkobj(js);
   state->ipc_listeners = js_mkobj(js);
@@ -93,5 +117,6 @@ ant_value_t DesktopLibrary(ant_t *js) {
   js_set(js, exports, "ipcMain", ipc_main);
   js_set(js, exports, "Menu", menu);
   js_set(js, exports, "MenuItem", menu_item);
+  js_set(js, exports, "versions", versions);
   return exports;
 }
