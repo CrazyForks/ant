@@ -129,6 +129,8 @@ int ant_hvf_run(ant_hvf_vm_t *vm, unsigned int timeout_ms, bool timeout_until_re
   }
 
   for (;;) {
+    rc = ant_hvf_vsock_maybe_send_request(vm);
+    if (rc != 0 && rc != -EAGAIN) goto done;
     rc = ant_hvf_virtio_net_drain_rx_if_wake(vm);
     if (rc != 0) goto done;
 
@@ -293,6 +295,8 @@ static void ant_hvf_session_cleanup(ant_hvf_session_t *session, int *rc_inout) {
   
   if (vm->net_lock_init) pthread_mutex_destroy(&vm->net_lock);
   if (vm->virtio_lock_init) pthread_mutex_destroy(&vm->virtio_lock);
+  ant_hvf_vsock_clear_frames(vm);
+  if (vm->vsock_lock_init) pthread_mutex_destroy(&vm->vsock_lock);
   if (rc_inout) *rc_inout = rc;
 }
 
@@ -313,7 +317,7 @@ static int ant_hvf_session_create(const ant_sandbox_vm_config_t *config, void **
   if (!session) return -ENOMEM;
   ant_hvf_vm_t *vm = &session->vm;
   
-  vm->mem_size = config->memory_size ? (size_t)config->memory_size : (1024ull * 1024ull * 1024ull);
+  vm->mem_size = config->memory_size ? (size_t)config->memory_size : ANT_SANDBOX_DEFAULT_MEMORY_SIZE;
   vm->mem_size = ant_align_page(vm->mem_size);
   vm->image_fd = -1;
   
@@ -455,7 +459,7 @@ static int ant_hvf_session_create(const ant_sandbox_vm_config_t *config, void **
     config->forwards[i].guest_port
   );
 
-  if (vm->mem_size < 64ull * 1024ull * 1024ull) {
+  if (vm->mem_size < ANT_SANDBOX_MIN_MEMORY_SIZE) {
     rc = -EINVAL;
     goto fail;
   }
@@ -471,6 +475,9 @@ static int ant_hvf_session_create(const ant_sandbox_vm_config_t *config, void **
     rc = -virtio_lock_rc;
     goto fail;
   }
+  int vsock_lock_rc = pthread_mutex_init(&vm->vsock_lock, NULL);
+  if (vsock_lock_rc == 0) vm->vsock_lock_init = true;
+  else { rc = -vsock_lock_rc; goto fail; }
 
   if (vm->net_enabled) {
     ant_hvf_verbose(vm, "starting network backend");
@@ -552,9 +559,6 @@ static int ant_hvf_session_execute(void *opaque, const ant_sandbox_vm_request_t 
   ant_hvf_session_t *session = opaque;
   ant_hvf_vm_t *vm = &session->vm;
 
-  vm->vsock.request_data = request->request_data;
-  vm->vsock.request_len = request->request_len;
-  vm->vsock.request_off = 0;
   vm->vsock.request_sent = false;
   vm->vsock.exit_received = false;
   vm->vsock.exit_code = 0;
@@ -564,6 +568,9 @@ static int ant_hvf_session_execute(void *opaque, const ant_sandbox_vm_request_t 
   
   vm->frame_handler = request->frame_handler;
   vm->frame_handler_user = request->frame_handler_user;
+
+  int queue_rc = ant_hvf_vsock_queue_frame(vm, request->request_data, request->request_len);
+  if (queue_rc != 0) return queue_rc;
 
   const uint8_t *frame = request->request_data;
   bool close_request = 
@@ -592,12 +599,16 @@ static int ant_hvf_session_execute(void *opaque, const ant_sandbox_vm_request_t 
   if (!vm->vsock.exit_received && ant_hvf_uart_has_panic(vm) && rc == 0) rc = -EFAULT;
   ant_hvf_classify_result(vm, request->result, rc);
 
-  vm->vsock.request_data = NULL;
-  vm->vsock.request_len = 0;
   vm->frame_handler = NULL;
   vm->frame_handler_user = NULL;
   
   return rc;
+}
+
+static int ant_hvf_session_send(void *opaque, const void *data, size_t len) {
+  if (!opaque) return -EINVAL;
+  ant_hvf_session_t *session = opaque;
+  return ant_hvf_vsock_queue_frame(&session->vm, data, len);
 }
 
 static void ant_hvf_session_destroy(void *opaque) {
@@ -635,6 +646,7 @@ int ant_hvf_start(const ant_sandbox_vm_config_t *config) {
 
 static int ant_hvf_session_create(const ant_sandbox_vm_config_t *config, void **session_out) { return -ENOSYS; }
 static int ant_hvf_session_execute(void *session, const ant_sandbox_vm_request_t *request) { return -ENOSYS; }
+static int ant_hvf_session_send(void *session, const void *data, size_t len) { return -ENOSYS; }
 static void ant_hvf_session_destroy(void *session) { (void)session; }
 
 #endif
@@ -644,5 +656,6 @@ const ant_sandbox_vm_backend_t ant_sandbox_vm_darwin_backend = {
   .start = ant_hvf_start,
   .create_session = ant_hvf_session_create,
   .execute_session = ant_hvf_session_execute,
+  .send_session = ant_hvf_session_send,
   .destroy_session = ant_hvf_session_destroy,
 };

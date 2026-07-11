@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <sys/types.h>
+#include <pthread.h>
 
 struct ant_sandbox_vm_session {
   const ant_sandbox_vm_backend_t *backend;
@@ -15,6 +16,8 @@ struct ant_sandbox_vm_session {
   uint32_t capabilities;
   bool verbose;
   bool helper;
+  pthread_mutex_t helper_cmd_mutex;
+  bool helper_cmd_mutex_init;
 };
 
 int ant_sandbox_vm_helper_create(
@@ -28,6 +31,7 @@ int ant_sandbox_vm_helper_execute(
   const ant_sandbox_vm_request_t *request
 );
 
+int ant_sandbox_vm_helper_send(ant_sandbox_vm_session_t *session, const void *data, size_t len);
 int ant_sandbox_vm_helper_cancel(ant_sandbox_vm_session_t *session);
 void ant_sandbox_vm_helper_destroy(ant_sandbox_vm_session_t *session);
 

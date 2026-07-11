@@ -6,6 +6,8 @@
 #include <stdint.h>
 
 #define ANT_SANDBOX_DEFAULT_BOOT_TIMEOUT_MS 10000u
+#define ANT_SANDBOX_MIN_MEMORY_SIZE (64ull * 1024ull * 1024ull)
+#define ANT_SANDBOX_DEFAULT_MEMORY_SIZE (256ull * 1024ull * 1024ull)
 typedef struct ant_sandbox_vm_session ant_sandbox_vm_session_t;
 
 typedef struct {
@@ -79,6 +81,7 @@ typedef struct ant_sandbox_vm_backend {
   int (*start)(const ant_sandbox_vm_config_t *config);
   int (*create_session)(const ant_sandbox_vm_config_t *config, void **session_out);
   int (*execute_session)(void *session, const ant_sandbox_vm_request_t *request);
+  int (*send_session)(void *session, const void *data, size_t len);
   int (*cancel_session)(void *session);
   void (*destroy_session)(void *session);
 } ant_sandbox_vm_backend_t;
@@ -100,6 +103,7 @@ bool ant_sandbox_vm_result_is_infrastructure_failure(const ant_sandbox_vm_result
 int ant_sandbox_vm_start(const ant_sandbox_vm_config_t *config);
 int ant_sandbox_vm_session_cancel(ant_sandbox_vm_session_t *session);
 int ant_sandbox_vm_session_execute(ant_sandbox_vm_session_t *session, const ant_sandbox_vm_request_t *request);
+int ant_sandbox_vm_session_send(ant_sandbox_vm_session_t *session, const void *data, size_t len);
 int ant_sandbox_vm_session_create(const ant_sandbox_vm_config_t *config, ant_sandbox_vm_session_t **session_out);
 
 #endif

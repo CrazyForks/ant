@@ -40,6 +40,11 @@ int ant_sandbox_vm_helper_cancel(ant_sandbox_vm_session_t *session) {
   return -ENOSYS;
 }
 
+int ant_sandbox_vm_helper_send(ant_sandbox_vm_session_t *session, const void *data, size_t len) {
+  (void)session; (void)data; (void)len;
+  return -ENOSYS;
+}
+
 void ant_sandbox_vm_helper_destroy(ant_sandbox_vm_session_t *session) {
   free(session);
 }
@@ -58,6 +63,7 @@ enum { ANT_SANDBOX_VM_HELPER_MAGIC = 0x48564d41u }; // AMVH
 typedef enum {
   ANT_SANDBOX_VM_HELPER_CMD_EXECUTE = 1,
   ANT_SANDBOX_VM_HELPER_CMD_DESTROY = 2,
+  ANT_SANDBOX_VM_HELPER_CMD_SEND = 3,
 } ant_sandbox_vm_helper_cmd_t;
 
 typedef enum {
@@ -219,6 +225,75 @@ static bool sandbox_vm_helper_child_frame(uint8_t type, const void *payload, siz
   return type != ANT_SANDBOX_FRAME_EXIT;
 }
 
+typedef struct {
+  const ant_sandbox_vm_backend_t *backend;
+  void *backend_session;
+  int cmd_fd;
+  pthread_mutex_t mutex;
+  pthread_cond_t cond;
+  uint8_t *execute_data;
+  uint32_t execute_len;
+  bool have_execute;
+  bool destroy;
+} sandbox_child_control_t;
+
+static void *sandbox_child_command_main(void *opaque) {
+  sandbox_child_control_t *control = opaque;
+  for (;;) {
+    ant_sandbox_vm_helper_header_t header;
+    int rc = sandbox_vm_read_full(control->cmd_fd, &header, sizeof(header));
+    if (rc != 0 || header.magic != ANT_SANDBOX_VM_HELPER_MAGIC) break;
+    if (header.type == ANT_SANDBOX_VM_HELPER_CMD_DESTROY) {
+      pthread_mutex_lock(&control->mutex);
+      control->destroy = true;
+      pthread_cond_signal(&control->cond);
+      pthread_mutex_unlock(&control->mutex);
+      if (control->backend->cancel_session)
+        control->backend->cancel_session(control->backend_session);
+      return NULL;
+    }
+    if ((header.type != ANT_SANDBOX_VM_HELPER_CMD_EXECUTE &&
+         header.type != ANT_SANDBOX_VM_HELPER_CMD_SEND) ||
+        header.length == 0 || header.length > ANT_SANDBOX_FRAME_MAX_SIZE) break;
+
+    uint8_t *data = malloc(header.length);
+    if (!data) break;
+    rc = sandbox_vm_read_full(control->cmd_fd, data, header.length);
+    if (rc != 0) { free(data); break; }
+
+    if (header.type == ANT_SANDBOX_VM_HELPER_CMD_SEND) {
+      rc = control->backend->send_session
+        ? control->backend->send_session(control->backend_session, data, header.length)
+        : -ENOSYS;
+      free(data);
+      if (rc != 0) break;
+      continue;
+    }
+
+    pthread_mutex_lock(&control->mutex);
+    while (control->have_execute && !control->destroy)
+      pthread_cond_wait(&control->cond, &control->mutex);
+    if (control->destroy) {
+      pthread_mutex_unlock(&control->mutex);
+      free(data);
+      return NULL;
+    }
+    control->execute_data = data;
+    control->execute_len = header.length;
+    control->have_execute = true;
+    pthread_cond_signal(&control->cond);
+    pthread_mutex_unlock(&control->mutex);
+  }
+
+  pthread_mutex_lock(&control->mutex);
+  control->destroy = true;
+  pthread_cond_signal(&control->cond);
+  pthread_mutex_unlock(&control->mutex);
+  if (control->backend->cancel_session)
+    control->backend->cancel_session(control->backend_session);
+  return NULL;
+}
+
 static void sandbox_vm_write_output(FILE *stream, const unsigned char *payload, uint32_t len, bool strip_ansi) {
   if (!strip_ansi) {
     if (len > 0) fwrite(payload, 1, len, stream);
@@ -298,44 +373,61 @@ static void sandbox_vm_helper_child(
   sandbox_vm_send_result(msg_fd, ANT_SANDBOX_VM_HELPER_MSG_CREATE_RESULT, rc, &create_result);
   if (rc != 0) goto done;
 
-  for (;;) {
-    ant_sandbox_vm_helper_header_t header;
-    rc = sandbox_vm_read_full(cmd_fd, &header, sizeof(header));
-    if (rc != 0) break;
-    if (header.magic != ANT_SANDBOX_VM_HELPER_MAGIC) break;
-    if (header.type == ANT_SANDBOX_VM_HELPER_CMD_DESTROY) break;
-    if (header.type != ANT_SANDBOX_VM_HELPER_CMD_EXECUTE ||
-        header.length == 0 ||
-        header.length > ANT_SANDBOX_FRAME_MAX_SIZE) {
-      break;
-    }
+  sandbox_child_control_t control = {
+    .backend = backend,
+    .backend_session = backend_session,
+    .cmd_fd = cmd_fd,
+  };
+  pthread_mutex_init(&control.mutex, NULL);
+  pthread_cond_init(&control.cond, NULL);
+  pthread_t command_thread;
+  bool command_started = pthread_create(&command_thread, NULL, sandbox_child_command_main, &control) == 0;
+  if (!command_started) goto done;
 
-    uint8_t *request_data = malloc(header.length);
-    if (!request_data) break;
-    rc = sandbox_vm_read_full(cmd_fd, request_data, header.length);
-    if (rc != 0) {
-      free(request_data);
+  for (;;) {
+    pthread_mutex_lock(&control.mutex);
+    while (!control.have_execute && !control.destroy)
+      pthread_cond_wait(&control.cond, &control.mutex);
+    if (control.destroy) {
+      pthread_mutex_unlock(&control.mutex);
       break;
     }
+    uint8_t *request_data = control.execute_data;
+    uint32_t request_len = control.execute_len;
+    control.execute_data = NULL;
+    control.execute_len = 0;
+    control.have_execute = false;
+    pthread_cond_signal(&control.cond);
+    pthread_mutex_unlock(&control.mutex);
 
     ant_sandbox_vm_result_t exec_result = {0};
     ant_sandbox_vm_request_t request = {
       .request_data = request_data,
-      .request_len = header.length,
+      .request_len = request_len,
       .frame_handler = sandbox_vm_helper_child_frame,
       .frame_handler_user = &msg_fd,
       .result = &exec_result,
     };
     rc = backend->execute_session(backend_session, &request);
     free(request_data);
-    if (sandbox_vm_send_result(msg_fd, ANT_SANDBOX_VM_HELPER_MSG_EXECUTE_RESULT, rc, &exec_result) != 0) {
+    if (sandbox_vm_send_result(msg_fd, ANT_SANDBOX_VM_HELPER_MSG_EXECUTE_RESULT, rc, &exec_result) != 0)
       break;
-    }
   }
+
+  pthread_mutex_lock(&control.mutex);
+  control.destroy = true;
+  pthread_cond_signal(&control.cond);
+  pthread_mutex_unlock(&control.mutex);
+  close(cmd_fd);
+  cmd_fd = -1;
+  pthread_join(command_thread, NULL);
+  free(control.execute_data);
+  pthread_cond_destroy(&control.cond);
+  pthread_mutex_destroy(&control.mutex);
 
 done:
   if (backend_session) backend->destroy_session(backend_session);
-  close(cmd_fd);
+  if (cmd_fd >= 0) close(cmd_fd);
   close(msg_fd);
   _exit(0);
 }
@@ -418,6 +510,8 @@ int ant_sandbox_vm_helper_create(
   session->capabilities = config->capabilities;
   session->verbose = config->verbose;
   session->helper = true;
+  if (pthread_mutex_init(&session->helper_cmd_mutex, NULL) == 0)
+    session->helper_cmd_mutex_init = true;
 
   int create_rc = 0;
   int msg_type = sandbox_vm_helper_read_result(session->helper_msg_fd, config->result, &create_rc);
@@ -449,12 +543,13 @@ int ant_sandbox_vm_helper_execute(
   const ant_sandbox_vm_request_t *request
 ) {
   if (request->request_len > UINT32_MAX) return -E2BIG;
+  if (session->helper_cmd_mutex_init) pthread_mutex_lock(&session->helper_cmd_mutex);
   int rc = sandbox_vm_send_header(session->helper_cmd_fd,
                                   ANT_SANDBOX_VM_HELPER_CMD_EXECUTE,
                                   0,
                                   (uint32_t)request->request_len);
-  if (rc != 0) return rc;
-  rc = sandbox_vm_write_full(session->helper_cmd_fd, request->request_data, request->request_len);
+  if (rc == 0) rc = sandbox_vm_write_full(session->helper_cmd_fd, request->request_data, request->request_len);
+  if (session->helper_cmd_mutex_init) pthread_mutex_unlock(&session->helper_cmd_mutex);
   if (rc != 0) return rc;
 
   for (;;) {
@@ -504,6 +599,15 @@ int ant_sandbox_vm_helper_execute(
   }
 }
 
+int ant_sandbox_vm_helper_send(ant_sandbox_vm_session_t *session, const void *data, size_t len) {
+  if (!session || !data || len == 0 || len > UINT32_MAX) return -EINVAL;
+  if (session->helper_cmd_mutex_init) pthread_mutex_lock(&session->helper_cmd_mutex);
+  int rc = sandbox_vm_send_header(session->helper_cmd_fd, ANT_SANDBOX_VM_HELPER_CMD_SEND, 0, (uint32_t)len);
+  if (rc == 0) rc = sandbox_vm_write_full(session->helper_cmd_fd, data, len);
+  if (session->helper_cmd_mutex_init) pthread_mutex_unlock(&session->helper_cmd_mutex);
+  return rc;
+}
+
 int ant_sandbox_vm_helper_cancel(ant_sandbox_vm_session_t *session) {
   if (!session || !session->helper) return -EINVAL;
   if (session->helper_cmd_fd >= 0) {
@@ -530,6 +634,7 @@ void ant_sandbox_vm_helper_destroy(ant_sandbox_vm_session_t *session) {
     session->helper_msg_fd = -1;
   }
   sandbox_vm_stop_helper(session, true);
+  if (session->helper_cmd_mutex_init) pthread_mutex_destroy(&session->helper_cmd_mutex);
   free(session);
 }
 

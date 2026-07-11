@@ -388,8 +388,6 @@ int ant_sandbox_cmd(int argc, char **argv) {
     return EXIT_FAILURE;
   }
 
-  // TODO: be able to modify memory/cpu from 
-  // config object as human parsed mb/gb
   ant_sandbox_vm_result_t vm_result = {0};
   ant_sandbox_vm_config_t config = {
     .image_path = assets.image,
@@ -403,7 +401,7 @@ int ant_sandbox_cmd(int argc, char **argv) {
     .forwards = opts.launch.forwards,
     .forward_count = opts.launch.forward_count,
     .cpu_count = 1,
-    .memory_size = 1024ull * 1024ull * 1024ull,
+    .memory_size = ANT_SANDBOX_DEFAULT_MEMORY_SIZE,
     .timeout_ms = opts.timeout_ms,
     .boot_timeout_ms = opts.boot_timeout_ms,
     .verbose = opts.verbose || pkg_verbose,

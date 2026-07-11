@@ -72,9 +72,11 @@ struct ant_hvf_vm {
   ant_hvf_nat_t *net_nat;
   pthread_mutex_t net_lock;
   pthread_mutex_t virtio_lock;
+  pthread_mutex_t vsock_lock;
   
   bool net_lock_init;
   bool virtio_lock_init;
+  bool vsock_lock_init;
   bool net_rx_wake;
   
   uint8_t net_mac[ANT_HVF_MAC_BYTES];

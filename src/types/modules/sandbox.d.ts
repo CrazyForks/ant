@@ -1,0 +1,39 @@
+declare module 'ant:sandbox' {
+  interface SandboxOptions {
+    mount?: string | string[];
+    write?: string | string[];
+    forward?: string | string[];
+    cwd?: string;
+    memory?: number | `${number}${'kb' | 'mb' | 'gb' | 'kib' | 'mib' | 'gib'}`;
+    memoryMb?: number;
+    timeoutMs?: number;
+    bootTimeoutMs?: number;
+    verbose?: boolean;
+    tty?: boolean;
+    ttyRows?: number;
+    ttyCols?: number;
+    color?: 'auto' | 'force' | 'strip' | 'preserve';
+  }
+
+  type MessageHandler = (message: unknown) => void;
+
+  class Sandbox {
+    constructor(options?: SandboxOptions | string);
+    onmessage?: MessageHandler;
+    on(event: 'message', handler: MessageHandler): this;
+    send(value: unknown): void;
+    run(entry: string, argv?: string[]): Promise<number>;
+    eval(source: string): Promise<unknown>;
+    close(): Promise<void>;
+    terminate(): Promise<void>;
+  }
+
+  interface SandboxParentPort {
+    onmessage?: MessageHandler;
+    on(event: 'message', handler: MessageHandler): this;
+    send(value: unknown): void;
+    close(): void;
+  }
+
+  const parentPort: SandboxParentPort | undefined;
+}

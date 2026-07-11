@@ -133,6 +133,13 @@ int ant_sandbox_vm_session_execute(ant_sandbox_vm_session_t *session, const ant_
   return session->backend->execute_session(session->backend_session, request);
 }
 
+int ant_sandbox_vm_session_send(ant_sandbox_vm_session_t *session, const void *data, size_t len) {
+  if (!session || !session->backend || !data || len == 0) return -EINVAL;
+  if (session->helper) return ant_sandbox_vm_helper_send(session, data, len);
+  if (!session->backend_session || !session->backend->send_session) return -ENOSYS;
+  return session->backend->send_session(session->backend_session, data, len);
+}
+
 int ant_sandbox_vm_session_cancel(ant_sandbox_vm_session_t *session) {
   if (!session) return -EINVAL;
   if (session->helper) return ant_sandbox_vm_helper_cancel(session);
