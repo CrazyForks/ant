@@ -27,7 +27,7 @@ int main(int argc, char *argv[]) {
     }
 
     CefSettings settings;
-    settings.no_sandbox = true;
+    settings.no_sandbox = launch_command_line->GetSwitchValue("ant-sandbox") == "0";
     settings.windowless_rendering_enabled = true;
     settings.background_color = g_transparent ? CefColorSetARGB(0, 0, 0, 0) : CefColorSetARGB(255, 8, 10, 18);
     char ephemeral_root_template[] = "/tmp/ant-chromium-XXXXXX";

@@ -12,16 +12,48 @@ const {
 const { fetchBrowserRuntime } = require('./fetch-browser-runtime.cjs');
 
 const desktopRoot = path.resolve(__dirname, '..');
+const repositoryRoot = path.resolve(desktopRoot, '../..');
+const libant = path.join(repositoryRoot, 'packages', 'libant', 'dist');
+
+function findExecutable(name) {
+  for (const directory of (process.env.PATH || '').split(path.delimiter)) {
+    if (!directory) continue;
+    const candidate = path.join(directory, name);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return name;
+}
 
 async function buildBrowserHost() {
+  if (!fs.existsSync(path.join(libant, 'libant.a')) ||
+      !fs.existsSync(path.join(libant, 'ant.h'))) {
+    execute(path.join(repositoryRoot, 'packages', 'libant', 'build.sh'), []);
+  }
   const lock = readRuntimeLock();
   const target = assertHostMatches(lock);
   const cefRoot = await fetchBrowserRuntime();
+  const cCompiler = process.env.CC || findExecutable('clang');
+  const cxxCompiler = process.env.CXX || findExecutable('clang++');
   const build = path.join(desktopRoot, 'build', 'browser', 'cef');
   const product = path.join(build, 'Release', 'Ant Chromium Host.app');
-  execute('cmake', ['-S', 'browser/cef', '-B', build, '-G', 'Xcode', `-DCEF_ROOT=${cefRoot}`, `-DPROJECT_ARCH=${target.cmakeArch}`, '-DUSE_SANDBOX=OFF'], {
-    cwd: desktopRoot
-  });
+  execute(
+    'cmake',
+    [
+      '-S',
+      'browser/cef',
+      '-B',
+      build,
+      '-G',
+      'Xcode',
+      `-DCEF_ROOT=${cefRoot}`,
+      `-DLIBANT_ROOT=${libant}`,
+      `-DCMAKE_C_COMPILER=${cCompiler}`,
+      `-DCMAKE_CXX_COMPILER=${cxxCompiler}`,
+      `-DPROJECT_ARCH=${target.cmakeArch}`,
+      '-DUSE_SANDBOX=ON'
+    ],
+    { cwd: desktopRoot }
+  );
   execute('cmake', ['--build', build, '--target', 'ant_chromium_host', '--config', 'Release', '--', '-quiet'], { cwd: desktopRoot });
 
   const runtime = path.join(desktopRoot, 'runtime');

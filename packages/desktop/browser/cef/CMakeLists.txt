@@ -1,4 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
+if(POLICY CMP0156)
+  cmake_policy(SET CMP0156 NEW)
+endif()
 
 set(CMAKE_CONFIGURATION_TYPES Debug Release)
 project(ant_chromium_host)
@@ -6,9 +9,15 @@ project(ant_chromium_host)
 if(NOT CEF_ROOT)
   message(FATAL_ERROR "Pass -DCEF_ROOT=/path/to/cef_binary_*")
 endif()
+if(NOT LIBANT_ROOT OR NOT EXISTS "${LIBANT_ROOT}/libant.a")
+  message(FATAL_ERROR "Pass -DLIBANT_ROOT=/path/to/libant/dist")
+endif()
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CEF_ROOT}/cmake")
 find_package(CEF REQUIRED)
+list(REMOVE_ITEM CEF_COMPILER_FLAGS "-mmacosx-version-min=${CEF_TARGET_SDK}")
+list(APPEND CEF_COMPILER_FLAGS "-mmacosx-version-min=15.0")
+set(CMAKE_OSX_DEPLOYMENT_TARGET "15.0")
 add_subdirectory(${CEF_LIBCEF_DLL_WRAPPER_PATH} libcef_dll_wrapper)
 
 set(IPC_BRIDGE_SOURCES
@@ -83,17 +92,38 @@ foreach(_suffix_list ${CEF_HELPER_APP_SUFFIXES})
   string(REPLACE "\${VERSION_SHORT}" "${VERSION_SHORT}" _plist_contents "${_plist_contents}")
   file(WRITE "${_helper_info_plist}" "${_plist_contents}")
 
-  add_executable(${_helper_target} MACOSX_BUNDLE
+  set(_helper_sources
     process_helper.cc
     renderer_app.cc
     ../../ipc/capabilities.cc
   )
+  if(_target_suffix STREQUAL "_renderer")
+    list(APPEND _helper_sources
+      ant_module_bindings.cc
+      node_bindings.cc
+      renderer_ant_runtime.c
+      ../../app/runtime/ant_runtime.c
+    )
+  endif()
+  add_executable(${_helper_target} MACOSX_BUNDLE ${_helper_sources})
   SET_EXECUTABLE_TARGET_PROPERTIES(${_helper_target})
+  target_compile_options(${_helper_target} PRIVATE -Wno-typedef-redefinition)
   add_dependencies(${_helper_target} libcef_dll_wrapper)
   add_dependencies(${_helper_target} ant_desktop_ipc_bridge)
-  target_include_directories(${_helper_target} PRIVATE
-    "${CMAKE_CURRENT_BINARY_DIR}/generated")
-  target_link_libraries(${_helper_target} libcef_dll_wrapper ${CEF_STANDARD_LIBS})
+  target_include_directories(${_helper_target} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+  target_link_libraries(${_helper_target}
+    libcef_dll_wrapper
+    ${CEF_STANDARD_LIBS})
+  if(_target_suffix STREQUAL "_renderer")
+    target_compile_definitions(${_helper_target} PRIVATE ANT_DESKTOP_RUNTIME_INTEGRATION=1)
+    target_include_directories(${_helper_target} PRIVATE "${LIBANT_ROOT}")
+    target_link_libraries(${_helper_target}
+      "${LIBANT_ROOT}/libant.a"
+      "-framework Security"
+      "-framework CoreFoundation"
+      "-framework Hypervisor"
+      "-lpthread")
+  endif()
   set_target_properties(${_helper_target} PROPERTIES
     MACOSX_BUNDLE_INFO_PLIST "${_helper_info_plist}"
     OUTPUT_NAME "${_helper_output_name}"

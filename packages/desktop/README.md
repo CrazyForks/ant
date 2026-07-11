@@ -170,6 +170,41 @@ const window = new BrowserWindow({
 });
 ```
 
+## Preload and renderer integration
+
+Renderer windows use secure web defaults: `sandbox` and `contextIsolation` are
+enabled, while runtime integration is disabled. A preload can publish a narrow
+API before the page starts:
+
+```js
+// preload.js
+import { contextBridge, ipcRenderer } from 'ant:desktop/renderer';
+
+contextBridge.exposeInMainWorld('settings', {
+  read: () => ipcRenderer.invoke('settings:read')
+});
+```
+
+Pass its absolute path through `webPreferences.preload`. Set `sandbox: false`
+when the preload itself needs Ant builtins.
+
+`nodeIntegration` and `antIntegration` are aliases. Either one exposes
+`require`, `process`, and every registered `node:` or `ant:` builtin directly
+to the renderer. The integrated runtime is Ant, not Node.js; the
+`nodeIntegration` spelling exists for Electron-compatible configuration.
+
+```js
+const window = new BrowserWindow({
+  webPreferences: {
+    sandbox: false,
+    antIntegration: true
+  }
+});
+```
+
+Integration is intentionally rejected while `sandbox` is enabled. Prefer a
+sandboxed preload with explicit `contextBridge` methods for untrusted content.
+
 ## Main-process API
 
 The `ant:desktop` module exports:

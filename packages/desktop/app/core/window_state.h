@@ -19,6 +19,10 @@ typedef struct ant_desktop_window_state {
   bool devtools_open;
   bool show_when_ready;
   bool transparent_browser;
+  bool sandbox;
+  bool node_integration;
+  bool context_isolation;
+  char *preload_path;
   char *capability_manifest;
   size_t capability_manifest_length;
   void *platform_data;

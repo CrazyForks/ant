@@ -10,6 +10,10 @@ const desktopRoot = path.resolve(__dirname, '..');
 const repositoryRoot = path.resolve(desktopRoot, '../..');
 
 function antVersion() {
+  const header = path.join(repositoryRoot, 'packages', 'libant', 'dist', 'ant.h');
+  const match = fs.existsSync(header) && fs.readFileSync(header, 'utf8').match(/^#define ANT_VERSION "([^"]+)"$/m);
+  if (match) return match[1];
+
   const executable = path.join(repositoryRoot, 'build', 'ant');
   const result = spawnSync(executable, ['--version-raw'], {
     encoding: 'utf8'
@@ -17,10 +21,6 @@ function antVersion() {
   if (!result.error && result.status === 0 && result.stdout.trim()) {
     return result.stdout.trim();
   }
-
-  const header = path.join(repositoryRoot, 'packages', 'libant', 'dist', 'ant.h');
-  const match = fs.existsSync(header) && fs.readFileSync(header, 'utf8').match(/^#define ANT_VERSION "([^"]+)"$/m);
-  if (match) return match[1];
   throw new Error('cannot determine the Ant version for the renderer bridge');
 }
 

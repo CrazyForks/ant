@@ -1,7 +1,16 @@
 {
   "name": "ant-desktop-darwin-arm64",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Ant Desktop native runtime for macOS on Apple Silicon",
+  "keywords": [
+    "ant",
+    "desktop",
+    "macos",
+    "apple-silicon",
+    "arm64",
+    "chromium",
+    "native"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",

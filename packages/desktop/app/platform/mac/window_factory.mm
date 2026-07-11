@@ -16,6 +16,43 @@ ant_value_t DesktopBrowserWindowCtor(ant_t *js, ant_value_t *args, int nargs) {
   NSInteger height = 600;
   NSString *title = @"Ant Desktop";
   ant_value_t options = nargs > 0 ? args[0] : js_mkundef();
+  ant_value_t web_preferences = is_object_type(options) ? js_get(js, options, "webPreferences") : js_mkundef();
+  BOOL sandbox = OptionBool(js, web_preferences, "sandbox", YES);
+  BOOL node_integration = NO;
+  if (is_object_type(web_preferences)) {
+    ant_value_t ant_integration = js_get(js, web_preferences, "antIntegration");
+    ant_value_t node_integration_value = js_get(js, web_preferences, "nodeIntegration");
+    if (vtype(node_integration_value) != T_UNDEF && vtype(node_integration_value) != T_BOOL) {
+      return js_mkerr(js, "webPreferences.nodeIntegration must be a boolean");
+    }
+    if (vtype(ant_integration) != T_UNDEF && vtype(ant_integration) != T_BOOL) {
+      return js_mkerr(js, "webPreferences.antIntegration must be a boolean");
+    }
+    if (vtype(node_integration_value) == T_BOOL && vtype(ant_integration) == T_BOOL &&
+        js_truthy(js, node_integration_value) != js_truthy(js, ant_integration)) {
+      return js_mkerr(js, "webPreferences.antIntegration and nodeIntegration must match");
+    }
+    ant_value_t integration = vtype(ant_integration) == T_BOOL ? ant_integration : node_integration_value;
+    if (vtype(integration) == T_BOOL) node_integration = js_truthy(js, integration);
+  }
+  BOOL context_isolation = OptionBool(js, web_preferences, "contextIsolation", YES);
+  if (sandbox && node_integration) { return js_mkerr(js, "webPreferences.nodeIntegration requires sandbox: false"); }
+  NSString *preload_path = nil;
+  if (is_object_type(web_preferences)) {
+    ant_value_t preload = js_get(js, web_preferences, "preload");
+    if (vtype(preload) != T_UNDEF) {
+      if (vtype(preload) != T_STR) { return js_mkerr(js, "webPreferences.preload must be a file path"); }
+      preload_path = OptionString(js, web_preferences, "preload");
+      if (!preload_path.isAbsolutePath) {
+        preload_path = [NSFileManager.defaultManager.currentDirectoryPath stringByAppendingPathComponent:preload_path];
+      }
+      preload_path = preload_path.stringByStandardizingPath;
+      BOOL directory = NO;
+      if (![NSFileManager.defaultManager fileExistsAtPath:preload_path isDirectory:&directory] || directory) {
+        return js_mkerr(js, "preload file does not exist: %s", preload_path.UTF8String);
+      }
+    }
+  }
   BOOL framed = OptionBool(js, options, "frame", YES);
   BOOL closable = OptionBool(js, options, "closable", YES);
   BOOL minimizable = OptionBool(js, options, "minimizable", YES);
@@ -162,6 +199,17 @@ ant_value_t DesktopBrowserWindowCtor(ant_t *js, ant_value_t *args, int nargs) {
   }
   desktop_window.state = state;
   state->show_when_ready = show;
+  state->sandbox = sandbox;
+  state->node_integration = node_integration;
+  state->context_isolation = context_isolation;
+  if (preload_path.length) {
+    state->preload_path = strdup(preload_path.fileSystemRepresentation);
+    if (!state->preload_path) {
+      ant_desktop_window_destroy(state);
+      [window close];
+      return js_mkerr(js, "failed to allocate preload path");
+    }
+  }
   state->platform_data = (__bridge void *)desktop_window;
   window.delegate = desktop_window;
 
@@ -251,6 +299,12 @@ ant_value_t LoadURL(ant_t *js, ant_desktop_window_state_t *state, NSString *url,
     [arguments addObject:[NSString stringWithFormat:@"--ant-capabilities=%@",
                                                     [NSString stringWithUTF8String:state->capability_manifest]]];
   }
+  if (state->preload_path) {
+    [arguments addObject:[NSString stringWithFormat:@"--ant-preload=%s", state->preload_path]];
+  }
+  [arguments addObject:[NSString stringWithFormat:@"--ant-sandbox=%d", state->sandbox ? 1 : 0]];
+  [arguments addObject:[NSString stringWithFormat:@"--ant-node-integration=%d", state->node_integration ? 1 : 0]];
+  [arguments addObject:[NSString stringWithFormat:@"--ant-context-isolation=%d", state->context_isolation ? 1 : 0]];
   if (state->transparent_browser) [arguments addObject:@"--transparent"];
   if (getenv("ANT_DESKTOP_INPUT_SMOKE")) { [arguments addObject:@"--diagnostic-input"]; }
   task.arguments = arguments;

@@ -39,6 +39,7 @@ void ant_desktop_window_destroy(ant_desktop_window_state_t *window) {
     cursor = &(*cursor)->next;
   if (*cursor) *cursor = window->next;
   free(window->capability_manifest);
+  free(window->preload_path);
   free(window);
 }
 

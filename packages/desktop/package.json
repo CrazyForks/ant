@@ -1,7 +1,16 @@
 {
   "name": "ant-desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Build native desktop applications with Ant",
+  "keywords": [
+    "ant",
+    "desktop",
+    "macos",
+    "chromium",
+    "native",
+    "appkit",
+    "javascript"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -32,7 +41,7 @@
     "README.md"
   ],
   "optionalDependencies": {
-    "ant-desktop-darwin-arm64": "0.1.0"
+    "ant-desktop-darwin-arm64": "0.1.1"
   },
   "publishConfig": {
     "access": "public"

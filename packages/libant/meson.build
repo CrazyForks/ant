@@ -4,7 +4,7 @@ project('libant', ['c', 'cpp'], default_options: [
   'c_std=gnu23',
   'cpp_std=gnu++23',
   'default_library=static',
-  'b_lto=true',
+  'b_lto=false',
   'b_lto_threads=8',
   'strip=true',
   'warning_level=2'
@@ -93,7 +93,7 @@ if use_lto
     lib_sources + sandbox_backend_sources + [builtin_bundle_h, snapshot_h, messages_h, theme_h],
     include_directories: [include, sandbox_backend_include],
     dependencies: ant_deps,
-    c_args: ['-flto'],
+    override_options: ['b_lto=true'],
   )
 endif
 

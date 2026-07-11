@@ -10,6 +10,6 @@ inline void RegisterAntCustomSchemes(CefRawPtr<CefSchemeRegistrar> registrar) {
                                       CEF_SCHEME_OPTION_CORS_ENABLED | CEF_SCHEME_OPTION_FETCH_ENABLED);
 }
 
-bool RegisterAntAppSchemeHandler(const std::string &root);
+bool RegisterAntAppSchemeHandler(const std::string &root, bool node_integration);
 
 #endif

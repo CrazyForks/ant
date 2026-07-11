@@ -39,13 +39,56 @@ const createRendererBridge = bindings => {
     }
   });
 
+  const expose = (name, value) => {
+    if (typeof name !== 'string' || !name || name === 'Ant') {
+      throw new TypeError('exposed API name must be a non-empty string other than Ant');
+    }
+    if (Object.prototype.hasOwnProperty.call(globalThis, name)) {
+      throw new Error(`globalThis.${name} is already defined`);
+    }
+    Object.defineProperty(globalThis, name, {
+      value,
+      enumerable: true,
+      configurable: false,
+      writable: false
+    });
+  };
+  const contextBridge = Object.freeze({ exposeInMainWorld: expose });
+
+  let nodeRequire;
+  if (bindings.sandbox === false) {
+    nodeRequire = bindings.nativeRequire;
+    if (bindings.nodeIntegration) {
+      Object.defineProperty(globalThis, 'require', {
+        value: nodeRequire,
+        enumerable: false,
+        configurable: false,
+        writable: false
+      });
+      Object.defineProperty(globalThis, 'process', {
+        value: Object.freeze({
+          arch: bindings.nodeEnvironment.arch,
+          cwd: () => bindings.nodeEnvironment.cwd,
+          platform: bindings.nodeEnvironment.platform,
+          versions
+        }),
+        enumerable: false,
+        configurable: false,
+        writable: false
+      });
+    }
+  }
+
   Object.defineProperty(globalThis, 'Ant', {
-    value: Object.freeze({ ipc, versions }),
+    value: Object.freeze({ expose, ipc, versions }),
     enumerable: false,
     configurable: false
   });
 
   return Object.freeze({
+    contextBridge,
+    ipcRenderer: ipc,
+    require: nodeRequire,
     receive(operation, id, channel, payload) {
       if (operation === 2) {
         if (!grants.has(`receive:${channel}`)) return;

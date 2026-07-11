@@ -2,6 +2,8 @@
 
 #include "host_app.h"
 
+#include <fstream>
+#include <sstream>
 #include <string>
 
 #include "app_scheme.h"
@@ -36,8 +38,10 @@ public:
   void OnBeforeChildProcessLaunch(CefRefPtr<CefCommandLine> command_line) override {
     CefRefPtr<CefCommandLine> global = CefCommandLine::GetGlobalCommandLine();
     if (!global) return;
-    std::string manifest = global->GetSwitchValue("ant-capabilities");
-    if (!manifest.empty()) { command_line->AppendSwitchWithValue("ant-capabilities", manifest); }
+    for (const char *name : {"ant-capabilities", "ant-sandbox", "ant-node-integration", "ant-context-isolation"}) {
+      std::string value = global->GetSwitchValue(name);
+      if (!value.empty()) command_line->AppendSwitchWithValue(name, value);
+    }
   }
 
   void OnContextInitialized() override {
@@ -45,7 +49,8 @@ public:
     CefRefPtr<CefCommandLine> command_line = CefCommandLine::GetGlobalCommandLine();
     std::string url = command_line->GetSwitchValue("url");
     std::string app_root = command_line->GetSwitchValue("ant-app-root");
-    if (!app_root.empty() && !RegisterAntAppSchemeHandler(app_root)) {
+    bool node_integration = command_line->GetSwitchValue("ant-node-integration") == "1";
+    if (!app_root.empty() && !RegisterAntAppSchemeHandler(app_root, node_integration)) {
       fputs("failed to register ant://app scheme handler\n", stderr);
       CefQuitMessageLoop();
       return;
@@ -72,7 +77,21 @@ public:
     // context is still an isolated in-memory profile. CEF DevTools requires
     // this profile identity to match the Chrome-style inspector browser.
     request_context_ = CefRequestContext::GetGlobalContext();
-    CefBrowserHost::CreateBrowser(window_info, client_, url, browser_settings, nullptr, request_context_);
+    CefRefPtr<CefDictionaryValue> extra_info = CefDictionaryValue::Create();
+    std::string preload_path = command_line->GetSwitchValue("ant-preload");
+    if (!preload_path.empty()) {
+      std::ifstream preload_file(preload_path, std::ios::binary);
+      std::ostringstream preload_source;
+      preload_source << preload_file.rdbuf();
+      if (!preload_file.good() && !preload_file.eof()) {
+        fprintf(stderr, "Ant preload could not be read: %s\n", preload_path.c_str());
+        CefQuitMessageLoop();
+        return;
+      }
+      extra_info->SetString("antPreloadPath", preload_path);
+      extra_info->SetString("antPreloadSource", preload_source.str());
+    }
+    CefBrowserHost::CreateBrowser(window_info, client_, url, browser_settings, extra_info, request_context_);
     StartHostControlPipe(client_);
   }
 
