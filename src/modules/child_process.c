@@ -989,6 +989,12 @@ static void free_args_array(char **args, int count) {
   free(args);
 }
 
+static ant_value_t child_process_options_arg(ant_value_t *args, int nargs) {
+  if (nargs >= 3 && is_special_object(args[2])) return args[2];
+  if (nargs >= 2 && vtype(args[1]) != T_ARR && is_special_object(args[1])) return args[1];
+  return js_mkundef();
+}
+
 static char **parse_env_object(ant_t *js, ant_value_t env_obj) {
   if (!is_special_object(env_obj)) return NULL;
 
@@ -1085,36 +1091,32 @@ static ant_value_t builtin_spawn(ant_t *js, ant_value_t *args, int nargs) {
   char **env = NULL;
   bool use_shell = false;
   bool detached = false;
+  ant_value_t options_arg = child_process_options_arg(args, nargs);
   
-  if (nargs >= 2 && is_special_object(args[1])) {
-    ant_value_t len_val = js_get(js, args[1], "length");
-    if (vtype(len_val) == T_NUM) {
-      spawn_args = parse_args_array(js, args[1], &spawn_argc);
-    }
-  }
+  if (nargs >= 2 && vtype(args[1]) == T_ARR) spawn_args = parse_args_array(js, args[1], &spawn_argc);
   
   stdio_mode_t stdio_modes[3] = { 
     STDIO_PIPE, STDIO_PIPE, STDIO_PIPE 
   };
   
-  if (nargs >= 3 && is_special_object(args[2])) {
-    ant_value_t cwd_val = js_get(js, args[2], "cwd");
+  if (is_special_object(options_arg)) {
+    ant_value_t cwd_val = js_get(js, options_arg, "cwd");
     if (vtype(cwd_val) == T_STR) {
       size_t cwd_len;
       char *cwd_str = js_getstr(js, cwd_val, &cwd_len);
       cwd = strndup(cwd_str, cwd_len);
     }
     
-    ant_value_t shell_val = js_get(js, args[2], "shell");
+    ant_value_t shell_val = js_get(js, options_arg, "shell");
     use_shell = js_truthy(js, shell_val);
     
-    ant_value_t detached_val = js_get(js, args[2], "detached");
+    ant_value_t detached_val = js_get(js, options_arg, "detached");
     detached = js_truthy(js, detached_val);
     
-    ant_value_t stdio_val = js_get(js, args[2], "stdio");
+    ant_value_t stdio_val = js_get(js, options_arg, "stdio");
     parse_stdio_option(js, stdio_val, stdio_modes);
 
-    ant_value_t env_val = js_get(js, args[2], "env");
+    ant_value_t env_val = js_get(js, options_arg, "env");
     env = parse_env_object(js, env_val);
   }
   
@@ -1566,19 +1568,17 @@ static ant_value_t builtin_spawnSync(ant_t *js, ant_value_t *args, int nargs) {
   int spawn_argc = 0;
   char *input = NULL;
   size_t input_len = 0;
+  bool use_shell = false;
+  ant_value_t options_arg = child_process_options_arg(args, nargs);
   
-  if (nargs >= 2 && is_special_object(args[1])) {
-    ant_value_t len_val = js_get(js, args[1], "length");
-    if (vtype(len_val) == T_NUM) {
-      spawn_args = parse_args_array(js, args[1], &spawn_argc);
-    }
-  }
+  if (nargs >= 2 && vtype(args[1]) == T_ARR) spawn_args = parse_args_array(js, args[1], &spawn_argc);
   
-  if (nargs >= 3 && is_special_object(args[2])) {
-    ant_value_t input_val = js_get(js, args[2], "input");
+  if (is_special_object(options_arg)) {
+    ant_value_t input_val = js_get(js, options_arg, "input");
     if (vtype(input_val) == T_STR) {
       input = js_getstr(js, input_val, &input_len);
     }
+    use_shell = js_truthy(js, js_get(js, options_arg, "shell"));
   }
   
   size_t cmdline_len = cmd_len + 3;
@@ -1586,17 +1586,32 @@ static ant_value_t builtin_spawnSync(ant_t *js, ant_value_t *args, int nargs) {
     cmdline_len += strlen(spawn_args[i]) + 3;
   }
   
-  char *cmdline = malloc(cmdline_len);
-  if (!cmdline) {
+  char *raw_cmdline = malloc(cmdline_len);
+  if (!raw_cmdline) {
     free(cmd_str);
     free_args_array(spawn_args, spawn_argc);
     return js_mkerr(js, "Out of memory");
   }
   
-  char *p = cmdline;
+  char *p = raw_cmdline;
   p += sprintf(p, "%s", cmd_str);
   for (int i = 0; i < spawn_argc; i++) {
     p += sprintf(p, " \"%s\"", spawn_args[i]);
+  }
+
+  char *cmdline = raw_cmdline;
+  if (use_shell) {
+    const char *shell = getenv("COMSPEC");
+    if (!shell || !shell[0]) shell = "cmd.exe";
+    size_t shell_len = strlen(shell) + strlen(raw_cmdline) + 16;
+    cmdline = malloc(shell_len);
+    if (!cmdline) {
+      free(raw_cmdline);
+      free(cmd_str);
+      free_args_array(spawn_args, spawn_argc);
+      return js_mkerr(js, "Out of memory");
+    }
+    snprintf(cmdline, shell_len, "%s /d /s /c \"%s\"", shell, raw_cmdline);
   }
   
   SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
@@ -1629,6 +1644,7 @@ static ant_value_t builtin_spawnSync(ant_t *js, ant_value_t *args, int nargs) {
   BOOL success = CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi);
   
   free(cmdline);
+  if (cmdline != raw_cmdline) free(raw_cmdline);
   free(cmd_str);
   free_args_array(spawn_args, spawn_argc);
   
@@ -1791,6 +1807,16 @@ static bool read_sync_outputs(
   return true;
 }
 
+static void free_sync_exec_args(char **exec_args, bool use_shell) {
+  if (!exec_args) return;
+  if (use_shell) {
+    free(exec_args[0]);
+    free(exec_args[1]);
+    free(exec_args[2]);
+  }
+  free(exec_args);
+}
+
 static ant_value_t builtin_spawnSync(ant_t *js, ant_value_t *args, int nargs) {
   if (nargs < 1) return js_mkerr(js, "spawnSync() requires a command");
   if (vtype(args[0]) != T_STR) return js_mkerr(js, "Command must be a string");
@@ -1805,38 +1831,37 @@ static ant_value_t builtin_spawnSync(ant_t *js, ant_value_t *args, int nargs) {
   char **env = NULL;
   char *input = NULL;
   size_t input_len = 0;
+  bool use_shell = false;
+  ant_value_t options_arg = child_process_options_arg(args, nargs);
   stdio_mode_t stdio_modes[3] = {
     STDIO_PIPE, STDIO_PIPE, STDIO_PIPE
   };
   
-  if (nargs >= 2 && is_special_object(args[1])) {
-    ant_value_t len_val = js_get(js, args[1], "length");
-    if (vtype(len_val) == T_NUM) {
-      spawn_args = parse_args_array(js, args[1], &spawn_argc);
-    }
-  }
+  if (nargs >= 2 && vtype(args[1]) == T_ARR) spawn_args = parse_args_array(js, args[1], &spawn_argc);
   
-  if (nargs >= 3 && is_special_object(args[2])) {
-    ant_value_t cwd_val = js_get(js, args[2], "cwd");
+  if (is_special_object(options_arg)) {
+    ant_value_t cwd_val = js_get(js, options_arg, "cwd");
     if (vtype(cwd_val) == T_STR) {
       size_t cwd_len;
       char *cwd_str = js_getstr(js, cwd_val, &cwd_len);
       cwd = strndup(cwd_str, cwd_len);
     }
 
-    ant_value_t input_val = js_get(js, args[2], "input");
+    ant_value_t input_val = js_get(js, options_arg, "input");
     if (vtype(input_val) == T_STR) {
       input = js_getstr(js, input_val, &input_len);
     }
 
-    ant_value_t stdio_val = js_get(js, args[2], "stdio");
+    ant_value_t stdio_val = js_get(js, options_arg, "stdio");
     parse_stdio_option(js, stdio_val, stdio_modes);
 
-    ant_value_t env_val = js_get(js, args[2], "env");
+    ant_value_t env_val = js_get(js, options_arg, "env");
     env = parse_env_object(js, env_val);
+    use_shell = js_truthy(js, js_get(js, options_arg, "shell"));
   }
   
-  char **exec_args = calloc(spawn_argc + 2, sizeof(char *));
+  int exec_argc = use_shell ? 3 : spawn_argc + 1;
+  char **exec_args = calloc((size_t)exec_argc + 1, sizeof(char *));
   if (!exec_args) {
     free(cmd_str);
     if (cwd) free(cwd);
@@ -1845,11 +1870,31 @@ static ant_value_t builtin_spawnSync(ant_t *js, ant_value_t *args, int nargs) {
     return js_mkerr(js, "Out of memory");
   }
   
-  exec_args[0] = cmd_str;
-  for (int i = 0; i < spawn_argc; i++) {
-    exec_args[i + 1] = spawn_args[i];
+  if (use_shell) {
+    size_t shell_command_len = cmd_len + 1;
+    for (int i = 0; i < spawn_argc; i++) shell_command_len += strlen(spawn_args[i]) + 2;
+    char *shell_command = malloc(shell_command_len);
+    if (!shell_command) {
+      free(exec_args);
+      free(cmd_str);
+      if (cwd) free(cwd);
+      free_env_array(env);
+      free_args_array(spawn_args, spawn_argc);
+      return js_mkerr(js, "Out of memory");
+    }
+    strcpy(shell_command, cmd_str);
+    for (int i = 0; i < spawn_argc; i++) {
+      strcat(shell_command, " ");
+      strcat(shell_command, spawn_args[i]);
+    }
+    exec_args[0] = strdup("/bin/sh");
+    exec_args[1] = strdup("-c");
+    exec_args[2] = shell_command;
+  } else {
+    exec_args[0] = cmd_str;
+    for (int i = 0; i < spawn_argc; i++) exec_args[i + 1] = spawn_args[i];
   }
-  exec_args[spawn_argc + 1] = NULL;
+  exec_args[exec_argc] = NULL;
   
   int stdin_pipe[2] = { -1, -1 };
   int stdout_pipe[2] = { -1, -1 };
@@ -1866,7 +1911,7 @@ static ant_value_t builtin_spawnSync(ant_t *js, ant_value_t *args, int nargs) {
     close_if_valid(stdout_pipe[1]);
     close_if_valid(stderr_pipe[0]);
     close_if_valid(stderr_pipe[1]);
-    free(exec_args);
+    free_sync_exec_args(exec_args, use_shell);
     free(cmd_str);
     if (cwd) free(cwd);
     free_env_array(env);
@@ -1883,7 +1928,7 @@ static ant_value_t builtin_spawnSync(ant_t *js, ant_value_t *args, int nargs) {
     close_if_valid(stdout_pipe[1]);
     close_if_valid(stderr_pipe[0]);
     close_if_valid(stderr_pipe[1]);
-    free(exec_args);
+    free_sync_exec_args(exec_args, use_shell);
     free(cmd_str);
     if (cwd) free(cwd);
     free_env_array(env);
@@ -1931,7 +1976,7 @@ static ant_value_t builtin_spawnSync(ant_t *js, ant_value_t *args, int nargs) {
     _exit(127);
   }
   
-  free(exec_args);
+  free_sync_exec_args(exec_args, use_shell);
   free(cmd_str);
   if (cwd) free(cwd);
   free_env_array(env);
