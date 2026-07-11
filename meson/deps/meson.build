@@ -161,6 +161,7 @@ libffi_dep = subproject('libffi', default_options: [
 
 cares_dep = subproject('c-ares', default_options: [
   'default_library=static',
+  'optimization=s',
   'warning_level=0',
 ]).get_variable('cares_dep')
 

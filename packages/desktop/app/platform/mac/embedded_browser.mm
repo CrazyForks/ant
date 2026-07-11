@@ -137,6 +137,7 @@ public:
                              CefBrowserSettings &settings, CefRefPtr<CefDictionaryValue> &extra_info,
                              bool *use_default_window) override {
     CEF_REQUIRE_UI_THREAD();
+    client = this;
     if (!ant_desktop_devtools_enabled()) return;
     *use_default_window = true;
     SetDevToolsOpen(true);
