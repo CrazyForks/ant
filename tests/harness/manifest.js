@@ -51,8 +51,9 @@ export function targets() {
     { group: 'examples', type: 'skip', name: 'jiti', reason: 'excluded for now' }
   );
 
-  const nowMs = Date.now();
-  const ms = (name, re, min = 0.0001, max = 120000) => ({ name, re, min, max });
+  const ms = (name, re, max, min = 0) => ({ name, re, min, max });
+  const exact = (name, re, expected, count) => ({ name, re, expected, ...(count === undefined ? {} : { count }) });
+  const nonNegative = (name, re) => ({ name, re, min: 0, max: Number.MAX_VALUE });
   list.push(
     {
       group: 'demos',
@@ -60,8 +61,8 @@ export function targets() {
       name: 'event_loop',
       entry: 'examples/demo/event_loop.js',
       checks: [
-        ms('iterations/sec (millions)', /([\d.,]+)M event loop iterations\/sec/, 0.01, 100000),
-        ms('measured window seconds', /in ([\d.]+)s\)/, 3, 60)
+        { name: 'iterations/sec (millions)', re: /([\d.,]+)M event loop iterations\/sec/, min: 1, max: 20 },
+        { name: 'measured window seconds', re: /in ([\d.]+)s\)/, min: 4, max: 6 }
       ]
     },
     {
@@ -69,42 +70,61 @@ export function targets() {
       type: 'demo',
       name: 'events',
       entry: 'examples/demo/events.js',
-      checks: [{ name: 'login wall-clock near now', re: /Login time: (\d+)/, min: nowMs - 60000, max: nowMs + 3600000 }]
+      checks: [
+        { name: 'login wall-clock near now', re: /Login time: (\d+)/, nowToleranceMs: 60000 },
+        exact('login username', /User logged in: (\w+)/, 'alice'),
+        exact('click listener calls', /(Button clicked!)/, 'Button clicked!', 2),
+        exact('once listener calls', /(Initialization running)/, 'Initialization running', 1),
+        exact('once listener total', /Total init calls: (\d+)/, 1),
+        exact('removed listener calls', /Handler called with: (.+)/, 'first call', 1),
+        exact('build duration', /Build finished: (\d+)ms,/, 142),
+        exact('build file count', /Build finished: \d+ms, (\d+) files/, 37)
+      ]
     },
     {
       group: 'demos',
       type: 'demo',
       name: 'fizzbuzz',
       entry: 'examples/demo/fizzbuzz.js',
-      checks: [ms('per-impl duration ms', /: ([\d.]+)ms for n=1000/)]
+      checks: [
+        exact('normal correctness', /normal: (true|false)/, 'true'),
+        exact('bitwise correctness', /bitwise: (true|false)/, 'true'),
+        exact('unrolled correctness', /ultimate: (true|false)/, 'true'),
+        ms('per-impl duration ms', /: ([\d.]+)ms for n=1000/, 5)
+      ]
     },
     {
       group: 'demos',
       type: 'demo',
       name: 'microbench',
       entry: 'examples/demo/microbench.js',
-      checks: [{ name: 'simple add ms', re: /simple add: ([\d.]+)ms/, min: 0, max: 120000 }]
+      checks: [exact('simple add result', /simple add: [\d.]+ms \(result: (\d+)\)/, '40000000000'), ms('simple add ms', /simple add: ([\d.]+)ms/, 100)]
     },
     {
       group: 'demos',
       type: 'demo',
       name: 'microbench2',
       entry: 'examples/demo/microbench2.js',
-      checks: [ms('bench duration ms', /: ([\d.]+)ms \(result/)]
+      checks: [
+        exact('empty loop result', /warm empty loop: [\d.]+ms \(result: (\d+)\)/, '1999999'),
+        exact('inline add result', /warm inline add: [\d.]+ms \(result: (\d+)\)/, '4000000000000'),
+        exact('call add results', /(?:cold|warm) call add: [\d.]+ms \(result: (\d+)\)/, '4000000000000', 2),
+        ms('bench duration ms', /: ([\d.]+)ms \(result/, 200)
+      ]
     },
     {
       group: 'demos',
       type: 'demo',
       name: 'pi',
       entry: 'examples/demo/pi.js',
-      checks: [{ name: 'pi value', re: /≈ (3\.[\d]+)/, min: 3.14158, max: 3.14161 }, ms('compute time ms', /Time: ([\d.]+) ms/)]
+      checks: [{ name: 'pi value', re: /≈ (3\.[\d]+)/, min: 3.14158, max: 3.14161 }, ms('compute time ms', /Time: ([\d.]+) ms/, 100)]
     },
     {
       group: 'demos',
       type: 'demo',
       name: 'triples',
       entry: 'examples/demo/triples.js',
-      checks: [{ name: 'triple count for c<=200', re: /Found (\d+) Pythagorean/, min: 127, max: 127 }]
+      checks: [{ name: 'triple count for c<=200', re: /Found (\d+) Pythagorean/, min: 127, max: 127 }, ms('compute time ms', /Time: ([\d.]+) ms/, 100)]
     },
     {
       group: 'demos',
@@ -112,8 +132,13 @@ export function targets() {
       name: 'uptime',
       entry: 'examples/demo/uptime.js',
       checks: [
-        { name: 'uptime days', re: /up (\d+) days/, min: 0, max: 3650 },
-        { name: 'load average', re: /load averages: ([\d.]+)/, min: 0, max: 500 }
+        nonNegative('uptime days', /up (\d+) days/),
+        { name: 'uptime hours', re: /days, (\d+):/, min: 0, max: 23 },
+        { name: 'uptime minutes', re: /days, \d+:(\d{2})/, min: 0, max: 59 },
+        nonNegative('logged-in users', /, (\d+) users?/),
+        nonNegative('one-minute load average', /load averages: ([\d.]+)/),
+        nonNegative('five-minute load average', /load averages: [\d.]+ ([\d.]+)/),
+        nonNegative('fifteen-minute load average', /load averages: [\d.]+ [\d.]+ ([\d.]+)/)
       ]
     },
     {
@@ -121,14 +146,17 @@ export function targets() {
       type: 'demo',
       name: 'fib_iterative',
       entry: 'examples/demo/fibonacci_iterative.js',
-      checks: [ms('fib(5000) time ms', /Time: ([\d.]+) ms/)]
+      checks: [
+        exact('fib(5000) prefix', /fibonacci\(5000\) = (38789684543883256337)\d{1005}85178408674382863125/, '38789684543883256337'),
+        ms('fib(5000) time ms', /Time: ([\d.]+) ms/, 100)
+      ]
     },
     {
       group: 'demos',
       type: 'demo',
       name: 'fib_memo',
       entry: 'examples/demo/fibonacci_memo.js',
-      checks: [{ name: 'fib(35) value', re: /fibonacci\(35\) = (\d+)/, min: 9227465, max: 9227465 }, ms('time ms', /Time: ([\d.]+) ms/)]
+      checks: [{ name: 'fib(35) value', re: /fibonacci\(35\) = (\d+)/, min: 9227465, max: 9227465 }, ms('time ms', /Time: ([\d.]+) ms/, 10)]
     },
     {
       group: 'demos',
@@ -137,7 +165,7 @@ export function targets() {
       entry: 'examples/demo/fibonacci_tco.js',
       checks: [
         { name: 'fib(35) value', re: /fibonacci\(35\) = (\d+)/, min: 9227465, max: 9227465 },
-        ms('per-call µs', /([\d.]+) µs\/call/, 0.00001, 10000)
+        ms('per-call µs', /([\d.]+) µs\/call/, 10)
       ]
     },
     {
@@ -146,8 +174,8 @@ export function targets() {
       name: 'fib_iter_tco',
       entry: 'examples/demo/fibonacci_iterative_tco.js',
       checks: [
-        { name: 'fib(1476) mantissa', re: /fibonacci\(1476\) = (1\.3069892237633987)e\+308/, min: 1.3, max: 1.31 },
-        ms('time ms', /Time: ([\d.]+) ms/)
+        { name: 'fib(1476) mantissa', re: /fibonacci\(1476\) = (1\.[\d]+)e\+308/, min: 1.3069, max: 1.3071 },
+        ms('time ms', /Time: ([\d.]+) ms/, 10)
       ]
     },
     {
@@ -156,8 +184,8 @@ export function targets() {
       name: 'fib_iter_tco_double',
       entry: 'examples/demo/fibonacci_iterative_tco_double.js',
       checks: [
-        { name: 'fib(5000) mantissa', re: /fibonacci\(5000\) ~= (3\.8789684543883243)e\+1044/, min: 3.8, max: 3.9 },
-        ms('time ms', /Time: ([\d.]+) ms/)
+        { name: 'fib(5000) mantissa', re: /fibonacci\(5000\) ~= (3\.[\d]+)e\+1044/, min: 3.8789, max: 3.879 },
+        ms('time ms', /Time: ([\d.]+) ms/, 100)
       ]
     },
     {
@@ -166,8 +194,8 @@ export function targets() {
       name: 'fib_iter_tco_number',
       entry: 'examples/demo/fibonacci_iterative_tco_number.js',
       checks: [
-        { name: 'fib(5000) mantissa', re: /fibonacci\(5000\) ~= (3\.8789684543883243)e\+1044/, min: 3.8, max: 3.9 },
-        ms('time ms', /Time: ([\d.]+) ms/)
+        { name: 'fib(5000) mantissa', re: /fibonacci\(5000\) ~= (3\.[\d]+)e\+1044/, min: 3.8789, max: 3.879 },
+        ms('time ms', /Time: ([\d.]+) ms/, 50)
       ]
     }
   );
@@ -177,7 +205,7 @@ export function targets() {
     type: 'demo',
     name: 'bench_dec',
     entry: 'tests/bench_dec.js',
-    checks: [ms('duration ms', /([\d.]+)ms/, 100, 600)]
+    checks: [ms('duration ms', /([\d.]+)ms/, 600, 100)]
   });
 
   list.push(

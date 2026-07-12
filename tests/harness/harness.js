@@ -44,10 +44,10 @@ async function installDependencies(dir, timeoutMs) {
     return { ok: false, detail: `could not start dependency install in ${dir}`, output: error.message };
   }
   let output = '';
-  child.on('stdout', d => {
+  child.stdout.on('data', d => {
     output += d;
   });
-  child.on('stderr', d => {
+  child.stderr.on('data', d => {
     output += d;
   });
 
@@ -87,10 +87,10 @@ class Child {
     this.output = '';
     this.exitCode = null;
     this.proc = spawn(ANT, [entry, ...args]);
-    this.proc.on('stdout', d => {
+    this.proc.stdout.on('data', d => {
       this.output += d;
     });
-    this.proc.on('stderr', d => {
+    this.proc.stderr.on('data', d => {
       this.output += d;
     });
     this.exited = new Promise(resolve => {
@@ -234,12 +234,30 @@ function runRangeChecks(output, checks) {
     const values = [];
     while ((m = re.exec(output))) {
       seen++;
-      const v = parseFloat(String(m[1]).replace(/,/g, ''));
       values.push(m[1]);
-      if (!Number.isFinite(v) || v < c.min || v > c.max) failures.push(`${c.name}: ${m[1]} outside [${c.min}, ${c.max}]`);
+      if (c.expected !== undefined) {
+        if (String(m[1]) !== String(c.expected)) failures.push(`${c.name}: ${m[1]} != ${c.expected}`);
+      } else if (c.nowToleranceMs !== undefined) {
+        const v = Number(m[1]);
+        if (!Number.isFinite(v) || Math.abs(v - Date.now()) > c.nowToleranceMs) {
+          failures.push(`${c.name}: ${m[1]} is not within ${c.nowToleranceMs}ms of current time`);
+        }
+      } else {
+        const v = parseFloat(String(m[1]).replace(/,/g, ''));
+        if (!Number.isFinite(v) || v < c.min || v > c.max) failures.push(`${c.name}: ${m[1]} outside [${c.min}, ${c.max}]`);
+      }
     }
     if (!seen) failures.push(`${c.name}: pattern never matched`);
-    else report.push(`${c.name}: ${values.join(', ')} in [${c.min}, ${c.max}]`);
+    else if (c.count !== undefined && seen !== c.count) failures.push(`${c.name}: matched ${seen} times, expected ${c.count}`);
+    if (seen) {
+      const expectation =
+        c.expected !== undefined
+          ? `= ${c.expected}`
+          : c.nowToleranceMs !== undefined
+            ? `within ${c.nowToleranceMs}ms of current time`
+            : `in [${c.min}, ${c.max}]`;
+      report.push(`${c.name}: ${values.join(', ')} ${expectation}`);
+    }
   }
   return { failures, report };
 }
