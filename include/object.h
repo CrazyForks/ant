@@ -102,6 +102,7 @@ typedef union ant_object_flags {
     uint8_t sealed: 1;
     uint8_t is_exotic: 1;
     uint8_t is_constructor: 1;
+    uint8_t is_callable: 1;
     uint8_t fast_array: 1;
     uint8_t may_have_holes: 1;
     uint8_t may_have_dense_elements: 1;

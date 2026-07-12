@@ -725,7 +725,6 @@ static const char *typeof_name_for_type(uint8_t type) {
     case SV_TI_BOOL:  return "boolean";
     case SV_TI_UNDEF: return "undefined";
     case SV_TI_ARR:
-    case SV_TI_OBJ:
     case SV_TI_NULL:  return "object";
     default:          return NULL;
   }

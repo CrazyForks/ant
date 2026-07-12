@@ -476,6 +476,7 @@ static ant_object_t *obj_alloc(ant_t *js, uint8_t type_tag, uint8_t inobj_limit)
   obj->flags.sealed = 0;
   obj->flags.is_exotic = 0;
   obj->flags.is_constructor = 0;
+  obj->flags.is_callable = 0;
   obj->flags.fast_array = 0;
   obj->flags.may_have_holes = 0;
   obj->flags.may_have_dense_elements = 0;
@@ -5946,30 +5947,6 @@ static ant_value_t builtin_function_apply(ant_t *js, ant_value_t *args, int narg
   return result;
 }
 
-static bool proxy_callable_target(ant_value_t value) {
-  ant_value_t slow = value;
-  ant_value_t fast = value;
-
-  while (true) {
-    uint8_t t = vtype(slow);
-    if (t == T_FUNC || t == T_CFUNC) return true;
-    if (t != T_OBJ) return false;
-
-    ant_proxy_state_t *data = get_proxy_data(slow);
-    if (!data || data->revoked) return false;
-    slow = data->target;
-
-    for (int i = 0; i < 2; i++) {
-      if (vtype(fast) != T_OBJ) { fast = js_mknull(); break; }
-      ant_proxy_state_t *fdata = get_proxy_data(fast);
-      if (!fdata || fdata->revoked) { fast = js_mknull(); break; }
-      fast = fdata->target;
-    }
-
-    if (same_object_identity(slow, fast)) return false;
-  }
-}
-
 static ant_value_t builtin_bound_proxy_call(ant_t *js, ant_value_t *args, int nargs) {
   ant_value_t bound = js->current_func;
   if (vtype(bound) != T_FUNC) return js_mkerr_typed(js, JS_ERR_TYPE, "invalid bound proxy call");
@@ -5993,7 +5970,7 @@ static ant_value_t builtin_function_bind(ant_t *js, ant_value_t *args, int nargs
   if (func_type != T_FUNC && func_type != T_CFUNC && !func_is_proxy) {
     return js_mkerr_typed(js, JS_ERR_TYPE, "bind requires a function");
   }
-  if (func_is_proxy && !proxy_callable_target(func)) {
+  if (func_is_proxy && !is_callable(func)) {
     return js_mkerr_typed(js, JS_ERR_TYPE, "bind requires a function");
   }
 
@@ -16842,6 +16819,7 @@ static ant_value_t mkproxy(ant_t *js, ant_value_t target, ant_value_t handler) {
   data->revoked = false;
 
   proxy_ptr->flags.is_exotic = 1;
+  proxy_ptr->flags.is_callable = is_callable(target) ? 1u : 0u;
   js_mark_constructor(proxy_obj, js_is_constructor(target));
   
   ant_object_sidecar_t *sidecar = ant_object_ensure_sidecar(proxy_ptr);

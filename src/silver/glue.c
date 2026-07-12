@@ -581,7 +581,7 @@ ant_value_t jit_helper_call_array_includes(
 }
 
 ant_value_t jit_helper_typeof(sv_vm_t *vm, ant_t *js, ant_value_t v) {
-  const char *ts = typestr(vtype(v));
+  const char *ts = is_callable(v) ? "function" : typestr(vtype(v));
   return js_mkstr(js, ts, strlen(ts));
 }
 

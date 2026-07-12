@@ -12,7 +12,7 @@ static inline void sv_op_not(sv_vm_t *vm, ant_t *js) {
 
 static inline void sv_op_typeof(sv_vm_t *vm, ant_t *js) {
   ant_value_t a = vm->stack[--vm->sp];
-  const char *ts = typestr(vtype(a));
+  const char *ts = is_callable(a) ? "function" : typestr(vtype(a));
   vm->stack[vm->sp++] = js_mkstr(js, ts, strlen(ts));
 }
 

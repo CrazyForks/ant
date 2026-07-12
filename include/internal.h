@@ -365,7 +365,10 @@ static inline bool is_empty_slot(ant_value_t v) {
 
 static inline bool is_callable(ant_value_t v) {
   uint8_t t = vtype(v);
-  return t == T_FUNC || t == T_CFUNC;
+  if (t == T_FUNC || t == T_CFUNC) return true;
+  if (t != T_OBJ) return false;
+  ant_object_t *obj = js_obj_ptr(v);
+  return obj && obj->flags.is_callable;
 }
 
 static inline const ant_cfunc_meta_t *js_as_cfunc_meta(ant_value_t fn_val) {
