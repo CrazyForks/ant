@@ -706,6 +706,8 @@ int ant_hvf_start(const ant_sandbox_vm_config_t *config) {
 static int ant_hvf_session_create(const ant_sandbox_vm_config_t *config, void **session_out) { return -ENOSYS; }
 static int ant_hvf_session_execute(void *session, const ant_sandbox_vm_request_t *request) { return -ENOSYS; }
 static int ant_hvf_session_send(void *session, const void *data, size_t len) { return -ENOSYS; }
+static int ant_hvf_session_stats(void *session, ant_sandbox_vm_stats_t *stats) { return -ENOSYS; }
+static int ant_hvf_session_cancel(void *session) { return -ENOSYS; }
 static void ant_hvf_session_destroy(void *session) { (void)session; }
 
 #endif
