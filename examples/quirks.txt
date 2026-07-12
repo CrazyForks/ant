@@ -34,7 +34,7 @@ array:
 error stack:
 (f=i=>{try{if(i<5)throw i}catch(e){console.log(e),f(e+1)}})(0)
 
-symbol.iterator: (no generators)
+symbol.iterator:
 [...{*[Symbol.iterator](){for(let i=0;i<5;)yield console.log(i++)}}]
 
 promise:
