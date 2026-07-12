@@ -63,6 +63,9 @@ static void jit_load_externals_once(sv_jit_ctx_t *jc) {
   LOAD_EXT(jit_helper_destructure_close);
   LOAD_EXT(jit_helper_destructure_next);
   LOAD_EXT(jit_helper_get_global);
+  LOAD_EXT(jit_helper_get_eval_global);
+  LOAD_EXT(jit_helper_put_eval_global);
+  LOAD_EXT(jit_helper_delete_eval_var);
   LOAD_EXT(jit_helper_get_field);
   LOAD_EXT(jit_helper_import_default);
   LOAD_EXT(jit_helper_import_named);
@@ -2473,6 +2476,17 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
     MIR_T_P,   "func",
     MIR_T_I32, "bc_off");
 
+  MIR_type_t geg_ret = MIR_JSVAL;
+  MIR_item_t get_eval_global_proto = MIR_new_proto(ctx, "geg_proto",
+    1, &geg_ret, 7,
+    MIR_T_I64, "js",
+    MIR_T_P,   "closure",
+    MIR_T_P,   "str",
+    MIR_T_I32, "len",
+    MIR_T_P,   "func",
+    MIR_T_I32, "bc_off",
+    MIR_T_I32, "allow_missing");
+
   MIR_type_t rest_ret = MIR_JSVAL;
   MIR_item_t rest_proto = MIR_new_proto(ctx, "rest_proto",
     1, &rest_ret, 5,
@@ -2727,6 +2741,24 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
     MIR_T_I32, "len",
     MIR_T_I32, "strict");
 
+  MIR_type_t peg_ret = MIR_JSVAL;
+  MIR_item_t put_eval_global_proto = MIR_new_proto(ctx, "peg_proto",
+    1, &peg_ret, 6,
+    MIR_T_I64, "js",
+    MIR_T_P,   "closure",
+    MIR_JSVAL, "val",
+    MIR_T_P,   "str",
+    MIR_T_I32, "len",
+    MIR_T_I32, "strict");
+
+  MIR_type_t dev_ret = MIR_JSVAL;
+  MIR_item_t delete_eval_var_proto = MIR_new_proto(ctx, "dev_proto",
+    1, &dev_ret, 4,
+    MIR_T_I64, "js",
+    MIR_T_P,   "closure",
+    MIR_T_P,   "str",
+    MIR_T_I32, "len");
+
   MIR_type_t obj_ret = MIR_JSVAL;
   MIR_item_t object_proto = MIR_new_proto(ctx, "obj_proto",
     1, &obj_ret, 2,
@@ -2813,6 +2845,12 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
   MIR_item_t imp_dnext       = MIR_new_import(ctx, "jit_helper_destructure_next");
   MIR_item_t imp_dclose      = MIR_new_import(ctx, "jit_helper_destructure_close");
   MIR_item_t imp_gg         = MIR_new_import(ctx, "jit_helper_get_global");
+  MIR_item_t imp_get_eval_global =
+    MIR_new_import(ctx, "jit_helper_get_eval_global");
+  MIR_item_t imp_put_eval_global =
+    MIR_new_import(ctx, "jit_helper_put_eval_global");
+  MIR_item_t imp_delete_eval_var =
+    MIR_new_import(ctx, "jit_helper_delete_eval_var");
   MIR_item_t imp_get_field  = MIR_new_import(ctx, "jit_helper_get_field");
   MIR_item_t imp_import_default = MIR_new_import(ctx, "jit_helper_import_default");
   MIR_item_t imp_import_named   = MIR_new_import(ctx, "jit_helper_import_named");
@@ -3379,6 +3417,33 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
     has_captured_slots, captured_params, param_count,      \
     has_captures, captured_locals, n_locals,               \
     (ret_op))
+
+#define JIT_EMIT_THROW_IF_ERROR(value_reg) do {                       \
+  MIR_label_t no_error = MIR_new_label(ctx);                          \
+  MIR_append_insn(ctx, jit_func,                                      \
+    MIR_new_insn(ctx, MIR_URSH,                                       \
+      MIR_new_reg_op(ctx, r_bool),                                    \
+      MIR_new_reg_op(ctx, (value_reg)),                               \
+      MIR_new_int_op(ctx, NANBOX_TYPE_SHIFT)));                       \
+  MIR_append_insn(ctx, jit_func,                                      \
+    MIR_new_insn(ctx, MIR_BNE,                                        \
+      MIR_new_label_op(ctx, no_error),                                \
+      MIR_new_reg_op(ctx, r_bool),                                    \
+      MIR_new_uint_op(ctx, JIT_ERR_TAG)));                            \
+  if (jit_try_depth > 0) {                                            \
+    jit_try_entry_t *handler = &jit_try_stack[jit_try_depth - 1];     \
+    MIR_append_insn(ctx, jit_func,                                    \
+      MIR_new_insn(ctx, MIR_MOV,                                      \
+        MIR_new_reg_op(ctx, vs.regs[handler->saved_sp]),              \
+        MIR_new_reg_op(ctx, (value_reg))));                           \
+    MIR_append_insn(ctx, jit_func,                                    \
+      MIR_new_insn(ctx, MIR_JMP,                                      \
+        MIR_new_label_op(ctx, handler->catch_label)));                \
+  } else {                                                            \
+    JIT_EMIT_EXIT_RET(MIR_new_reg_op(ctx, (value_reg)));              \
+  }                                                                   \
+  MIR_append_insn(ctx, jit_func, no_error);                           \
+} while (0)
 
   while (ip < end) {
     int bc_off = (int)(ip - func->code);
@@ -5827,6 +5892,28 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
         break;
       }
 
+      case OP_GET_EVAL_GLOBAL:
+      case OP_GET_EVAL_GLOBAL_UNDEF: {
+        uint32_t idx = sv_get_u32(ip + 1);
+        if (idx >= (uint32_t)func->atom_count) { ok = false; break; }
+        sv_atom_t *atom = &func->atoms[idx];
+        MIR_reg_t dst = vstack_push(&vs);
+        MIR_append_insn(ctx, jit_func,
+          MIR_new_call_insn(ctx, 10,
+            MIR_new_ref_op(ctx, get_eval_global_proto),
+            MIR_new_ref_op(ctx, imp_get_eval_global),
+            MIR_new_reg_op(ctx, dst),
+            MIR_new_reg_op(ctx, r_js),
+            MIR_new_reg_op(ctx, r_closure),
+            MIR_new_uint_op(ctx, (uint64_t)(uintptr_t)atom->str),
+            MIR_new_uint_op(ctx, (uint64_t)atom->len),
+            MIR_new_uint_op(ctx, (uint64_t)(uintptr_t)func),
+            MIR_new_int_op(ctx, (int64_t)bc_off),
+            MIR_new_int_op(ctx, op == OP_GET_EVAL_GLOBAL_UNDEF ? 1 : 0)));
+        JIT_EMIT_THROW_IF_ERROR(dst);
+        break;
+      }
+
       case OP_RETURN: {
         vstack_ensure_boxed(&vs, vs.sp - 1, ctx, jit_func, r_d_slot);
         MIR_reg_t ret_val = vstack_pop(&vs);
@@ -7139,6 +7226,27 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
         break;
       }
 
+      case OP_PUT_EVAL_GLOBAL: {
+        uint32_t idx = sv_get_u32(ip + 1);
+        if (idx >= (uint32_t)func->atom_count) { ok = false; break; }
+        sv_atom_t *atom = &func->atoms[idx];
+        vstack_ensure_boxed(&vs, vs.sp - 1, ctx, jit_func, r_d_slot);
+        MIR_reg_t val = vstack_pop(&vs);
+        MIR_append_insn(ctx, jit_func,
+          MIR_new_call_insn(ctx, 9,
+            MIR_new_ref_op(ctx, put_eval_global_proto),
+            MIR_new_ref_op(ctx, imp_put_eval_global),
+            MIR_new_reg_op(ctx, r_err_tmp),
+            MIR_new_reg_op(ctx, r_js),
+            MIR_new_reg_op(ctx, r_closure),
+            MIR_new_reg_op(ctx, val),
+            MIR_new_uint_op(ctx, (uint64_t)(uintptr_t)atom->str),
+            MIR_new_uint_op(ctx, (uint64_t)atom->len),
+            MIR_new_int_op(ctx, func->is_strict ? 1 : 0)));
+        JIT_EMIT_THROW_IF_ERROR(r_err_tmp);
+        break;
+      }
+
       case OP_OBJECT: {
         MIR_reg_t dst = vstack_push(&vs);
         MIR_append_insn(ctx, jit_func,
@@ -8268,6 +8376,24 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
         break;
       }
 
+      case OP_DELETE_EVAL_VAR: {
+        uint32_t idx = sv_get_u32(ip + 1);
+        if (idx >= (uint32_t)func->atom_count) { ok = false; break; }
+        sv_atom_t *atom = &func->atoms[idx];
+        MIR_reg_t dst = vstack_push(&vs);
+        MIR_append_insn(ctx, jit_func,
+          MIR_new_call_insn(ctx, 7,
+            MIR_new_ref_op(ctx, delete_eval_var_proto),
+            MIR_new_ref_op(ctx, imp_delete_eval_var),
+            MIR_new_reg_op(ctx, dst),
+            MIR_new_reg_op(ctx, r_js),
+            MIR_new_reg_op(ctx, r_closure),
+            MIR_new_uint_op(ctx, (uint64_t)(uintptr_t)atom->str),
+            MIR_new_uint_op(ctx, (uint64_t)atom->len)));
+        JIT_EMIT_THROW_IF_ERROR(dst);
+        break;
+      }
+
       case OP_NEW: {
         uint16_t new_argc = sv_get_u16(ip + 1);
         if (new_argc > 16 || vs.sp < (int)new_argc + 2) { ok = false; break; }
@@ -9038,6 +9164,7 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
       MIR_new_ret_insn(ctx, 1, MIR_new_reg_op(ctx, r_resume_res)));
   }
 
+#undef JIT_EMIT_THROW_IF_ERROR
 #undef JIT_EMIT_EXIT_RET
 
   MIR_finish_func(ctx);

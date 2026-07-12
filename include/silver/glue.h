@@ -50,6 +50,23 @@ ant_value_t jit_helper_get_global(
   sv_func_t *func, int32_t bc_off
 );
 
+ant_value_t jit_helper_get_eval_global(
+  ant_t *js, sv_closure_t *closure,
+  const char *str, uint32_t len,
+  sv_func_t *func, int32_t bc_off,
+  int allow_missing
+);
+
+ant_value_t jit_helper_put_eval_global(
+  ant_t *js, sv_closure_t *closure, ant_value_t val,
+  const char *str, uint32_t len, int is_strict
+);
+
+ant_value_t jit_helper_delete_eval_var(
+  ant_t *js, sv_closure_t *closure,
+  const char *str, uint32_t len
+);
+
 ant_value_t jit_helper_instanceof(
   sv_vm_t *vm, ant_t *js,
   ant_value_t l, ant_value_t r,

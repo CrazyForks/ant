@@ -213,6 +213,46 @@ ant_value_t jit_helper_get_global(
   return sv_global_get_interned_ic(js, str, func, ip);
 }
 
+static inline ant_value_t jit_eval_env(
+  ant_t *js, const sv_closure_t *closure
+) {
+  ant_value_t env = sv_closure_eval_env(closure);
+  return is_object_type(env) ? env : js->global;
+}
+
+ant_value_t jit_helper_get_eval_global(
+  ant_t *js, sv_closure_t *closure,
+  const char *str, uint32_t len,
+  sv_func_t *func, int32_t bc_off,
+  int allow_missing
+) {
+  uint8_t *ip = NULL;
+  if (func && bc_off >= 0 && bc_off < func->code_len) ip = func->code + bc_off;
+
+  bool found = false;
+  ant_value_t val = sv_eval_global_get_interned_ic(
+    js, jit_eval_env(js, closure), str, len, func, ip, &found);
+  if (!found && !allow_missing)
+    return js_mkerr_typed(
+      js, JS_ERR_REFERENCE, "'%.*s' is not defined", (int)len, str);
+  return val;
+}
+
+ant_value_t jit_helper_put_eval_global(
+  ant_t *js, sv_closure_t *closure, ant_value_t val,
+  const char *str, uint32_t len, int is_strict
+) {
+  return sv_env_put(
+    js, jit_eval_env(js, closure), str, len, val, is_strict != 0);
+}
+
+ant_value_t jit_helper_delete_eval_var(
+  ant_t *js, sv_closure_t *closure,
+  const char *str, uint32_t len
+) {
+  return sv_env_delete(js, jit_eval_env(js, closure), str, len);
+}
+
 ant_value_t jit_helper_special_obj(sv_vm_t *vm, ant_t *js, uint32_t which) {
   if (which == 1) return sv_vm_get_new_target(vm, js);
   if (which == 2) return sv_vm_get_super_val(vm);
