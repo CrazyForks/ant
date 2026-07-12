@@ -14,6 +14,16 @@ if ('_readyPromise' in app) {
 if (typeof app.resourcesPath !== 'string' || !app.resourcesPath) {
   throw new Error('app.resourcesPath is unavailable');
 }
+for (const name of ['home', 'temp', 'appData', 'userData', 'desktop', 'documents', 'downloads', 'resources', 'exe']) {
+  const value = app.getPath(name);
+  if (typeof value !== 'string' || !value) throw new Error(`app.getPath('${name}') is unavailable`);
+}
+try {
+  app.getPath('missing');
+  throw new Error('app.getPath accepted an unknown path');
+} catch (error) {
+  if (!String(error).includes('unknown app path')) throw error;
+}
 for (const name of ['ant', 'desktop', 'chrome']) {
   if (typeof versions[name] !== 'string' || !versions[name]) {
     throw new Error(`versions.${name} is unavailable`);

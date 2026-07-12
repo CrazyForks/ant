@@ -1,9 +1,0 @@
-{
-  "main": "main.js",
-  "version": "0.0.1",
-  "renderer": "renderer",
-  "name": "Ant Desktop Example",
-  "identifier": "org.antjs.example",
-  "output": "../../build/Ant Desktop Example.app",
-  "extraResources": [{ "from": "assets", "to": "assets" }]
-}

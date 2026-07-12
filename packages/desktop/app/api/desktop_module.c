@@ -37,6 +37,7 @@ ant_value_t DesktopLibrary(ant_t *js) {
 
   js_set(js, app, "ready", js_mkfun(DesktopAppReady));
   js_set(js, app, "quit", js_mkfun(DesktopAppQuit));
+  js_set(js, app, "getPath", js_mkfun(DesktopAppGetPath));
   js_set(js, app, "setApplicationMenu", js_mkfun(DesktopSetApplicationMenu));
   js_set(js, app, "getApplicationMenu", js_mkfun(DesktopGetApplicationMenu));
   const char *resources_path = ant_desktop_platform_resources_path();
@@ -90,6 +91,7 @@ ant_value_t DesktopLibrary(ant_t *js) {
   js_set(js, state->browser_window_proto, "loadFile", js_mkfun(DesktopBrowserWindowLoadFile));
   js_set(js, state->browser_window_proto, "close", js_mkfun(DesktopBrowserWindowClose));
   js_set(js, state->browser_window_proto, "on", js_mkfun(DesktopBrowserWindowOn));
+  js_set(js, state->browser_window_proto, "getBounds", js_mkfun(DesktopBrowserWindowGetBounds));
   js_set(js, state->browser_window_proto, "show", js_mkfun(DesktopBrowserWindowShow));
   js_set(js, state->browser_window_proto, "hide", js_mkfun(DesktopBrowserWindowHide));
   js_set(js, state->browser_window_proto, "minimize", js_mkfun(DesktopBrowserWindowMinimize));

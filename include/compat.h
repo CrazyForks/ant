@@ -131,6 +131,7 @@ static inline int compat_unsetenv(const char *name) {
 #define dirname compat_dirname
 #define setenv compat_setenv
 #define unsetenv compat_unsetenv
+#define lstat stat
 
 typedef unsigned int useconds_t;
 typedef unsigned int uid_t;

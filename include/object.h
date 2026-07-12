@@ -84,6 +84,7 @@ typedef struct {
   ant_proxy_state_t *proxy_state;
   const ant_exotic_ops_t *exotic_ops;
   ant_value_t (*exotic_keys)(ant_t *, ant_value_t);
+  sv_eval_env_state_t *eval_env_state;
   
   uint8_t native_count;
   uint8_t native_cap;
@@ -104,6 +105,7 @@ typedef union ant_object_flags {
     uint8_t sealed: 1;
     uint8_t is_exotic: 1;
     uint8_t is_constructor: 1;
+    uint8_t is_callable: 1;
     uint8_t fast_array: 1;
     uint8_t may_have_holes: 1;
     uint8_t may_have_dense_elements: 1;
@@ -260,6 +262,11 @@ static inline ant_object_sidecar_t *ant_object_ensure_sidecar(ant_object_t *obj)
 static inline ant_proxy_state_t *ant_object_proxy_state(const ant_object_t *obj) {
   ant_object_sidecar_t *sidecar = ant_object_sidecar(obj);
   return sidecar ? sidecar->proxy_state : NULL;
+}
+
+static inline sv_eval_env_state_t *ant_object_eval_env_state(const ant_object_t *obj) {
+  ant_object_sidecar_t *sidecar = ant_object_sidecar(obj);
+  return sidecar ? sidecar->eval_env_state : NULL;
 }
 
 static inline ant_private_table_t *ant_object_private_table(const ant_object_t *obj) {

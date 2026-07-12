@@ -85,6 +85,7 @@ ant_value_t jit_helper_str_append_local(
     .lp = locals,
     .argc = argc,
     .arguments_obj = js_mkundef(),
+    .eval_env = js_mkundef(),
   };
 
   return sv_string_builder_append_slot(vm, js, &frame, func, slot_idx, rhs);
@@ -105,6 +106,7 @@ ant_value_t jit_helper_str_append_local_snapshot(
     .lp = locals,
     .argc = argc,
     .arguments_obj = js_mkundef(),
+    .eval_env = js_mkundef(),
   };
 
   return sv_string_builder_append_snapshot_slot(vm, js, &frame, func, slot_idx, lhs, rhs);
@@ -124,6 +126,7 @@ ant_value_t jit_helper_str_flush_local(
     .lp = locals,
     .argc = argc,
     .arguments_obj = js_mkundef(),
+    .eval_env = js_mkundef(),
   };
 
   ant_value_t flush = sv_string_builder_flush_slot(vm, js, &frame, slot_idx);
@@ -224,6 +227,46 @@ ant_value_t jit_helper_get_global(
     return js_mkerr_typed(js, JS_ERR_REFERENCE, "'%s' is not defined", str);
   }
   return out;
+}
+
+static inline ant_value_t jit_eval_env(
+  ant_t *js, const sv_closure_t *closure
+) {
+  ant_value_t env = sv_closure_eval_env(closure);
+  return is_object_type(env) ? env : js->global;
+}
+
+ant_value_t jit_helper_get_eval_global(
+  ant_t *js, sv_closure_t *closure,
+  const char *str, uint32_t len,
+  sv_func_t *func, int32_t bc_off,
+  int allow_missing
+) {
+  uint8_t *ip = NULL;
+  if (func && bc_off >= 0 && bc_off < func->code_len) ip = func->code + bc_off;
+
+  bool found = false;
+  ant_value_t val = sv_eval_global_get_interned_ic(
+    js, jit_eval_env(js, closure), str, len, func, ip, &found);
+  if (!found && !allow_missing)
+    return js_mkerr_typed(
+      js, JS_ERR_REFERENCE, "'%.*s' is not defined", (int)len, str);
+  return val;
+}
+
+ant_value_t jit_helper_put_eval_global(
+  ant_t *js, sv_closure_t *closure, ant_value_t val,
+  const char *str, uint32_t len, int is_strict
+) {
+  return sv_env_put(
+    js, jit_eval_env(js, closure), str, len, val, is_strict != 0);
+}
+
+ant_value_t jit_helper_delete_eval_var(
+  ant_t *js, sv_closure_t *closure,
+  const char *str, uint32_t len
+) {
+  return sv_env_delete(js, jit_eval_env(js, closure), str, len);
 }
 
 ant_value_t jit_helper_special_obj(sv_vm_t *vm, ant_t *js, uint32_t which) {
@@ -609,7 +652,7 @@ ant_value_t jit_helper_call_string_builtin(
 }
 
 ant_value_t jit_helper_typeof(sv_vm_t *vm, ant_t *js, ant_value_t v) {
-  const char *ts = typestr(vtype(v));
+  const char *ts = is_callable(v) ? "function" : typestr(vtype(v));
   return js_mkstr(js, ts, strlen(ts));
 }
 
@@ -798,8 +841,14 @@ ant_value_t jit_helper_closure(
   );
   
   sv_init_closure_function_object(js, closure, func_val, module_ctx);
+  ant_value_t eval_env = sv_closure_eval_env(parent_closure);
+  
+  if (is_object_type(eval_env) && is_object_type(closure->func_obj)) {
+    js_set_slot_wb(js, closure->func_obj, SLOT_EVAL_ENV, eval_env);
+    closure->call_flags |= SV_CALL_HAS_EVAL_ENV;
+  }
+  
   if (name) js_set_function_name(js, func_val, name, name_len);
-
   return func_val;
 }
 

@@ -427,14 +427,6 @@ static int add_atom(sv_compiler_t *c, const char *str, uint32_t len) {
   return c->atom_count++;
 }
 
-// TODO: make it a X-macro in opcode.h
-static inline bool sv_op_has_ic_slot(sv_op_t op) {
-  return op == OP_GET_GLOBAL || op == OP_GET_GLOBAL_UNDEF ||
-         op == OP_GET_FIELD || op == OP_GET_FIELD2 ||
-         op == OP_GET_FIELD_OPT || op == OP_PUT_FIELD ||
-         op == OP_IMPORT_NAMED || op == OP_DEFINE_FIELD;
-}
-
 static uint16_t alloc_ic_idx(sv_compiler_t *c) {
   if (!c || c->ic_count >= (int)UINT16_MAX) return UINT16_MAX;
   return (uint16_t)c->ic_count++;
@@ -563,6 +555,12 @@ static inline bool is_completion_top_level(const sv_compiler_t *c) {
 
 static inline bool has_completion_accumulator(const sv_compiler_t *c) {
   return c && c->completion_local >= 0;
+}
+
+static inline sv_op_t env_resolution_op(
+  const sv_compiler_t *c, sv_op_t global_op, sv_op_t eval_op
+) {
+  return c && c->inherits_eval_env ? eval_op : global_op;
 }
 
 static inline bool has_module_import_binding(const sv_compiler_t *c) {
@@ -731,7 +729,6 @@ static const char *typeof_name_for_type(uint8_t type) {
     case SV_TI_BOOL:  return "boolean";
     case SV_TI_UNDEF: return "undefined";
     case SV_TI_ARR:
-    case SV_TI_OBJ:
     case SV_TI_NULL:  return "object";
     default:          return NULL;
   }
@@ -891,6 +888,294 @@ static int resolve_upvalue(sv_compiler_t *c, const char *name, uint32_t len) {
   }
 
   return -1;
+}
+
+typedef struct {
+  uint32_t *slots;
+  uint32_t capacity;
+} sv_eval_binding_set_t;
+
+static bool eval_binding_set_init(
+  sv_compiler_t *c, sv_eval_binding_set_t *set, size_t candidate_count
+) {
+  memset(set, 0, sizeof(*set));
+  if (candidate_count == 0) return true;
+
+  if (candidate_count > UINT32_MAX / 4) {
+    js_mkerr(c->js, "too many bindings while capturing direct eval scope");
+    return false;
+  }
+
+  uint32_t capacity = 16;
+  uint32_t needed = (uint32_t)candidate_count * 2;
+
+  while (capacity < needed) {
+    if (capacity > UINT32_MAX / 2) {
+      js_mkerr(c->js, "too many bindings while capturing direct eval scope");
+      return false;
+    }
+    capacity *= 2;
+  }
+
+  if ((size_t)capacity > SIZE_MAX / sizeof(uint32_t)) {
+    js_mkerr(c->js, "too many bindings while capturing direct eval scope");
+    return false;
+  }
+
+  uint32_t *slots = malloc((size_t)capacity * sizeof(uint32_t));
+  if (!slots) {
+    js_mkerr(c->js, "out of memory while indexing direct eval scope");
+    return false;
+  }
+
+  memset(slots, 0xff, (size_t)capacity * sizeof(uint32_t));
+  set->slots = slots;
+  set->capacity = capacity;
+
+  return true;
+}
+
+static uint32_t *eval_binding_set_slot(
+  sv_eval_binding_set_t *set, const sv_eval_scope_builder_t *scope,
+  const char *name, uint32_t len
+) {
+  if (!set->slots || set->capacity == 0) return NULL;
+  uint32_t slot = sv_compile_ctx_hash_local_name(name, len) & (set->capacity - 1);
+
+  for (;;) {
+    uint32_t binding_index = set->slots[slot];
+    if (binding_index == UINT32_MAX) return &set->slots[slot];
+    const sv_runtime_binding_t *binding = &scope->bindings[binding_index];
+    if (binding->len == len && memcmp(binding->name, name, len) == 0)
+      return &set->slots[slot];
+    slot = (slot + 1) & (set->capacity - 1);
+  }
+}
+
+static bool eval_scope_builder_has_binding(
+  sv_eval_binding_set_t *set, const sv_eval_scope_builder_t *scope,
+  const char *name, uint32_t len
+) {
+  uint32_t *slot = eval_binding_set_slot(set, scope, name, len);
+  return slot && *slot != UINT32_MAX;
+}
+
+static bool eval_scope_builder_add_binding(
+  sv_compiler_t *c, sv_eval_scope_builder_t *scope,
+  sv_eval_binding_set_t *set,
+  const char *name, uint32_t len,
+  uint8_t kind, uint16_t index, bool is_const
+) {
+  if (!name || len == 0 || name[0] == '\x01') return true;
+  uint32_t *lookup_slot = eval_binding_set_slot(set, scope, name, len);
+  if (!lookup_slot || *lookup_slot != UINT32_MAX) return true;
+
+  if (scope->count >= scope->capacity) {
+    uint32_t capacity = scope->capacity ? scope->capacity * 2 : 8;
+    sv_runtime_binding_t *bindings = realloc(
+      scope->bindings,
+      (size_t)capacity * sizeof(sv_runtime_binding_t));
+    if (!bindings) {
+      js_mkerr(c->js, "out of memory while capturing direct eval scope");
+      return false;
+    }
+    scope->bindings = bindings;
+    scope->capacity = capacity;
+  }
+  uint32_t binding_index = scope->count++;
+  scope->bindings[binding_index] = (sv_runtime_binding_t){
+    name, len, index, kind, is_const
+  };
+  *lookup_slot = binding_index;
+  return true;
+}
+
+static inline bool eval_local_is_visible(const sv_local_t *local) {
+  return local && local->name && local->name_len > 0 &&
+    local->name[0] != '\x01';
+}
+
+static bool eval_scope_builder_capture_local(
+  sv_compiler_t *c, sv_eval_scope_builder_t *scope,
+  sv_eval_binding_set_t *set, sv_local_t *local, int local_index
+) {
+  if (!eval_local_is_visible(local) || eval_scope_builder_has_binding(
+        set, scope, local->name, local->name_len)) return true;
+
+  uint8_t kind = local->depth == -1
+    ? SV_EVAL_BIND_PARAM : SV_EVAL_BIND_LOCAL;
+  uint16_t index = kind == SV_EVAL_BIND_PARAM
+    ? (uint16_t)local_index
+    : (uint16_t)(local_index - c->param_locals);
+
+  if (!eval_scope_builder_add_binding(
+        c, scope, set, local->name, local->name_len,
+        kind, index, local->is_const)) return false;
+  local->captured = true;
+  return true;
+}
+
+static bool eval_scope_builder_capture_upvalue(
+  sv_compiler_t *c, sv_eval_scope_builder_t *scope,
+  sv_eval_binding_set_t *set, sv_local_t *local
+) {
+  if (!eval_local_is_visible(local) || eval_scope_builder_has_binding(
+        set, scope, local->name, local->name_len)) return true;
+
+  int upvalue = resolve_upvalue(c, local->name, local->name_len);
+  if (upvalue < 0) return true;
+  return eval_scope_builder_add_binding(
+    c, scope, set, local->name, local->name_len,
+    SV_EVAL_BIND_UPVALUE, (uint16_t)upvalue,
+    c->upval_descs[upvalue].is_const);
+}
+
+static bool eval_scope_builder_capture_locals(
+  sv_compiler_t *c, sv_eval_scope_builder_t *scope,
+  sv_eval_binding_set_t *set
+) {
+  for (int i = c->local_count - 1; i >= 0; i--)
+    if (!eval_scope_builder_capture_local(
+          c, scope, set, &c->locals[i], i)) return false;
+  return true;
+}
+
+static bool eval_scope_builder_capture_upvalues(
+  sv_compiler_t *c, sv_eval_scope_builder_t *scope,
+  sv_eval_binding_set_t *set, sv_compiler_t *enclosing
+) {
+  for (int i = enclosing->local_count - 1; i >= 0; i--)
+    if (!eval_scope_builder_capture_upvalue(
+          c, scope, set, &enclosing->locals[i])) return false;
+  return true;
+}
+
+static bool capture_dynamic_eval_scope(
+  sv_compiler_t *c, uint32_t *scope_index_out
+) {
+  if (c->eval_scope_count >= c->eval_scope_cap) {
+    int capacity = c->eval_scope_cap ? c->eval_scope_cap * 2 : 4;
+    sv_eval_scope_builder_t *scopes = realloc(
+      c->eval_scopes,
+      (size_t)capacity * sizeof(sv_eval_scope_builder_t));
+    if (!scopes) {
+      js_mkerr(c->js, "out of memory while growing direct eval scopes");
+      return false;
+    }
+    c->eval_scopes = scopes;
+    c->eval_scope_cap = capacity;
+  }
+
+  uint32_t scope_index = (uint32_t)c->eval_scope_count++;
+  sv_eval_scope_builder_t *scope = &c->eval_scopes[scope_index];
+  memset(scope, 0, sizeof(*scope));
+
+  size_t candidate_count = (size_t)c->local_count;
+  for (sv_compiler_t *enc = c->enclosing; enc; enc = enc->enclosing) {
+    if ((size_t)enc->local_count > SIZE_MAX - candidate_count) {
+      js_mkerr(c->js, "too many bindings while capturing direct eval scope");
+      return false;
+    }
+    candidate_count += (size_t)enc->local_count;
+  }
+
+  sv_eval_binding_set_t binding_set;
+  if (!eval_binding_set_init(c, &binding_set, candidate_count)) return false;
+
+  if (!eval_scope_builder_capture_locals(
+        c, scope, &binding_set)) goto capture_failed;
+
+  for (sv_compiler_t *enc = c->enclosing; enc; enc = enc->enclosing)
+    if (!eval_scope_builder_capture_upvalues(
+          c, scope, &binding_set, enc)) goto capture_failed;
+  free(binding_set.slots);
+  *scope_index_out = scope_index;
+  return true;
+
+capture_failed:
+  free(binding_set.slots);
+  return false;
+}
+
+static void sv_func_finalize_type_data(
+  sv_func_t *func, const sv_compiler_t *comp, int local_type_count
+) {
+  ANT_ASSERT(func != NULL, "function metadata requires a function");
+  ANT_ASSERT(comp != NULL, "function metadata requires a compiler context");
+  ANT_ASSERT(local_type_count >= 0, "function local type count cannot be negative");
+  ANT_ASSERT(!func->has_dynamic_eval, "function metadata cannot be initialized twice");
+  
+  ANT_ASSERT(
+    func->type_data.local_types == NULL,
+    "function local types cannot be replaced"
+  );
+
+  func->local_type_count = local_type_count;
+  if (comp->eval_scope_count > 0) {
+    size_t metadata_size = offsetof(sv_func_metadata_t, local_types) +
+      (size_t)local_type_count * sizeof(sv_type_info_t);
+    sv_func_metadata_t *metadata = code_arena_bump(metadata_size);
+    ANT_ASSERT(metadata != NULL, "failed to allocate function metadata");
+    ANT_ASSERT(
+      ((uintptr_t)metadata % _Alignof(sv_func_metadata_t)) == 0,
+      "code arena returned misaligned function metadata"
+    );
+    memset(metadata, 0, metadata_size);
+    sv_eval_scope_t *eval_scopes = code_arena_bump(
+      (size_t)comp->eval_scope_count * sizeof(sv_eval_scope_t));
+    ANT_ASSERT(eval_scopes != NULL, "failed to allocate eval scopes");
+    metadata->eval_scopes = eval_scopes;
+    metadata->eval_scope_count = (uint32_t)comp->eval_scope_count;
+
+    size_t binding_count = 0;
+    for (int i = 0; i < comp->eval_scope_count; i++)
+      binding_count += comp->eval_scopes[i].count;
+
+    sv_runtime_binding_t *bindings = binding_count > 0
+      ? code_arena_bump(binding_count * sizeof(sv_runtime_binding_t))
+      : NULL;
+    ANT_ASSERT(
+      binding_count == 0 || bindings != NULL,
+      "failed to allocate eval bindings"
+    );
+
+    size_t binding_offset = 0;
+    for (int i = 0; i < comp->eval_scope_count; i++) {
+      const sv_eval_scope_builder_t *src = &comp->eval_scopes[i];
+      sv_eval_scope_t *dst = &metadata->eval_scopes[i];
+      dst->count = src->count;
+      dst->bindings = src->count > 0
+        ? bindings + binding_offset : NULL;
+      if (src->count > 0) {
+        memcpy(bindings + binding_offset, src->bindings,
+          (size_t)src->count * sizeof(sv_runtime_binding_t));
+        binding_offset += src->count;
+      }
+    }
+
+    if (local_type_count > 0 && comp->slot_types) {
+      int ncopy = local_type_count < comp->slot_type_cap
+        ? local_type_count : comp->slot_type_cap;
+      memcpy(metadata->local_types, comp->slot_types,
+        (size_t)ncopy * sizeof(sv_type_info_t));
+    }
+    func->type_data.metadata = metadata;
+    func->has_dynamic_eval = true;
+    return;
+  }
+
+  if (local_type_count == 0) return;
+  sv_type_info_t *local_types = code_arena_bump(
+    (size_t)local_type_count * sizeof(sv_type_info_t));
+  ANT_ASSERT(local_types != NULL, "failed to allocate function local types");
+  memset(local_types, 0, (size_t)local_type_count * sizeof(sv_type_info_t));
+  if (comp->slot_types) {
+    int ncopy = local_type_count < comp->slot_type_cap
+      ? local_type_count : comp->slot_type_cap;
+    memcpy(local_types, comp->slot_types,
+      (size_t)ncopy * sizeof(sv_type_info_t));
+  }
+  func->type_data.local_types = local_types;
 }
 
 static int emit_jump(sv_compiler_t *c, sv_op_t op) {
@@ -1133,7 +1418,9 @@ static void emit_get_var(sv_compiler_t *c, const char *name, uint32_t len) {
   }
   
   if (c->with_depth > 0) emit_with_get(c, name, len, WITH_FB_GLOBAL, 0);
-  else emit_atom_op(c, OP_GET_GLOBAL, name, len);
+  else emit_atom_op(
+    c, env_resolution_op(c, OP_GET_GLOBAL, OP_GET_EVAL_GLOBAL),
+    name, len);
 }
 
 static void emit_export_dups(sv_compiler_t *c, const sv_export_name_t *exports) {
@@ -1226,8 +1513,12 @@ static void emit_set_var(sv_compiler_t *c, const char *name, uint32_t len, bool 
   } else {
     if (keep) {
       emit_op(c, OP_DUP);
-      emit_atom_op(c, OP_PUT_GLOBAL, name, len);
-    } else emit_atom_op(c, OP_PUT_GLOBAL, name, len);
+      emit_atom_op(
+        c, env_resolution_op(c, OP_PUT_GLOBAL, OP_PUT_EVAL_GLOBAL),
+        name, len);
+    } else emit_atom_op(
+      c, env_resolution_op(c, OP_PUT_GLOBAL, OP_PUT_EVAL_GLOBAL),
+      name, len);
   }
 }
 
@@ -1718,7 +2009,7 @@ static void hoist_lexical_decls(sv_compiler_t *c, sv_ast_list_t *stmts) {
 }
 
 static void hoist_one_func(sv_compiler_t *c, sv_ast_t *node, bool annex_b_update_var) {
-  sv_func_t *fn = compile_function_body(c, node, c->mode);
+  sv_func_t *fn = compile_function_body(c, node, SV_COMPILE_SCRIPT);
   if (!fn) return;
   int idx = add_constant(c, mkval(T_NTARG, (uintptr_t)fn));
   emit_op(c, OP_CLOSURE);
@@ -2625,7 +2916,10 @@ void compile_typeof(sv_compiler_t *c, sv_ast_t *node) {
           emit(c, 0);
         }
       } else if (c->with_depth > 0) emit_with_get(c, arg->str, arg->len, WITH_FB_GLOBAL_UNDEF, 0);
-      else emit_atom_op(c, OP_GET_GLOBAL_UNDEF, arg->str, arg->len);
+      else emit_atom_op(
+        c, env_resolution_op(
+          c, OP_GET_GLOBAL_UNDEF, OP_GET_EVAL_GLOBAL_UNDEF),
+        arg->str, arg->len);
     }
   } else compile_expr(c, arg);
   emit_op(c, OP_TYPEOF);
@@ -2679,7 +2973,11 @@ void compile_delete(sv_compiler_t *c, sv_ast_t *node) {
     compile_expr(c, arg->right);
     emit_op(c, OP_DELETE);
   } else if (arg->type == N_IDENT) {
-    emit_atom_op(c, c->with_depth > 0 ? OP_WITH_DEL_VAR : OP_DELETE_VAR, arg->str, arg->len);
+    emit_atom_op(
+      c, c->with_depth > 0
+        ? OP_WITH_DEL_VAR
+        : env_resolution_op(c, OP_DELETE_VAR, OP_DELETE_EVAL_VAR),
+      arg->str, arg->len);
   } else {
     compile_expr(c, arg);
     emit_op(c, OP_POP);
@@ -2759,6 +3057,35 @@ static inline bool sv_call_kind_has_receiver(sv_call_kind_t kind) {
   return kind == SV_CALL_METHOD || kind == SV_CALL_SUPER;
 }
 
+static bool compile_with_identifier_call(
+  sv_compiler_t *c, const char *name, uint32_t len
+) {
+  if (c->with_depth <= 0 || is_ident_str(name, len, "super", 5)) return false;
+
+  uint8_t kind = WITH_FB_GLOBAL;
+  uint16_t idx = 0;
+  int local = resolve_local(c, name, len);
+  if (local != -1) {
+    kind = c->locals[local].depth == -1 ? WITH_FB_ARG : WITH_FB_LOCAL;
+    idx = kind == WITH_FB_ARG
+      ? (uint16_t)local
+      : (uint16_t)(local - c->param_locals);
+  } else {
+    int upval = resolve_upvalue(c, name, len);
+    if (upval != -1) {
+      kind = WITH_FB_UPVAL;
+      idx = (uint16_t)upval;
+    }
+  }
+
+  int atom = add_atom(c, name, len);
+  emit_op(c, OP_WITH_GET_CALL);
+  emit_u32(c, (uint32_t)atom);
+  emit(c, kind);
+  emit_u16(c, idx);
+  return true;
+}
+
 static void compile_receiver_property_get(sv_compiler_t *c, sv_ast_t *node) {
   emit_op(c, OP_DUP);
   if (node->flags & 1) {
@@ -2771,6 +3098,22 @@ static void compile_receiver_property_get(sv_compiler_t *c, sv_ast_t *node) {
     emit_srcpos(c, node->right);
     emit_atom_op(c, OP_GET_FIELD, node->right->str, node->right->len);
   }
+}
+
+static int emit_optional_chain_short_circuit(sv_compiler_t *c) {
+  int present = emit_jump(c, OP_JMP_NOT_NULLISH);
+  emit_op(c, OP_POP);
+  emit_op(c, OP_UNDEF);
+  int end = emit_jump(c, OP_JMP);
+  patch_jump(c, present);
+  return end;
+}
+
+static bool member_call_needs_optional_base_guard(const sv_ast_t *member) {
+  if (!member || !member->right) return false;
+  if (member->type == N_OPTIONAL) return true;
+  return member->type == N_MEMBER &&
+    sv_node_has_optional_base(member->left);
 }
 
 static void compile_call_emit_invoke(
@@ -2822,6 +3165,11 @@ static sv_call_kind_t compile_call_setup_non_optional(sv_compiler_t *c, sv_ast_t
     compile_receiver_property_get(c, callee);
     return SV_CALL_METHOD;
   }
+
+  if (
+    callee->type == N_IDENT &&
+    compile_with_identifier_call(c, callee->str, callee->len)
+  ) return SV_CALL_METHOD;
 
   compile_expr(c, callee);
   return SV_CALL_DIRECT;
@@ -2964,6 +3312,7 @@ static bool compile_regexp_exec_truthy_intrinsic(
     
   sv_ast_t *callee = node->left;
   if (!callee || callee->type != N_MEMBER) return false;
+  if (member_call_needs_optional_base_guard(callee)) return false;
   if ((callee->flags & 1) || !callee->right || !callee->right->str) return false;
   if (is_ident_name(callee->left, "super")) return false;
   if (!is_ident_str(callee->right->str, callee->right->len, "exec", 4))
@@ -2999,41 +3348,36 @@ static void compile_optional_call_after_setup(
   patch_jump(c, j_end);
 }
 
+static void compile_guarded_member_call(
+  sv_compiler_t *c, sv_ast_t *call_node,
+  sv_ast_t *member, bool has_spread, bool optional_callee
+) {
+  compile_expr(c, member->left);
+  int end = emit_optional_chain_short_circuit(c);
+  compile_receiver_property_get(c, member);
+  if (optional_callee)
+    compile_optional_call_after_setup(
+      c, call_node, SV_CALL_METHOD, has_spread);
+  else
+    compile_call_emit_invoke(
+      c, call_node, SV_CALL_METHOD, has_spread);
+  patch_jump(c, end);
+}
+
 static void compile_call_optional(
   sv_compiler_t *c, sv_ast_t *node,
   sv_ast_t *opt_callee, bool has_spread
 ) {
   if (opt_callee->right) {
-    compile_expr(c, opt_callee->left);
-    emit_op(c, OP_DUP);
-    emit_op(c, OP_IS_UNDEF_OR_NULL);
-    int j_have_obj = emit_jump(c, OP_JMP_FALSE);
-    emit_op(c, OP_POP);
-    emit_op(c, OP_UNDEF);
-    int j_end = emit_jump(c, OP_JMP);
-    patch_jump(c, j_have_obj);
-
-    compile_receiver_property_get(c, opt_callee);
-    compile_call_emit_invoke(c, node, SV_CALL_METHOD, has_spread);
-    patch_jump(c, j_end);
-    
+    compile_guarded_member_call(
+      c, node, opt_callee, has_spread, false);
     return;
   }
 
   sv_ast_t *target = opt_callee->left;
-  if (target && target->type == N_OPTIONAL && target->right) {
-    compile_expr(c, target->left);
-    emit_op(c, OP_DUP);
-    emit_op(c, OP_IS_UNDEF_OR_NULL);
-    int j_have_obj = emit_jump(c, OP_JMP_FALSE);
-    emit_op(c, OP_POP);
-    emit_op(c, OP_UNDEF);
-    int j_end = emit_jump(c, OP_JMP);
-    patch_jump(c, j_have_obj);
-
-    compile_receiver_property_get(c, target);
-    compile_optional_call_after_setup(c, node, SV_CALL_METHOD, has_spread);
-    patch_jump(c, j_end);
+  if (member_call_needs_optional_base_guard(target)) {
+    compile_guarded_member_call(
+      c, node, target, has_spread, true);
     return;
   }
 
@@ -3321,12 +3665,74 @@ static bool compile_inline_literal_eval(sv_compiler_t *c, sv_ast_t *node) {
   return true;
 }
 
+static bool eval_arg_is_definitely_non_string(const sv_ast_t *node) {
+  if (!node) return false;
+  switch (node->type) {
+    case N_NUMBER:
+    case N_BOOL:
+    case N_NULL:
+    case N_UNDEF:
+    case N_OBJECT:
+    case N_ARRAY:
+    case N_FUNC:
+    case N_CLASS:
+    case N_REGEXP:
+      return true;
+    default:
+      return false;
+  }
+}
+
+static bool compile_direct_eval_call(
+  sv_compiler_t *c, sv_ast_t *node, bool has_spread
+) {
+  sv_ast_t *callee = node->left;
+  if (has_spread || !is_ident_name(callee, "eval") ||
+      resolve_local(c, "eval", 4) != -1 ||
+      resolve_upvalue(c, "eval", 4) != -1) return false;
+
+  if (node->args.count == 0) {
+    emit_op(c, OP_UNDEF);
+    return true;
+  }
+
+  if (compile_inline_literal_eval(c, node)) return true;
+
+  if (eval_arg_is_definitely_non_string(node->args.items[0])) {
+    compile_expr(c, node->args.items[0]);
+    for (int i = 1; i < node->args.count; i++) {
+      compile_expr(c, node->args.items[i]);
+      emit_op(c, OP_POP);
+    }
+    return true;
+  }
+
+  uint32_t eval_scope;
+  if (!capture_dynamic_eval_scope(c, &eval_scope)) return true;
+
+  compile_expr(c, node->args.items[0]);
+  for (int i = 1; i < node->args.count; i++) {
+    compile_expr(c, node->args.items[i]);
+    emit_op(c, OP_POP);
+  }
+
+  emit_op(c, OP_EVAL);
+  emit_u32(c, eval_scope);
+  return true;
+}
+
 void compile_call(sv_compiler_t *c, sv_ast_t *node) {
   sv_ast_t *callee = node->left;
   bool has_spread = call_has_spread_arg(node);
 
   if (callee->type == N_OPTIONAL) {
     compile_call_optional(c, node, callee, has_spread);
+    return;
+  }
+
+  if (member_call_needs_optional_base_guard(callee)) {
+    compile_guarded_member_call(
+      c, node, callee, has_spread, false);
     return;
   }
 
@@ -3369,36 +3775,7 @@ void compile_call(sv_compiler_t *c, sv_ast_t *node) {
     node->args.items[1] = arrow;
   }
 
-  if (!has_spread && is_ident_name(callee, "eval")) {
-    if (compile_inline_literal_eval(c, node)) return;
-
-    if (node->args.count > 0)
-      compile_expr(c, node->args.items[0]);
-    else
-      emit_op(c, OP_UNDEF);
-    for (int i = 1; i < node->args.count; i++) {
-      compile_expr(c, node->args.items[i]);
-      emit_op(c, OP_POP);
-    }
-    
-    emit_op(c, OP_EVAL);
-    emit_u32(c, 0);
-    
-    return;
-  }
-
-  if (callee->type == N_MEMBER && sv_node_has_optional_base(callee->left)) {
-    compile_expr(c, callee->left);
-    int ok_jump  = emit_jump(c, OP_JMP_NOT_NULLISH);
-    emit_op(c, OP_POP);
-    emit_op(c, OP_UNDEF);
-    int end_jump = emit_jump(c, OP_JMP);
-    patch_jump(c, ok_jump);
-    compile_receiver_property_get(c, callee);
-    compile_call_emit_invoke(c, node, SV_CALL_METHOD, has_spread);
-    patch_jump(c, end_jump);
-    return;
-  }
+  if (compile_direct_eval_call(c, node, has_spread)) return;
 
   sv_call_kind_t kind = compile_call_setup_non_optional(c, callee);
   compile_call_emit_invoke(c, node, kind, has_spread);
@@ -3817,6 +4194,7 @@ static bool is_tail_callable(sv_compiler_t *c, sv_ast_t *node) {
   if (call_has_spread_arg(node)) return false;
   
   sv_ast_t *callee = node->left;
+  if (sv_node_has_optional_base(callee)) return false;
   if (
     callee->type == N_IDENT && 
     ((callee->len == 5 && memcmp(callee->str, "super", 5) == 0) ||
@@ -3860,12 +4238,6 @@ static void emit_return_from_stack(sv_compiler_t *c) {
 
 static void compile_tail_call(sv_compiler_t *c, sv_ast_t *node) {
   sv_ast_t *callee = node->left;
-
-  if (callee->type == N_OPTIONAL) {
-    compile_call(c, node);
-    emit_return_from_stack(c);
-    return;
-  }
 
   sv_call_kind_t kind = compile_call_setup_non_optional(c, callee);
   int argc = node->args.count;
@@ -5423,7 +5795,7 @@ static inline int compile_class_precompute_key(sv_compiler_t *c, sv_ast_t *key_e
 
 static int compile_static_child_function(sv_compiler_t *c, sv_ast_t *node, bool returns_expr) {
   sv_compiler_t comp;
-  sv_compile_ctx_init_child(&comp, c, NULL, c->mode);
+  sv_compile_ctx_init_child(&comp, c, NULL, SV_COMPILE_SCRIPT);
   comp.is_strict = true;
 
   static const char sv_name[] = "\x01super";
@@ -5478,15 +5850,7 @@ static int compile_static_child_function(sv_compiler_t *c, sv_ast_t *node, bool 
 
   fn->max_locals = comp.max_local_count;
   fn->max_stack = fn->max_locals + 64;
-  fn->local_type_count = fn->max_locals;
-  if (fn->max_locals > 0) {
-    fn->local_types = code_arena_bump((size_t)fn->max_locals * sizeof(sv_type_info_t));
-    memset(fn->local_types, 0, (size_t)fn->max_locals * sizeof(sv_type_info_t));
-    if (comp.slot_types) {
-      int ncopy = fn->max_locals < comp.slot_type_cap ? fn->max_locals : comp.slot_type_cap;
-      memcpy(fn->local_types, comp.slot_types, (size_t)ncopy * sizeof(sv_type_info_t));
-    }
-  }
+  sv_func_finalize_type_data(fn, &comp, fn->max_locals);
   fn->param_count = 0;
   fn->function_length = 0;
   fn->is_strict = true;
@@ -5657,7 +6021,7 @@ void compile_class(sv_compiler_t *c, sv_ast_t *node) {
   } else if (field_count > 0) {
     c->computed_key_locals = computed_key_locals;
     sv_compiler_t comp;
-    sv_compile_ctx_init_child(&comp, c, NULL, c->mode);
+    sv_compile_ctx_init_child(&comp, c, NULL, SV_COMPILE_SCRIPT);
     comp.is_strict = true;
 
     if (node->left) {
@@ -5707,15 +6071,7 @@ void compile_class(sv_compiler_t *c, sv_ast_t *node) {
     }
     fn->max_locals = comp.max_local_count;
     fn->max_stack = fn->max_locals + 64;
-    fn->local_type_count = fn->max_locals;
-    if (fn->max_locals > 0) {
-      fn->local_types = code_arena_bump((size_t)fn->max_locals * sizeof(sv_type_info_t));
-      memset(fn->local_types, 0, (size_t)fn->max_locals * sizeof(sv_type_info_t));
-      if (comp.slot_types) {
-        int ncopy = fn->max_locals < comp.slot_type_cap ? fn->max_locals : comp.slot_type_cap;
-        memcpy(fn->local_types, comp.slot_types, (size_t)ncopy * sizeof(sv_type_info_t));
-      }
-    }
+    sv_func_finalize_type_data(fn, &comp, fn->max_locals);
     
     fn->param_count = (uint16_t)comp.param_count;
     fn->function_length = (uint16_t)comp.param_count;
@@ -6185,15 +6541,7 @@ sv_func_t *compile_function_body(
 
   func->max_locals = max_locals;
   func->max_stack = max_locals + 64;
-  func->local_type_count = max_locals;
-  if (max_locals > 0) {
-    func->local_types = code_arena_bump((size_t)max_locals * sizeof(sv_type_info_t));
-    memset(func->local_types, 0, (size_t)max_locals * sizeof(sv_type_info_t));
-    if (comp.slot_types) {
-      int ncopy = max_locals < comp.slot_type_cap ? max_locals : comp.slot_type_cap;
-      memcpy(func->local_types, comp.slot_types, (size_t)ncopy * sizeof(sv_type_info_t));
-    }
-  }
+  sv_func_finalize_type_data(func, &comp, max_locals);
   
   func->param_count = (uint16_t)comp.param_count;
   func->function_length = function_length_from_params(node);

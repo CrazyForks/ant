@@ -4,7 +4,6 @@
 #include <ant.h>
 #include <ptr.h>
 
-#include "../../ipc/control.h"
 #include "../core/window_state.h"
 
 enum { ANT_DESKTOP_STATE_TAG = 0x41445354u }; // ADST
@@ -33,6 +32,7 @@ static inline void ant_desktop_state_attach(ant_value_t value, ant_desktop_state
 ant_value_t DesktopLibrary(ant_t *js);
 ant_value_t DesktopAppReady(ant_t *, ant_value_t *, int);
 ant_value_t DesktopAppQuit(ant_t *, ant_value_t *, int);
+ant_value_t DesktopAppGetPath(ant_t *, ant_value_t *, int);
 ant_value_t DesktopIpcMainHandle(ant_t *, ant_value_t *, int);
 ant_value_t DesktopIpcMainRemoveHandler(ant_t *, ant_value_t *, int);
 ant_value_t DesktopIpcMainOn(ant_t *, ant_value_t *, int);
@@ -45,6 +45,7 @@ ant_value_t DesktopWebContentsIsDevToolsOpened(ant_t *, ant_value_t *, int);
 ant_value_t DesktopWebContentsReload(ant_t *, ant_value_t *, int);
 ant_value_t DesktopWebContentsSend(ant_t *, ant_value_t *, int);
 ant_value_t DesktopBrowserWindowOn(ant_t *, ant_value_t *, int);
+ant_value_t DesktopBrowserWindowGetBounds(ant_t *, ant_value_t *, int);
 ant_value_t DesktopBrowserWindowClose(ant_t *, ant_value_t *, int);
 ant_value_t DesktopBrowserWindowShow(ant_t *, ant_value_t *, int);
 ant_value_t DesktopBrowserWindowHide(ant_t *, ant_value_t *, int);
@@ -63,8 +64,5 @@ ant_value_t DesktopMenuBuildFromTemplate(ant_t *, ant_value_t *, int);
 ant_value_t DesktopGetApplicationMenu(ant_t *, ant_value_t *, int);
 ant_value_t DesktopSetApplicationMenu(ant_t *, ant_value_t *, int);
 ant_value_t DesktopMenuItemCtor(ant_t *, ant_value_t *, int);
-
-bool SendIpcControl(ant_desktop_window_state_t *window, ant_desktop_control_type_t type, uint64_t request_id,
-                    const char *channel, size_t channel_length, const char *payload, size_t payload_length);
 
 #endif

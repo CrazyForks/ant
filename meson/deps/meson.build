@@ -20,10 +20,15 @@ endif
 boringssl_warning_flag = cc.get_argument_syntax() == 'msvc' ? '/W0' : '-w'
 boringssl_opts.append_compile_args('c', boringssl_warning_flag)
 boringssl_opts.append_compile_args('cpp', boringssl_warning_flag)
+
+boringssl_opts.append_compile_args('c', '-g0')
+boringssl_opts.append_compile_args('cpp', '-g0')
+
 if host_machine.system() == 'windows'
   boringssl_opts.append_compile_args('c', '-DOPENSSL_WINDOWS')
   boringssl_opts.append_compile_args('cpp', '-DOPENSSL_WINDOWS')
 endif
+
 boringssl_opts.set_override_option('warning_level', '0')
 boringssl_opts.set_override_option('optimization', 's')
 
@@ -159,7 +164,11 @@ libffi_dep = subproject('libffi', default_options: [
   'tests=false'
 ]).get_variable('ffi_dep')
 
-cares_dep = dependency('libcares')
+cares_dep = subproject('c-ares', default_options: [
+  'default_library=static',
+  'optimization=s',
+  'warning_level=0',
+]).get_variable('cares_dep')
 
 pcre2_dep = subproject('pcre2', default_options: [
   'optimization=3',

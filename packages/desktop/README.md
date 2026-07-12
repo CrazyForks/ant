@@ -31,7 +31,11 @@ Add an `ant-desktop.json` file at the project root:
 ```json
 {
   "main": "main.js",
-  "renderer": "renderer",
+  "renderer": {
+    "watchDir": "renderer/src",
+    "buildCommand": "npm run build:renderer"
+  },
+  "include": ["*.js", "renderer/dist/**", "assets/*"],
   "name": "My App",
   "identifier": "com.example.my-app",
   "version": "1.0.0",
@@ -62,7 +66,11 @@ const window = new BrowserWindow({
 
 const renderer = path.join(path.dirname(fileURLToPath(import.meta.url)), 'renderer', 'index.html');
 
-await window.loadFile(renderer);
+if (process.env.ANT_DESKTOP_RENDERER_URL) {
+  await window.loadURL(process.env.ANT_DESKTOP_RENDERER_URL);
+} else {
+  await window.loadFile(renderer);
+}
 ```
 
 The renderer uses normal browser JavaScript. Granted IPC channels are available
@@ -93,8 +101,27 @@ Start the application from the directory containing `ant-desktop.json`:
 antx ant-desktop dev
 ```
 
-Renderer changes reload the open page. Changes to the application process
-restart the development app.
+With `renderer.watchDir`, the renderer build runs once before launch. Watched
+changes run it again and reload the open page after it succeeds.
+
+For a Vite development server, replace `watchDir` with a server command and URL:
+
+```json
+{
+  "renderer": {
+    "buildCommand": "vite build",
+    "devServer": {
+      "command": "vite",
+      "url": "http://localhost:5173"
+    }
+  }
+}
+```
+
+Ant starts the command, waits for the URL, and sets
+`ANT_DESKTOP_RENDERER_URL` in the application process. Vite owns renderer HMR;
+Ant continues to restart the application when included application files
+change. `buildCommand` is still run before packaging.
 
 If the package was installed with npm, the equivalent command is:
 
@@ -123,24 +150,38 @@ with `--out`. Run `antx ant-desktop package --help` for all packaging options.
 
 All paths in `ant-desktop.json` are relative to the manifest.
 
-| Field            | Description                                                  |
-| ---------------- | ------------------------------------------------------------ |
-| `main`           | Application-process entry file. Defaults to `index.js`.      |
-| `renderer`       | Renderer directory watched during development.               |
-| `name`           | Application and `.app` display name.                         |
-| `identifier`     | macOS bundle identifier, such as `com.example.my-app`.       |
-| `version`        | Application version written to the bundle metadata.          |
-| `icon`           | macOS `.icns` icon file.                                     |
-| `output`         | Destination `.app` path.                                     |
-| `extraResources` | Files or directories copied outside the application archive. |
+| Field        | Description                                                    |
+| ------------ | -------------------------------------------------------------- |
+| `main`       | Application-process entry file. Defaults to `index.js`.        |
+| `renderer`   | Renderer development and build settings.                       |
+| `name`       | Application and `.app` display name.                           |
+| `identifier` | macOS bundle identifier, such as `com.example.my-app`.         |
+| `version`    | Application version written to the bundle metadata.            |
+| `icon`       | macOS `.icns` icon file.                                       |
+| `output`     | Destination `.app` path.                                       |
+| `include`    | Glob allowlist for the application archive. Defaults to empty. |
 
-Use `extraResources` for assets that need to remain regular files:
+The `renderer` section accepts:
+
+| Field          | Description                                                      |
+| -------------- | ---------------------------------------------------------------- |
+| `watchDir`     | Directory watched in development. Defaults to `renderer`.        |
+| `buildCommand` | Shell command run for watched development and before packaging.  |
+| `devServer`    | Alternative `{ command, url }` development server configuration. |
+
+The build command runs from the directory containing `ant-desktop.json`. Ant
+does not include any project files by default. Every packaged file must match
+an `include` glob:
 
 ```json
 {
-  "extraResources": ["assets/dictionary.bin", { "from": "models", "to": "models" }]
+  "include": ["*.js", "menu/*", "renderer/dist/**", "assets/*"]
 }
 ```
+
+Paths keep their locations relative to `ant-desktop.json`. `*` matches within
+one directory and `**` matches recursively. The configured `main` file must
+match at least one include pattern.
 
 A string uses the source basename as its destination. An object can select a
 resource-relative destination with `to`. Packaged resources are available to
@@ -220,6 +261,14 @@ The `ant:desktop` module exports:
 the current runtime. The desktop-specific entries are also available as
 `process.versions['ant-desktop']` and `process.versions.chrome`.
 
+`app.getPath(name)` returns a native filesystem location. Supported names are
+`home`, `temp`, `appData`, `userData`, `desktop`, `documents`, `downloads`,
+`resources`, and `exe`. `userData` is the application-specific directory under
+Application Support.
+
 `BrowserWindow` supports loading local files and URLs, window visibility and
 state controls, application events, custom title bars, application menus, and
-Chromium developer tools.
+Chromium developer tools. `window.getBounds()` returns the current
+`{ x, y, width, height }`; `move` and `resize` events report geometry changes,
+while `quit` fires before application termination so the final bounds can be
+persisted.

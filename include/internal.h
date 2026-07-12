@@ -372,7 +372,10 @@ static inline bool is_empty_slot(ant_value_t v) {
 
 static inline bool is_callable(ant_value_t v) {
   uint8_t t = vtype(v);
-  return t == T_FUNC || t == T_CFUNC;
+  if (t == T_FUNC || t == T_CFUNC) return true;
+  if (t != T_OBJ) return false;
+  ant_object_t *obj = js_obj_ptr(v);
+  return obj && obj->flags.is_callable;
 }
 
 static inline const ant_cfunc_meta_t *js_as_cfunc_meta(ant_value_t fn_val) {
@@ -520,6 +523,11 @@ bool is_proxy(ant_value_t obj);
 bool is_array_value(ant_value_t value);
 bool strict_eq_values(ant_t *js, ant_value_t l, ant_value_t r);
 bool js_deep_equal(ant_t *js, ant_value_t a, ant_value_t b, bool strict);
+
+ant_value_t js_eval_bytecode_eval_in_env_with_strict(
+  ant_t *js, const char *buf, size_t len,
+  bool inherit_strict, ant_value_t this_val, ant_value_t eval_env
+);
 
 ant_value_t js_execute_compiled_bytecode(ant_t *js, sv_func_t *func);
 ant_value_t js_proxy_apply(ant_t *js, ant_value_t proxy, ant_value_t this_arg, ant_value_t *args, int argc);

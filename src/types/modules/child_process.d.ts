@@ -30,6 +30,8 @@ declare module 'child_process' {
     cwd?: string;
     shell?: boolean;
     detached?: boolean;
+    env?: Record<string, string>;
+    stdio?: 'pipe' | 'inherit' | 'ignore' | Array<'pipe' | 'inherit' | 'ignore'>;
   }
 
   interface ExecOptions {
@@ -43,6 +45,10 @@ declare module 'child_process' {
 
   interface SpawnSyncOptions {
     input?: string;
+    cwd?: string;
+    shell?: boolean;
+    env?: Record<string, string>;
+    stdio?: 'pipe' | 'inherit' | 'ignore' | Array<'pipe' | 'inherit' | 'ignore'>;
   }
 
   interface ForkOptions {
@@ -50,6 +56,7 @@ declare module 'child_process' {
   }
 
   function spawn(command: string, args?: string[], options?: SpawnOptions): ChildProcess & Promise<SpawnResult>;
+  function spawn(command: string, options?: SpawnOptions): ChildProcess & Promise<SpawnResult>;
   function exec(command: string, options?: ExecOptions): Promise<SpawnResult>;
   function execFile(file: string, args?: string[], options?: ExecOptions): ChildProcess;
   function execFile(
@@ -60,6 +67,7 @@ declare module 'child_process' {
   ): ChildProcess;
   function execSync(command: string): string;
   function spawnSync(command: string, args?: string[], options?: SpawnSyncOptions): SpawnResult;
+  function spawnSync(command: string, options?: SpawnSyncOptions): SpawnResult;
   function fork(modulePath: string, options?: ForkOptions): ChildProcess & Promise<SpawnResult>;
 }
 
