@@ -12,9 +12,17 @@ function readMissingType() {
   return typeof __jitMissingGlobalIC;
 }
 
+function callGuardedMissingGlobal() {
+  if (typeof __jitGuardedMissingGlobalIC !== "undefined") {
+    return __jitGuardedMissingGlobalIC();
+  }
+  return "missing";
+}
+
 for (let i = 0; i < 200; i++) {
   assert(readGlobal() === 1, "warm global read mismatch");
   assert(readMissingType() === "undefined", "warm missing global mismatch");
+  assert(callGuardedMissingGlobal() === "missing", "guarded missing global mismatch");
 }
 
 globalThis.__jitGlobalIC = { value: 2 };

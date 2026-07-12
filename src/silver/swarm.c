@@ -6296,7 +6296,7 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
         MIR_reg_t dst = vstack_push(&vs);
 
         if (vs.known_func) {
-          ant_value_t gv = jit_helper_get_global(js, atom->str, func, bc_off);
+          ant_value_t gv = jit_helper_get_global(js, atom->str, NULL, -1);
           if (vtype(gv) == T_FUNC) {
             sv_closure_t *gcl = js_func_closure(gv);
             if (gcl && gcl->func == func) {
