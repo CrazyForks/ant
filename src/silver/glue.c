@@ -907,23 +907,8 @@ ant_value_t jit_helper_get_length(sv_vm_t *vm, ant_t *js, ant_value_t obj) {
   if (vtype(obj) == T_ARR)
     return tov((double)(uint32_t)js_arr_len(js, obj));
     
-  if (vtype(obj) == T_STR) {
-    ant_flat_string_t *flat = ant_str_flat_ptr(obj);
-    if (flat) {
-      const char *str_data = flat->bytes;
-      ant_offset_t byte_len = flat->len;
-      return tov((double)(uint32_t)(str_is_ascii(str_data) 
-        ? byte_len 
-        : utf16_strlen(str_data, byte_len)
-      ));
-    }
-    
-    ant_offset_t byte_len = 0;
-    ant_offset_t off = vstr(js, obj, &byte_len);
-    
-    const char *str_data = (const char *)(uintptr_t)(off);
-    return tov((double)(uint32_t)utf16_strlen(str_data, byte_len));
-  }
+  if (vtype(obj) == T_STR)
+    return tov((double)str_utf16_len(js, obj));
   
   return js_getprop_fallback(js, obj, "length");
 }

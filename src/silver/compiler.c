@@ -3782,7 +3782,18 @@ void compile_member(sv_compiler_t *c, sv_ast_t *node) {
     return;
   }
 
-  compile_expr(c, node->left);
+  bool direct_length = !(node->flags & 1) && !is_private_name_node(node->right) &&
+    node->right->len == 6 && memcmp(node->right->str, "length", 6) == 0;
+  int raw_length_local = -1;
+  if (direct_length && c->with_depth == 0 && node->left->type == N_IDENT) {
+    int local = resolve_local(c, node->left->str, node->left->len);
+    if (local >= 0 && !c->locals[local].is_tdz)
+      raw_length_local = local_to_frame_slot(c, local);
+  }
+
+  if (raw_length_local >= 0)
+    emit_slot_op(c, OP_GET_SLOT_RAW, (uint16_t)raw_length_local);
+  else compile_expr(c, node->left);
 
   int ok_jump = -1, end_jump = -1;
   if (sv_node_has_optional_base(node->left)) {
@@ -3798,8 +3809,7 @@ void compile_member(sv_compiler_t *c, sv_ast_t *node) {
     emit_private_token(c, node->right);
     emit_op(c, OP_GET_PRIVATE);
   } else {
-    if (node->right->len == 6 && memcmp(node->right->str, "length", 6) == 0)
-      emit_op(c, OP_GET_LENGTH);
+    if (direct_length) emit_op(c, OP_GET_LENGTH);
     else {
       emit_srcpos(c, node->right);
       emit_atom_op(c, OP_GET_FIELD, node->right->str, node->right->len);

@@ -206,7 +206,7 @@ void js_set_error_site_from_vm_top(ant_t *js) {
 
 // TODO: move to strings.c
 static inline bool sv_builder_has_cached_value(const ant_string_builder_t *builder) {
-  return builder && builder->cached != js_mkundef();
+  return builder && vtype(builder->cached) == T_STR;
 }
 
 static inline ant_flat_string_t *sv_string_builder_flat_ptr(ant_value_t value) {
@@ -221,9 +221,12 @@ static inline ant_string_builder_t *sv_string_builder_heap_ptr(ant_value_t value
 
 static inline uint8_t sv_builder_chunk_ascii_state(ant_flat_string_t *flat) {
   if (!flat) return STR_ASCII_UNKNOWN;
-  if (flat->is_ascii == STR_ASCII_UNKNOWN)
-    flat->is_ascii = str_detect_ascii_bytes(flat->bytes, (size_t)flat->len);
-  return flat->is_ascii;
+  uint8_t state = str_flat_ascii_state(flat);
+  if (state == STR_ASCII_UNKNOWN) {
+    state = str_detect_ascii_bytes(flat->bytes, (size_t)flat->len);
+    str_flat_init_meta(flat, state);
+  }
+  return state;
 }
 
 static inline void sv_builder_note_ascii(ant_string_builder_t *builder, uint8_t state) {
@@ -233,9 +236,16 @@ static inline void sv_builder_note_ascii(ant_string_builder_t *builder, uint8_t 
     builder->ascii_state = STR_ASCII_YES;
 }
 
-static inline void sv_builder_record_flat(ant_string_builder_t *builder, ant_flat_string_t *flat) {
+static inline void sv_builder_record_flat(
+  ant_t *js, ant_string_builder_t *builder, 
+  ant_value_t value, ant_flat_string_t *flat
+) {
   if (!builder || !flat) return;
+  ant_value_t cached = builder->cached;
   builder->len += flat->len;
+  builder->cached = vtype(cached) == T_NUM
+    ? tov(tod(cached) + (double)str_utf16_len(js, value))
+    : js_mkundef();
   sv_builder_note_ascii(builder, sv_builder_chunk_ascii_state(flat));
 }
 
@@ -285,7 +295,7 @@ static ant_value_t sv_builder_append_flat(
   ) {
     memcpy(builder->tail + builder->tail_len, flat->bytes, (size_t)flat->len);
     builder->tail_len = (uint16_t)(builder->tail_len + flat->len);
-    sv_builder_record_flat(builder, flat);
+    sv_builder_record_flat(js, builder, chunk, flat);
     return js_mkundef();
   }
 
@@ -294,7 +304,7 @@ static ant_value_t sv_builder_append_flat(
   ant_value_t push = sv_builder_push_chunk_value(js, builder, chunk);
   
   if (is_err(push)) return push;
-  sv_builder_record_flat(builder, flat);
+  sv_builder_record_flat(js, builder, chunk, flat);
   
   return js_mkundef();
 }
@@ -370,7 +380,6 @@ ant_value_t sv_string_builder_append_slot(
     if (is_err(rhs_str)) return rhs_str;
     rhs_str = sv_builder_normalize_chunk(js, rhs_str);
     if (is_err(rhs_str)) return rhs_str;
-    builder->cached = js_mkundef();
     ant_value_t append_err = sv_builder_append_flat(js, builder, rhs_str);
     if (is_err(append_err)) return append_err;
     sv_record_slot_feedback(frame, func, slot_idx, lhs);
