@@ -3765,6 +3765,19 @@ void compile_new(sv_compiler_t *c, sv_ast_t *node) {
   }
 }
 
+static bool is_direct_length_member(sv_ast_t *node) {
+  return !(node->flags & 1) && !is_private_name_node(node->right) &&
+    node->right->len == 6 && memcmp(node->right->str, "length", 6) == 0;
+}
+
+static int resolve_raw_length_local(sv_compiler_t *c, sv_ast_t *base) {
+  if (c->with_depth != 0 || base->type != N_IDENT) return -1;
+
+  int local = resolve_local(c, base->str, base->len);
+  if (local < 0 || c->locals[local].is_tdz) return -1;
+  return local_to_frame_slot(c, local);
+}
+
 void compile_member(sv_compiler_t *c, sv_ast_t *node) {
   if (is_ident_name(node->left, "super")) {
     if (!(node->flags & 1) && is_private_name_node(node->right)) {
@@ -3782,14 +3795,8 @@ void compile_member(sv_compiler_t *c, sv_ast_t *node) {
     return;
   }
 
-  bool direct_length = !(node->flags & 1) && !is_private_name_node(node->right) &&
-    node->right->len == 6 && memcmp(node->right->str, "length", 6) == 0;
-  int raw_length_local = -1;
-  if (direct_length && c->with_depth == 0 && node->left->type == N_IDENT) {
-    int local = resolve_local(c, node->left->str, node->left->len);
-    if (local >= 0 && !c->locals[local].is_tdz)
-      raw_length_local = local_to_frame_slot(c, local);
-  }
+  bool direct_length = is_direct_length_member(node);
+  int raw_length_local = direct_length ? resolve_raw_length_local(c, node->left) : -1;
 
   if (raw_length_local >= 0)
     emit_slot_op(c, OP_GET_SLOT_RAW, (uint16_t)raw_length_local);
