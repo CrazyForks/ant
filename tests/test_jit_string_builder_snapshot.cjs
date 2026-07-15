@@ -55,4 +55,32 @@ function osrSnapshot() {
 
 assertEq(osrSnapshot(), '2000:8000', 'OSR local snapshot');
 
+// Numeric-only type feedback must not specialize a local that a cold branch
+// can turn into a string builder: warm up with the append branch never taken,
+// then take it in JIT'd code and read the local at the loop head.
+function coldBranchAppend(flag, n) {
+  let value = 0;
+  for (let i = 0; i < n; i++) {
+    if (flag && i === n - 1) return value;
+    if (flag) value += 'x';
+  }
+  return value;
+}
+
+for (let i = 0; i < 300; i++) coldBranchAppend(false, 20);
+assertEq(coldBranchAppend(true, 3), '0xx', 'cold-branch append return');
+
+function coldBranchAppendSnapshot(flag, n) {
+  let value = 0;
+  let snapshot = null;
+  for (let i = 0; i < n; i++) {
+    snapshot = value;
+    if (flag) value += 'x';
+  }
+  return snapshot + ':' + value;
+}
+
+for (let i = 0; i < 300; i++) coldBranchAppendSnapshot(false, 20);
+assertEq(coldBranchAppendSnapshot(true, 3), '0xx:0xxx', 'cold-branch append snapshot');
+
 console.log('OK: test_jit_string_builder_snapshot');

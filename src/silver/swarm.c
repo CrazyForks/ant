@@ -3356,10 +3356,30 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
             r_osr_locals, 0, 1)));
 
     if (known_type_locals && local_d_regs) {
+      MIR_label_t osr_types_ok = MIR_new_label(ctx);
+      MIR_label_t osr_type_bail = MIR_new_label(ctx);
+      bool osr_any_num = false;
       for (int i = 0; i < n_locals; i++)
-        if (known_type_locals[i] == SV_TI_NUM)
-          mir_i64_to_d(ctx, jit_func, local_d_regs[i],
-                       local_regs[i], r_d_slot);
+        if (known_type_locals[i] == SV_TI_NUM) {
+          osr_any_num = true;
+          mir_emit_is_num_guard(ctx, jit_func, r_bool, local_regs[i], osr_type_bail);
+          mir_i64_to_d(ctx, jit_func, local_d_regs[i], local_regs[i], r_d_slot);
+        }
+      if (osr_any_num) {
+        MIR_append_insn(ctx, jit_func,
+          MIR_new_insn(ctx, MIR_JMP, MIR_new_label_op(ctx, osr_types_ok)));
+        MIR_append_insn(ctx, jit_func, osr_type_bail);
+        MIR_append_insn(ctx, jit_func,
+          MIR_new_insn(ctx, MIR_MOV,
+            MIR_new_mem_op(ctx, MIR_T_U8,
+              osr_base + (MIR_disp_t)offsetof(sv_jit_osr_t, active),
+              r_vm, 0, 1),
+            MIR_new_int_op(ctx, 0)));
+        mir_load_imm(ctx, jit_func, r_bailout_val, (uint64_t)SV_JIT_BAILOUT);
+        MIR_append_insn(ctx, jit_func,
+          MIR_new_ret_insn(ctx, 1, MIR_new_reg_op(ctx, r_bailout_val)));
+        MIR_append_insn(ctx, jit_func, osr_types_ok);
+      }
     }
 
     if (has_captured_params && r_jit_open_upvalues) {
@@ -6305,7 +6325,8 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
               MIR_new_mem_op(ctx, MIR_T_I64,
                 (MIR_disp_t)((int)local_idx * (int)sizeof(ant_value_t)), r_lbuf, 0, 1)));
           if (known_func_locals) known_func_locals[local_idx] = NULL;
-          if (known_type_locals) known_type_locals[local_idx] = SV_TI_UNKNOWN;
+          if (known_type_locals && known_type_locals[local_idx] != SV_TI_NUM)
+            known_type_locals[local_idx] = SV_TI_UNKNOWN;
         }
 
         mir_emit_bailout_check(ctx, jit_func, r_err_tmp,
@@ -6337,6 +6358,14 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
           JIT_EMIT_EXIT_RET(MIR_new_reg_op(ctx, r_err_tmp));
         }
         MIR_append_insn(ctx, jit_func, no_err);
+        if ((int)slot_idx >= param_count) {
+          int gli = (int)slot_idx - param_count;
+          if (gli < n_locals && local_d_regs && known_type_locals
+              && known_type_locals[gli] == SV_TI_NUM)
+            mir_emit_numeric_local_store_mirror(ctx, jit_func,
+              local_d_regs[gli], local_regs[gli], 0, false,
+              r_bool, bc_off + sz, vs.sp, &bailout_ctx);
+        }
         break;
       }
 
@@ -6424,7 +6453,8 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
               MIR_new_mem_op(ctx, MIR_T_I64,
                 (MIR_disp_t)((int)local_idx * (int)sizeof(ant_value_t)), r_lbuf, 0, 1)));
           if (known_func_locals) known_func_locals[local_idx] = NULL;
-          if (known_type_locals) known_type_locals[local_idx] = SV_TI_UNKNOWN;
+          if (known_type_locals && known_type_locals[local_idx] != SV_TI_NUM)
+            known_type_locals[local_idx] = SV_TI_UNKNOWN;
         }
 
         mir_emit_bailout_check(ctx, jit_func, r_err_tmp,
@@ -6456,6 +6486,14 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
           JIT_EMIT_EXIT_RET(MIR_new_reg_op(ctx, r_err_tmp));
         }
         MIR_append_insn(ctx, jit_func, no_err);
+        if ((int)slot_idx >= param_count) {
+          int gli = (int)slot_idx - param_count;
+          if (gli < n_locals && local_d_regs && known_type_locals
+              && known_type_locals[gli] == SV_TI_NUM)
+            mir_emit_numeric_local_store_mirror(ctx, jit_func,
+              local_d_regs[gli], local_regs[gli], 0, false,
+              r_bool, bc_off + sz, vs.sp, &bailout_ctx);
+        }
         break;
       }
 
@@ -8968,7 +9006,8 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
               MIR_new_mem_op(ctx, MIR_T_I64,
                 (MIR_disp_t)((int)local_idx * (int)sizeof(ant_value_t)), r_lbuf, 0, 1)));
           if (known_func_locals) known_func_locals[local_idx] = NULL;
-          if (known_type_locals) known_type_locals[local_idx] = SV_TI_UNKNOWN;
+          if (known_type_locals && known_type_locals[local_idx] != SV_TI_NUM)
+            known_type_locals[local_idx] = SV_TI_UNKNOWN;
         }
 
         mir_emit_bailout_check(ctx, jit_func, r_err_tmp,
@@ -9000,6 +9039,14 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
           JIT_EMIT_EXIT_RET(MIR_new_reg_op(ctx, r_err_tmp));
         }
         MIR_append_insn(ctx, jit_func, no_err);
+        if ((int)slot_idx >= param_count) {
+          int gli = (int)slot_idx - param_count;
+          if (gli < n_locals && local_d_regs && known_type_locals
+              && known_type_locals[gli] == SV_TI_NUM)
+            mir_emit_numeric_local_store_mirror(ctx, jit_func,
+              local_d_regs[gli], local_regs[gli], 0, false,
+              r_bool, bc_off + sz, vs.sp, &bailout_ctx);
+        }
         break;
       }
 
