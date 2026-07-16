@@ -34,11 +34,45 @@ function capturedSnapshot() {
   return snapshot + ':' + value;
 }
 
+// A parameter the function reassigns but never appends to must still
+// snapshot correctly (reads of it carry no builder check).
+function reassignedParameter(value) {
+  let acc = '';
+  for (let i = 0; i < 8; i++) acc += 'x';
+  value = acc;
+
+  const snapshot = value;
+  acc += 'y';
+  return snapshot + ':' + acc;
+}
+
+function unicodeSnapshot() {
+  let value = '';
+  for (let i = 0; i < 8; i++) value += 'é𝄞';
+
+  const snapshot = value;
+  value += '中';
+  return snapshot.length + ':' + value.length + ':' + (snapshot === value ? 'aliased' : 'ok');
+}
+
+function storeAliasSnapshot() {
+  let value = '';
+  for (let i = 0; i < 8; i++) value += 'x';
+
+  const box = [value];
+  const obj = { v: value };
+  value += 'y';
+  return box[0] + ':' + obj.v + ':' + value;
+}
+
 const expected = 'xxxxxxxx:xxxxxxxxy';
 for (let i = 0; i < 300; i++) {
   assertEq(localSnapshot(), expected, `hot local snapshot ${i}`);
   assertEq(parameterSnapshot(''), expected, `hot parameter snapshot ${i}`);
   assertEq(capturedSnapshot(), expected, `hot captured snapshot ${i}`);
+  assertEq(reassignedParameter(''), expected, `hot reassigned parameter ${i}`);
+  assertEq(unicodeSnapshot(), '24:25:ok', `hot unicode snapshot ${i}`);
+  assertEq(storeAliasSnapshot(), 'xxxxxxxx:xxxxxxxx:xxxxxxxxy', `hot store alias ${i}`);
 }
 
 function osrSnapshot() {

@@ -1271,7 +1271,7 @@ static bool func_writes_params(sv_func_t *func) {
     if (sz == 0) break;
     if (ip + sz > end) break;
     if (op == OP_PUT_ARG || op == OP_SET_ARG) return true;
-    if (op == OP_STR_APPEND_LOCAL || op == OP_STR_ALC_SNAPSHOT || op == OP_STR_FLUSH_LOCAL) {
+    if ((sv_op_flags[op] & SV_OPF_BUILDER_TARGET) != 0) {
       if (sv_get_u16(ip + 1) < func->param_count) return true;
     }
     ip += sz;
@@ -2373,10 +2373,13 @@ typedef struct {
   bool needs_close_upval;  
   bool needs_tco_args;     
   bool needs_ic_epoch;     
+  bool *builder_target_slots;
 } jit_features_t;
 
-static jit_features_t jit_prescan_features(sv_func_t *func) {
+static jit_features_t jit_prescan_features(sv_func_t *func, int n_slots) {
   jit_features_t f = {0};
+  if (n_slots > 0)
+    f.builder_target_slots = calloc((size_t)n_slots, sizeof(bool));
   uint8_t *ip  = func->code;
   uint8_t *end = func->code + func->code_len;
   while (ip < end) {
@@ -2391,6 +2394,10 @@ static jit_features_t jit_prescan_features(sv_func_t *func) {
     if ((flags & SV_OPF_JIT_NEEDS_ITER_ROOTS) != 0) f.needs_iter_roots = true;
     if ((flags & SV_OPF_JIT_NEEDS_CLOSE_UPVAL) != 0) f.needs_close_upval = true;
     if ((flags & SV_OPF_JIT_NEEDS_IC_EPOCH) != 0) f.needs_ic_epoch = true;
+    if ((flags & SV_OPF_BUILDER_TARGET) != 0 && f.builder_target_slots) {
+      uint16_t slot = sv_get_u16(ip + 1);
+      if ((int)slot < n_slots) f.builder_target_slots[slot] = true;
+    }
     if ((flags & SV_OPF_JIT_LOCAL_NUMERIC_BAILOUT) != 0) {
       if (op == OP_PUT_LOCAL || op == OP_SET_LOCAL) {
         uint16_t idx = sv_get_u16(ip + 1);
@@ -3128,7 +3135,8 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
   MIR_reg_t r_err_tmp = MIR_new_func_reg(ctx, jit_func->u.func, MIR_JSVAL, "err_tmp");
   mir_load_imm(ctx, jit_func, r_tmp2, 0);
 
-  jit_features_t feat = jit_prescan_features(func);
+  jit_features_t feat = jit_prescan_features(
+    func, func->param_count + n_locals);
 
 
   MIR_reg_t r_d_slot = MIR_new_func_reg(ctx, jit_func->u.func, MIR_T_I64, "d_slot");
@@ -3202,6 +3210,7 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
   bool writes_params = func_writes_params(func);
   bool *captured_params = scan_captured_params(func);
   bool *captured_locals = scan_captured_locals(func, n_locals);
+  bool *builder_target_slots = feat.builder_target_slots;
   bool has_captured_params = false;
   bool has_captures = false;
   if (captured_params) {
@@ -3671,7 +3680,8 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
                 r_args, 0, 1)));
           MIR_append_insn(ctx, jit_func, arg_done);
         }
-        if (writes_params) {
+        if (!builder_target_slots
+            || ((int)idx < param_count && builder_target_slots[idx])) {
           mir_emit_string_builder_read(
             ctx, jit_func, dst, r_bool,
             r_vm, r_js, helper1_proto, imp_str_read_value
@@ -3766,7 +3776,8 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
           MIR_new_insn(ctx, MIR_MOV,
             MIR_new_reg_op(ctx, dst),
             MIR_new_reg_op(ctx, local_regs[idx])));
-        if (!known_type_locals || known_type_locals[idx] != SV_TI_NUM) {
+        if ((!builder_target_slots || builder_target_slots[param_count + idx])
+            && (!known_type_locals || known_type_locals[idx] != SV_TI_NUM)) {
           mir_emit_string_builder_read(
             ctx, jit_func, dst, r_bool,
             r_vm, r_js, helper1_proto, imp_str_read_value
@@ -3797,7 +3808,8 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
           MIR_new_insn(ctx, MIR_MOV,
             MIR_new_reg_op(ctx, dst),
             MIR_new_reg_op(ctx, local_regs[idx])));
-        if (!known_type_locals || known_type_locals[idx] != SV_TI_NUM) {
+        if ((!builder_target_slots || builder_target_slots[param_count + idx])
+            && (!known_type_locals || known_type_locals[idx] != SV_TI_NUM)) {
           mir_emit_string_builder_read(
             ctx, jit_func, dst, r_bool,
             r_vm, r_js, helper1_proto, imp_str_read_value
@@ -9327,6 +9339,7 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
   free(known_type_locals);
   free(captured_params);
   free(captured_locals);
+  free(feat.builder_target_slots);
 
   if (!ok) {
     MIR_remove_module(ctx, mod);
