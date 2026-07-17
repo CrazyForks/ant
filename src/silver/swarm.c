@@ -8673,6 +8673,149 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
         uint16_t call_argc = sv_get_u16(ip + 1);
         if (call_argc > 16 || vs.sp < (int)call_argc + 2) { ok = false; break; }
 
+        // Devirtualize monomorphic method calls. When call-target feedback
+        // proves this `recv.m()` site resolves to a single, small callee, we
+        // speculatively bind the resolved function and inline its body, turning
+        // the indirect vtable-style dispatch into a direct (inlined) call. The
+        // operands are *peeked* (not popped) so that a runtime guard failure or
+        // an in-body deopt simply falls through to the generic dispatch emitted
+        // below, which retains the full super/this-rebind/error-propagation
+        // semantics. Only non-tail calls are inlined; tail calls keep their
+        // dedicated lowering.
+        MIR_label_t cm_devirt_slow = NULL;
+        MIR_label_t cm_devirt_join = NULL;
+        if (!is_tail) {
+          sv_func_t *inline_callee = sv_tfb_get_call_target(func, bc_off);
+          if (inline_callee && jit_inlineable(inline_callee)
+              && jit_inline_body_feasible(inline_callee)) {
+            int mcn = call_n++;
+            cm_devirt_slow = MIR_new_label(ctx);
+            cm_devirt_join = MIR_new_label(ctx);
+
+            // Peek operands: args are the top `call_argc` slots, then the method
+            // function, then the receiver. The generic path below pops these and
+            // pushes its result into the receiver's slot register, so we target
+            // that same register as the inlined return destination.
+            MIR_reg_t inl_arg_regs[call_argc > 0 ? call_argc : 1];
+            for (int i = 0; i < (int)call_argc; i++)
+              inl_arg_regs[i] = vs.regs[vs.sp - call_argc + i];
+            MIR_reg_t r_inl_callee = vs.regs[vs.sp - call_argc - 1];
+            MIR_reg_t r_inl_recv   = vs.regs[vs.sp - call_argc - 2];
+            MIR_reg_t r_inl_res    = vs.regs[vs.sp - call_argc - 2];
+
+            char micl_rn[32], mithis_rn[32], miflags_rn[32], mibound_rn[32];
+            char mint_rn[32], misup_rn[32], mitag_rn[32], mifn_rn[32];
+            snprintf(micl_rn,    sizeof(micl_rn),    "mi%d_cl",    mcn);
+            snprintf(mithis_rn,  sizeof(mithis_rn),  "mi%d_this",  mcn);
+            snprintf(miflags_rn, sizeof(miflags_rn), "mi%d_flags", mcn);
+            snprintf(mibound_rn, sizeof(mibound_rn), "mi%d_bound", mcn);
+            snprintf(mint_rn,    sizeof(mint_rn),    "mi%d_nt",    mcn);
+            snprintf(misup_rn,   sizeof(misup_rn),   "mi%d_sup",   mcn);
+            snprintf(mitag_rn,   sizeof(mitag_rn),   "mi%d_tag",   mcn);
+            snprintf(mifn_rn,    sizeof(mifn_rn),    "mi%d_fn",    mcn);
+
+            MIR_reg_t r_inl_cl    = MIR_new_func_reg(ctx, jit_func->u.func, MIR_T_I64,  micl_rn);
+            MIR_reg_t r_inl_this  = MIR_new_func_reg(ctx, jit_func->u.func, MIR_JSVAL,  mithis_rn);
+            MIR_reg_t r_inl_flags = MIR_new_func_reg(ctx, jit_func->u.func, MIR_T_I64,  miflags_rn);
+            MIR_reg_t r_inl_bound = MIR_new_func_reg(ctx, jit_func->u.func, MIR_JSVAL,  mibound_rn);
+            MIR_reg_t r_inl_nt    = MIR_new_func_reg(ctx, jit_func->u.func, MIR_JSVAL,  mint_rn);
+            MIR_reg_t r_inl_sup   = MIR_new_func_reg(ctx, jit_func->u.func, MIR_JSVAL,  misup_rn);
+            MIR_reg_t r_inl_tag   = MIR_new_func_reg(ctx, jit_func->u.func, MIR_T_I64,  mitag_rn);
+            MIR_reg_t r_inl_gfn   = MIR_new_func_reg(ctx, jit_func->u.func, MIR_T_I64,  mifn_rn);
+
+            // super(...) / super.m() must retain their special this-rebinding
+            // and new_target plumbing; route them to the generic path.
+            MIR_append_insn(ctx, jit_func,
+              MIR_new_insn(ctx, MIR_BEQ,
+                MIR_new_label_op(ctx, cm_devirt_slow),
+                MIR_new_reg_op(ctx, r_inl_callee),
+                MIR_new_reg_op(ctx, r_super_val)));
+
+            // Guard: the resolved value is still a function.
+            MIR_append_insn(ctx, jit_func,
+              MIR_new_insn(ctx, MIR_URSH,
+                MIR_new_reg_op(ctx, r_inl_tag),
+                MIR_new_reg_op(ctx, r_inl_callee),
+                MIR_new_uint_op(ctx, NANBOX_TYPE_SHIFT)));
+            MIR_append_insn(ctx, jit_func,
+              MIR_new_insn(ctx, MIR_BNE,
+                MIR_new_label_op(ctx, cm_devirt_slow),
+                MIR_new_reg_op(ctx, r_inl_tag),
+                MIR_new_uint_op(ctx, NANBOX_TFUNC_TAG)));
+
+            MIR_append_insn(ctx, jit_func,
+              MIR_new_insn(ctx, MIR_AND,
+                MIR_new_reg_op(ctx, r_inl_cl),
+                MIR_new_reg_op(ctx, r_inl_callee),
+                MIR_new_uint_op(ctx, NANBOX_DATA_MASK)));
+
+            // Guard: the closure still targets the devirtualized function.
+            MIR_append_insn(ctx, jit_func,
+              MIR_new_insn(ctx, MIR_MOV,
+                MIR_new_reg_op(ctx, r_inl_gfn),
+                MIR_new_mem_op(ctx, MIR_T_P,
+                  (MIR_disp_t)offsetof(sv_closure_t, func),
+                  r_inl_cl, 0, 1)));
+            MIR_append_insn(ctx, jit_func,
+              MIR_new_insn(ctx, MIR_BNE,
+                MIR_new_label_op(ctx, cm_devirt_slow),
+                MIR_new_reg_op(ctx, r_inl_gfn),
+                MIR_new_uint_op(ctx, (uint64_t)(uintptr_t)inline_callee)));
+
+            // Bound functions prepend arguments the inline body cannot model, so
+            // route them to the generic path. (A super-carrying closure is safe:
+            // a body that reads super is never inlineable to begin with.)
+            MIR_append_insn(ctx, jit_func,
+              MIR_new_insn(ctx, MIR_MOV,
+                MIR_new_reg_op(ctx, r_inl_tag),
+                MIR_new_mem_op(ctx, MIR_T_U32,
+                  (MIR_disp_t)offsetof(sv_closure_t, call_flags),
+                  r_inl_cl, 0, 1)));
+            MIR_append_insn(ctx, jit_func,
+              MIR_new_insn(ctx, MIR_AND,
+                MIR_new_reg_op(ctx, r_inl_tag),
+                MIR_new_reg_op(ctx, r_inl_tag),
+                MIR_new_uint_op(ctx, (uint64_t)SV_CALL_HAS_BOUND_ARGS)));
+            MIR_append_insn(ctx, jit_func,
+              MIR_new_insn(ctx, MIR_BNE,
+                MIR_new_label_op(ctx, cm_devirt_slow),
+                MIR_new_reg_op(ctx, r_inl_tag),
+                MIR_new_uint_op(ctx, 0)));
+
+            // Plain method invocation: new_target is undefined; super comes from
+            // the callee closure so an inlined body observing it stays faithful.
+            mir_load_imm(ctx, jit_func, r_inl_nt, mkval(T_UNDEF, 0));
+            MIR_append_insn(ctx, jit_func,
+              MIR_new_insn(ctx, MIR_MOV,
+                MIR_new_reg_op(ctx, r_inl_sup),
+                MIR_new_mem_op(ctx, MIR_T_I64,
+                  (MIR_disp_t)offsetof(sv_closure_t, super_val),
+                  r_inl_cl, 0, 1)));
+
+            // `this` is the receiver (resolve honors arrow/bound closures).
+            mir_emit_resolve_call_this(ctx, jit_func, r_inl_this, r_inl_cl,
+                                       r_inl_recv, r_inl_flags, r_inl_bound);
+
+            (void)jit_emit_inline_body(
+              ctx, jit_func, inline_callee,
+              inl_arg_regs, (int)call_argc,
+              r_inl_res, cm_devirt_slow, cm_devirt_join,
+              r_bool, &r_d_slot, mcn,
+              r_inl_cl, r_inl_this, r_inl_nt, r_inl_sup,
+              r_vm, r_js,
+              helper2_proto, imp_seq, imp_sne, imp_eq, imp_ne,
+              gf_proto, imp_get_field,
+              gg_proto, imp_gg,
+              special_obj_proto, imp_special_obj);
+
+            // The generic dispatch below is the deopt target: a runtime guard
+            // failure or an in-body deopt lands here, and if the body only
+            // partially inlined its dead prefix simply flows into it too. Its
+            // return value is discarded for exactly this reason.
+            MIR_append_insn(ctx, jit_func, cm_devirt_slow);
+          }
+        }
+
         int cn = call_n++;
 
         char rn_arr[32], rn_ccl[32], rn_cfn[32], rn_jptr[32], rn_sup[32];
@@ -8877,6 +9020,12 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
             JIT_EMIT_EXIT_RET(MIR_new_reg_op(ctx, r_call_res));
           }
         }
+        // Convergence point for a devirtualized inline: a fully inlined body
+        // jumps here with its result already in the receiver-slot register,
+        // bypassing the generic dispatch (and its post-call capture reload /
+        // error check, which an inlined body never needs). The generic path
+        // reaches it by falling through.
+        if (cm_devirt_join) MIR_append_insn(ctx, jit_func, cm_devirt_join);
         break;
       }
 
