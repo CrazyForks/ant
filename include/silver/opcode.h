@@ -269,6 +269,7 @@ OP_DEF(  EMPTY,             1,   0,   1, none)      /* push T_EMPTY (array hole)
 OP_DEF(  DEBUGGER,          1,   0,   0, none)
 OP_DEF(  NOP,               1,   0,   0, none)
 OP_DEF(  PUT_CONST,         5,   1,   0, const)     /* constant pool[idx] = TOS */
+OP_DEF(  TO_STRING,         1,   1,   1, none)
 
 op_def(  LABEL,             5,   0,   0, label)
 op_def(  LINE_NUM,          5,   0,   0, u32)
@@ -439,6 +440,7 @@ OP_FLAG(NOP                   , SV_OPF_JIT_ELIGIBLE | SV_OPF_JIT_INLINEABLE)
 OP_FLAG(LABEL                 , SV_OPF_JIT_ELIGIBLE | SV_OPF_JIT_INLINEABLE)
 OP_FLAG(LINE_NUM              , SV_OPF_JIT_ELIGIBLE | SV_OPF_JIT_INLINEABLE)
 OP_FLAG(COL_NUM               , SV_OPF_JIT_ELIGIBLE | SV_OPF_JIT_INLINEABLE)
+OP_FLAG(TO_STRING             , SV_OPF_JIT_ELIGIBLE)
 #undef OP_FLAG
 #endif
 

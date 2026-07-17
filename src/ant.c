@@ -5345,17 +5345,26 @@ ant_value_t coerce_to_str(ant_t *js, ant_value_t v) {
   return js_tostring_val(js, v);
 }
 
-ant_value_t coerce_to_str_concat(ant_t *js, ant_value_t v) {
+static ant_value_t coerce_to_str_hint(ant_t *js, ant_value_t v, int hint) {
   if (vtype(v) == T_STR) return v;
-  
+
   if (is_object_type(v)) {
-    ant_value_t prim = js_to_primitive(js, v, 0);
-    if (is_err(prim)) return prim;
-    if (vtype(prim) == T_STR) return prim;
-    return js_tostring_val(js, prim);
+    v = js_to_primitive(js, v, hint);
+    if (is_err(v) || vtype(v) == T_STR) return v;
   }
-  
+
+  if (vtype(v) == T_SYMBOL)
+    return js_mkerr_typed(js, JS_ERR_TYPE, "Cannot convert a Symbol value to a string");
+
   return js_tostring_val(js, v);
+}
+
+ant_value_t js_template_to_string(ant_t *js, ant_value_t v) {
+  return coerce_to_str_hint(js, v, 1);
+}
+
+ant_value_t coerce_to_str_concat(ant_t *js, ant_value_t v) {
+  return coerce_to_str_hint(js, v, 0);
 }
 
 static ant_value_t check_frozen_sealed(ant_t *js, ant_value_t obj, const char *action) {
@@ -12403,19 +12412,19 @@ static ant_value_t builtin_string_indexOf(ant_t *js, ant_value_t *args, int narg
 
   ant_offset_t str_len, str_off = vstr(js, str, &str_len);
   ant_offset_t search_len, search_off = vstr(js, search, &search_len);
-  
+
   const char *str_ptr = (char *)(uintptr_t)(str_off);
   const char *search_ptr = (char *)(uintptr_t)(search_off);
-  size_t utf16_len = utf16_strlen(str_ptr, str_len);
 
   ant_offset_t start_utf16 = 0;
   if (nargs >= 2 && vtype(args[1]) == T_NUM) {
     double pos = tod(args[1]);
     if (pos < 0) pos = 0;
-    if (pos > D(utf16_len)) pos = D(utf16_len);
+    double utf16_len = D(str_utf16_len(js, str));
+    if (pos > utf16_len) pos = utf16_len;
     start_utf16 = (ant_offset_t) pos;
   }
-  
+
   if (search_len == 0) return tov(D(start_utf16));
 
   size_t byte_start = 0;
@@ -12427,9 +12436,17 @@ static ant_value_t builtin_string_indexOf(ant_t *js, ant_value_t *args, int narg
 
   if (byte_start + search_len > (size_t)str_len) return tov(-1);
 
-  for (size_t i = byte_start; i <= (size_t)str_len - search_len; i++) {
-    if (memcmp(str_ptr + i, search_ptr, search_len) == 0)
+  const char *p = str_ptr + byte_start;
+  const char *last = str_ptr + str_len - search_len;
+
+  while (p <= last) {
+    p = memchr(p, search_ptr[0], (size_t)(last - p) + 1);
+    if (!p) return tov(-1);
+    if (search_len == 1 || memcmp(p + 1, search_ptr + 1, (size_t)search_len - 1) == 0) {
+      size_t i = (size_t)(p - str_ptr);
       return tov(D(byte_offset_to_utf16(str_ptr, i)));
+    }
+    p++;
   }
   return tov(-1);
 }

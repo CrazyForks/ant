@@ -237,6 +237,13 @@ static inline bool is_invalid_cooked_string(const sv_ast_t *node) {
   return is_template_segment(node) && (node->flags & FN_INVALID_COOKED);
 }
 
+static bool template_has_valid_cooked_segments(const sv_ast_t *node) {
+  if (!node || node->type != N_TEMPLATE) return false;
+  for (int i = 0; i < node->args.count; i++)
+    if (is_invalid_cooked_string(node->args.items[i])) return false;
+  return true;
+}
+
 static inline ant_value_t ast_string_const(sv_compiler_t *c, const sv_ast_t *node) {
   if (!node || !node->str) return js_mkstr_permanent(c->js, "", 0);
   return js_mkstr_permanent(c->js, node->str, node->len);
@@ -1552,9 +1559,46 @@ static void emit_get_local(sv_compiler_t *c, int local_idx) {
   else { emit_op(c, OP_GET_LOCAL); emit_u16(c, (uint16_t)slot); }
 }
 
+typedef enum {
+  SELF_APPEND_EXPR,
+  SELF_APPEND_TEMPLATE_REST,
+} self_append_rhs_kind_t;
+
+typedef struct {
+  int local;
+  uint16_t slot;
+  sv_ast_t *rhs;
+  self_append_rhs_kind_t rhs_kind;
+} self_append_match_t;
+
+static bool same_ident(const sv_ast_t *a, const sv_ast_t *b) {
+  return a && b &&
+    a->type == N_IDENT &&
+    b->type == N_IDENT &&
+    a->str && b->str &&
+    a->len == b->len &&
+    memcmp(a->str, b->str, a->len) == 0;
+}
+
+static sv_ast_t *match_binary_self_append(sv_ast_t *lhs, sv_ast_t *rhs) {
+  if (!rhs || rhs->type != N_BINARY || rhs->op != TOK_PLUS) return NULL;
+  if (!same_ident(rhs->left, lhs)) return NULL;
+  return rhs->right;
+}
+
+static bool match_template_self_append(
+  sv_compiler_t *c, int local, sv_ast_t *lhs, sv_ast_t *rhs
+) {
+  if (!rhs || rhs->type != N_TEMPLATE || rhs->args.count < 3) return false;
+  if (!is_template_segment(rhs->args.items[0]) || rhs->args.items[0]->len != 0)
+    return false;
+  if (!same_ident(rhs->args.items[1], lhs)) return false;
+  if (!template_has_valid_cooked_segments(rhs)) return false;
+  return get_local_inferred_type(c, local) == SV_TI_STR;
+}
+
 static bool match_self_append_local(
-  sv_compiler_t *c, sv_ast_t *node,
-  int *out_local_idx, uint16_t *out_slot, sv_ast_t **out_rhs
+  sv_compiler_t *c, sv_ast_t *node, self_append_match_t *match
 ) {
   if (!c || !node || node->type != N_ASSIGN || !node->left || node->left->type != N_IDENT)
     return false;
@@ -1566,25 +1610,35 @@ static bool match_self_append_local(
   if (c->locals[local].depth == -1 && c->strict_args_local >= 0) return false;
 
   sv_ast_t *rhs = NULL;
-  if (node->op == TOK_PLUS_ASSIGN) rhs = node->right;
-  else if (
-    node->op == TOK_ASSIGN &&
-    node->right && node->right->type == N_BINARY && node->right->op == TOK_PLUS &&
-    node->right->left && node->right->left->type == N_IDENT &&
-    node->right->left->len == node->left->len &&
-    memcmp(node->right->left->str, node->left->str, node->left->len) == 0
-  ) rhs = node->right->right;
+  self_append_rhs_kind_t rhs_kind = SELF_APPEND_EXPR;
+  switch (node->op) {
+    case TOK_PLUS_ASSIGN:
+      rhs = node->right;
+      break;
+    case TOK_ASSIGN:
+      rhs = match_binary_self_append(node->left, node->right);
+      if (!rhs && match_template_self_append(c, local, node->left, node->right)) {
+        rhs = node->right;
+        rhs_kind = SELF_APPEND_TEMPLATE_REST;
+      }
+      break;
+    default:
+      return false;
+  }
 
   if (!rhs) return false;
   uint8_t local_type = get_local_inferred_type(c, local);
-  uint8_t rhs_type = infer_expr_type(c, rhs);
-  if (local_type != SV_TI_STR && rhs_type != SV_TI_STR)
+  if (rhs_kind == SELF_APPEND_EXPR &&
+      local_type != SV_TI_STR && infer_expr_type(c, rhs) != SV_TI_STR)
     return false;
-    
-  if (out_local_idx) *out_local_idx = local;
-  if (out_slot) *out_slot = (uint16_t)local_to_frame_slot(c, local);
-  if (out_rhs) *out_rhs = rhs;
-  
+
+  if (match) {
+    match->local = local;
+    match->slot = (uint16_t)local_to_frame_slot(c, local);
+    match->rhs = rhs;
+    match->rhs_kind = rhs_kind;
+  }
+
   return true;
 }
 
@@ -1631,26 +1685,59 @@ static bool is_self_append_inplace_safe_expr(sv_compiler_t *c, sv_ast_t *node) {
     case N_TYPEOF:
     case N_VOID:
       return is_self_append_inplace_safe_expr(c, node->left);
-      
+
     default:
       return false;
   }
 }
 
-static bool compile_self_append_stmt(sv_compiler_t *c, sv_ast_t *node) {
-  int local = -1;
-  uint16_t slot = 0;
-  sv_ast_t *rhs = NULL;
-  if (!match_self_append_local(c, node, &local, &slot, &rhs)) return false;
-  if (is_self_append_inplace_safe_expr(c, rhs)) {
-    compile_expr(c, rhs);
-    emit_slot_op(c, OP_STR_APPEND_LOCAL, slot);
-  } else {
-    emit_slot_op(c, OP_GET_SLOT_RAW, slot);
-    compile_expr(c, rhs);
-    emit_slot_op(c, OP_STR_ALC_SNAPSHOT, slot);
+static void compile_template_items(sv_compiler_t *c, sv_ast_t *node, int start) {
+  compile_expr(c, node->args.items[start]);
+  if (!is_template_segment(node->args.items[start]))
+    emit_op(c, OP_TO_STRING);
+  for (int i = start + 1; i < node->args.count; i++) {
+    sv_ast_t *item = node->args.items[i];
+    compile_expr(c, item);
+    if (!is_template_segment(item)) emit_op(c, OP_TO_STRING);
+    emit_op(c, OP_ADD);
   }
-  set_local_inferred_type(c, local, SV_TI_UNKNOWN);
+}
+
+static void compile_self_append_rhs(
+  sv_compiler_t *c, const self_append_match_t *match
+) {
+  if (match->rhs_kind == SELF_APPEND_TEMPLATE_REST)
+    compile_template_items(c, match->rhs, 2);
+  else
+    compile_expr(c, match->rhs);
+}
+
+static void compile_self_append(
+  sv_compiler_t *c, const self_append_match_t *match
+) {
+  if (match->rhs_kind == SELF_APPEND_TEMPLATE_REST) {
+    emit_slot_op(c, OP_GET_SLOT_RAW, match->slot);
+    emit_op(c, OP_TO_STRING);
+    compile_self_append_rhs(c, match);
+    emit_slot_op(c, OP_STR_ALC_SNAPSHOT, match->slot);
+    set_local_inferred_type(c, match->local, SV_TI_STR);
+    return;
+  }
+  if (is_self_append_inplace_safe_expr(c, match->rhs)) {
+    compile_self_append_rhs(c, match);
+    emit_slot_op(c, OP_STR_APPEND_LOCAL, match->slot);
+  } else {
+    emit_slot_op(c, OP_GET_SLOT_RAW, match->slot);
+    compile_self_append_rhs(c, match);
+    emit_slot_op(c, OP_STR_ALC_SNAPSHOT, match->slot);
+  }
+  set_local_inferred_type(c, match->local, SV_TI_UNKNOWN);
+}
+
+static bool compile_self_append_stmt(sv_compiler_t *c, sv_ast_t *node) {
+  self_append_match_t match;
+  if (!match_self_append_local(c, node, &match)) return false;
+  compile_self_append(c, &match);
   return true;
 }
 
@@ -2556,14 +2643,8 @@ void compile_update(sv_compiler_t *c, sv_ast_t *node) {
 void compile_assign(sv_compiler_t *c, sv_ast_t *node) {
   sv_ast_t *target = node->left;
   uint8_t op = node->op;
-  int append_local = -1;
-  uint16_t append_slot = 0;
-  sv_ast_t *append_rhs = NULL;
-  
-  bool can_append_builder = match_self_append_local(
-    c, node, &append_local, 
-    &append_slot, &append_rhs
-  );
+  self_append_match_t append;
+  bool can_append_builder = match_self_append_local(c, node, &append);
 
   if (op == TOK_ASSIGN) {
     if (
@@ -2604,16 +2685,8 @@ void compile_assign(sv_compiler_t *c, sv_ast_t *node) {
     }
     
     if (can_append_builder) {
-      if (is_self_append_inplace_safe_expr(c, append_rhs)) {
-        compile_expr(c, append_rhs);
-        emit_slot_op(c, OP_STR_APPEND_LOCAL, append_slot);
-      } else {
-        emit_slot_op(c, OP_GET_SLOT_RAW, append_slot);
-        compile_expr(c, append_rhs);
-        emit_slot_op(c, OP_STR_ALC_SNAPSHOT, append_slot);
-      }
+      compile_self_append(c, &append);
       emit_get_var(c, target->str, target->len);
-      set_local_inferred_type(c, append_local, SV_TI_UNKNOWN);
       return;
     }
 
@@ -2628,16 +2701,8 @@ void compile_assign(sv_compiler_t *c, sv_ast_t *node) {
     uint8_t rhs_type = infer_expr_type(c, node->right);
 
     if (can_append_builder) {
-      if (is_self_append_inplace_safe_expr(c, append_rhs)) {
-        compile_expr(c, append_rhs);
-        emit_slot_op(c, OP_STR_APPEND_LOCAL, append_slot);
-      } else {
-        emit_slot_op(c, OP_GET_SLOT_RAW, append_slot);
-        compile_expr(c, append_rhs);
-        emit_slot_op(c, OP_STR_ALC_SNAPSHOT, append_slot);
-      }
+      compile_self_append(c, &append);
       emit_get_var(c, target->str, target->len);
-      set_local_inferred_type(c, append_local, SV_TI_UNKNOWN);
       return;
     }
 
@@ -2986,26 +3051,15 @@ void compile_template(sv_compiler_t *c, sv_ast_t *node) {
     emit_constant(c, js_mkstr_permanent(c->js, "", 0));
     return;
   }
-  for (int i = 0; i < n; i++) {
-    sv_ast_t *item = node->args.items[i];
-    if (is_invalid_cooked_string(item)) {
-      static const char msg[] = "Invalid or unexpected token";
-      int atom = add_atom(c, msg, sizeof(msg) - 1);
-      emit_op(c, OP_THROW_ERROR);
-      emit_u32(c, (uint32_t)atom);
-      emit(c, (uint8_t)JS_ERR_SYNTAX);
-      return;
-    }
+  if (!template_has_valid_cooked_segments(node)) {
+    static const char msg[] = "Invalid or unexpected token";
+    int atom = add_atom(c, msg, sizeof(msg) - 1);
+    emit_op(c, OP_THROW_ERROR);
+    emit_u32(c, (uint32_t)atom);
+    emit(c, (uint8_t)JS_ERR_SYNTAX);
+    return;
   }
-  compile_expr(c, node->args.items[0]);
-  if (!is_template_segment(node->args.items[0]))
-    emit_op(c, OP_TO_PROPKEY);
-  for (int i = 1; i < n; i++) {
-    compile_expr(c, node->args.items[i]);
-    if (!is_template_segment(node->args.items[i]))
-      emit_op(c, OP_TO_PROPKEY);
-    emit_op(c, OP_ADD);
-  }
+  compile_template_items(c, node, 0);
 }
 
 static bool call_has_spread_arg(const sv_ast_t *node) {

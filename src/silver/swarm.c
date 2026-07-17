@@ -72,6 +72,7 @@ static void jit_load_externals_once(sv_jit_ctx_t *jc) {
   LOAD_EXT(jit_helper_import_named);
   LOAD_EXT(jit_helper_export);
   LOAD_EXT(jit_helper_to_propkey);
+  LOAD_EXT(js_template_to_string);
   LOAD_EXT(jit_helper_bailout_resume);
   LOAD_EXT(jit_helper_close_upval);
   LOAD_EXT(jit_helper_upval_barrier);
@@ -2646,6 +2647,12 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
     MIR_T_I64, "js",
     MIR_JSVAL,  "v");
 
+  MIR_type_t ts_ret = MIR_JSVAL;
+  MIR_item_t to_string_proto = MIR_new_proto(ctx, "to_string_proto",
+    1, &ts_ret, 2,
+    MIR_T_I64, "js",
+    MIR_JSVAL, "v");
+
   MIR_type_t sal_ret = MIR_JSVAL;
   MIR_item_t str_append_local_proto = MIR_new_proto(ctx, "sal_proto",
     1, &sal_ret, 8,
@@ -2934,6 +2941,7 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
   MIR_item_t imp_import_named   = MIR_new_import(ctx, "jit_helper_import_named");
   MIR_item_t imp_export         = MIR_new_import(ctx, "jit_helper_export");
   MIR_item_t imp_to_propkey = MIR_new_import(ctx, "jit_helper_to_propkey");
+  MIR_item_t imp_to_string = MIR_new_import(ctx, "js_template_to_string");
   MIR_item_t imp_resume     = MIR_new_import(ctx, "jit_helper_bailout_resume");
   MIR_item_t imp_close_upval = MIR_new_import(ctx, "jit_helper_close_upval");
   MIR_item_t imp_upval_barrier = MIR_new_import(ctx, "jit_helper_upval_barrier");
@@ -6558,6 +6566,53 @@ sv_jit_func_t sv_jit_compile(ant_t *js, sv_func_t *func, sv_closure_t *hint_clos
             MIR_new_reg_op(ctx, dst),
             MIR_new_reg_op(ctx, src)));
         MIR_append_insn(ctx, jit_func, pk_done);
+        break;
+      }
+
+      case OP_TO_STRING: {
+        vstack_ensure_boxed(&vs, vs.sp - 1, ctx, jit_func, r_d_slot);
+        MIR_reg_t src = vstack_pop(&vs);
+        MIR_reg_t dst = vstack_push(&vs);
+        MIR_label_t ts_is_str = MIR_new_label(ctx);
+        MIR_label_t ts_done   = MIR_new_label(ctx);
+        MIR_label_t ts_helper = MIR_new_label(ctx);
+        MIR_append_insn(ctx, jit_func,
+          MIR_new_insn(ctx, MIR_UBLE,
+            MIR_new_label_op(ctx, ts_helper),
+            MIR_new_reg_op(ctx, src),
+            MIR_new_uint_op(ctx, NANBOX_PREFIX)));
+        MIR_append_insn(ctx, jit_func,
+          MIR_new_insn(ctx, MIR_URSH,
+            MIR_new_reg_op(ctx, r_bool),
+            MIR_new_reg_op(ctx, src),
+            MIR_new_uint_op(ctx, NANBOX_TYPE_SHIFT)));
+        MIR_append_insn(ctx, jit_func,
+          MIR_new_insn(ctx, MIR_AND,
+            MIR_new_reg_op(ctx, r_bool),
+            MIR_new_reg_op(ctx, r_bool),
+            MIR_new_uint_op(ctx, NANBOX_TYPE_MASK)));
+        MIR_append_insn(ctx, jit_func,
+          MIR_new_insn(ctx, MIR_BEQ,
+            MIR_new_label_op(ctx, ts_is_str),
+            MIR_new_reg_op(ctx, r_bool),
+            MIR_new_int_op(ctx, T_STR)));
+        MIR_append_insn(ctx, jit_func, ts_helper);
+        MIR_append_insn(ctx, jit_func,
+          MIR_new_call_insn(ctx, 5,
+            MIR_new_ref_op(ctx, to_string_proto),
+            MIR_new_ref_op(ctx, imp_to_string),
+            MIR_new_reg_op(ctx, dst),
+            MIR_new_reg_op(ctx, r_js),
+            MIR_new_reg_op(ctx, src)));
+        MIR_append_insn(ctx, jit_func,
+          MIR_new_insn(ctx, MIR_JMP, MIR_new_label_op(ctx, ts_done)));
+        MIR_append_insn(ctx, jit_func, ts_is_str);
+        MIR_append_insn(ctx, jit_func,
+          MIR_new_insn(ctx, MIR_MOV,
+            MIR_new_reg_op(ctx, dst),
+            MIR_new_reg_op(ctx, src)));
+        MIR_append_insn(ctx, jit_func, ts_done);
+        JIT_EMIT_THROW_IF_ERROR(dst);
         break;
       }
 

@@ -1968,6 +1968,7 @@ ant_value_t sv_execute_frame(sv_vm_t *vm, sv_func_t *func, ant_value_t this, ant
 
   L_TO_OBJECT:   { VM_CHECK(sv_op_to_object(vm, js));  NEXT(1); }
   L_TO_PROPKEY:  { sv_op_to_propkey(vm, js);           NEXT(1); }
+  L_TO_STRING:   { VM_CHECK(sv_op_to_string(vm, js));  NEXT(1); }
   L_IS_UNDEF:    { sv_op_is_undef(vm);                 NEXT(1); }
   L_IS_NULL:     { sv_op_is_null(vm);                  NEXT(1); }
 
